@@ -1,0 +1,51 @@
+[project]
+name = "localknowledge"
+version = "0.1.0"
+description = "A library for local PubMed and medRxiv database access"
+readme = "README.md"
+requires-python = ">=3.12"
+authors = [
+    {name = "Your Name"}
+]
+license = {text = "MIT"}
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Development Status :: 3 - Alpha",
+    "Topic :: Scientific/Engineering :: Medical Science Apps."
+]
+dependencies = [
+    "requests>=2.28.0",
+    "pandas>=2.0.0",
+    "sqlalchemy>=2.0.0",
+    "pytest>=7.0.0",
+    "bs4>=0.0.2",
+    "pymupdf4llm>=0.0.21",
+    "tqdm>=4.67.1",
+    "psycopg2>=2.9.10",
+    "dotenv>=0.9.9",
+    "pymupdf>=1.25.5",
+    "pyside6>=6.9.0",
+    "pycocoa>=25.4.8",
+    "ollama>=0.4.8",
+    "markdown>=3.8",
+    "backoff>=2.2.1",
+    "bcrypt>=4.3.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-cov>=4.0.0",
+    "black>=23.0.0",
+    "isort>=5.0.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project.urls]
+Homepage = "https://github.com/yourusername/localknowledge"
+"Bug Tracker" = "https://github.com/yourusername/localknowledge/issues"
