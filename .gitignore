@@ -13,5 +13,8 @@ venv/
 
 #log files
 *.log
+
+#temporary files and directories
 *.xml
+output/
 
