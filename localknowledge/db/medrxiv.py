@@ -309,6 +309,30 @@ class MedRxivDatabaseManager(DatabaseManager):
         except Exception as e:
             print(f"Error updating PDF path: {e}")
             return False
+        
+    def update_full_text(self, doi: str, full_text: str) -> bool:
+        """
+        Update just the full_text field for a preprint.
+        
+        Args:
+            doi: Digital Object Identifier of the preprint
+            full_text: Full text content in markdown format
+            
+        Returns:
+            bool: True if update was successful, False otherwise
+        """
+        query = """
+        UPDATE preprints 
+        SET full_text = %s
+        WHERE doi = %s
+        """
+        
+        try:
+            result = self.execute(query, (full_text, doi), commit=True)
+            return True
+        except Exception as e:
+            print(f"Error updating full text for {doi}: {e}")
+            return False
     
     # Summary-related methods
     
@@ -470,3 +494,32 @@ class MedRxivDatabaseManager(DatabaseManager):
         except Exception as e:
             print(f"Error deleting summary: {e}")
             return False
+        
+    def get_recent_preprints_without_fulltext(self, days_back: int = 7, limit: int = 100) -> List[Dict[str, Any]]:
+        """
+        Get recent preprints that don't have full text content.
+        
+        Args:
+            days_back: Number of days to look back
+            limit: Maximum number of results to return
+            
+        Returns:
+            List of preprints without full text
+        """
+        # Calculate the date 'days_back' days ago
+        cutoff_date = (datetime.now() - timedelta(days=days_back)).strftime('%Y-%m-%d')
+        
+        query = """
+        SELECT * FROM preprints 
+        WHERE (full_text IS NULL OR full_text = '') 
+        AND date_posted >= %s
+        ORDER BY date_posted DESC
+        LIMIT %s
+        """
+        
+        try:
+            results = self.execute(query, (cutoff_date, limit))
+            return results
+        except Exception as e:
+            print(f"Error retrieving recent preprints without full text: {e}")
+            return []

@@ -26,7 +26,7 @@ from medrxiv_fetcher import MedRxivFetcher
 
 # Configure logging
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.ERROR,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger('medrxiv_markdown')
@@ -42,24 +42,26 @@ except ImportError:
 class MedRxivMarkdownConverter:
     """Class to convert medRxiv preprints to Markdown with local images."""
     
-    def __init__(self, output_dir="./output", image_dir="assets"):
+    def __init__(self, output_dir="./output", image_dir="assets", save_files=True):
         """
         Initialize the converter.
         
         Args:
-            output_dir (str): Directory to save markdown files
+            output_dir (str): Directory to save markdown files (if save_files is True)
             image_dir (str): Directory to save images (relative to output_dir)
+            save_files (bool): Whether to save files to disk or just return content
         """
         self.output_dir = output_dir
         self.image_dir = image_dir
+        self.save_files = save_files
         self.fetcher = MedRxivFetcher(output_dir=output_dir)
         self.session = requests.Session()
         self.session.headers.update({
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
         })
         
-        # Create output directory if it doesn't exist
-        if not os.path.exists(output_dir):
+        # Create output directory if it doesn't exist and we're saving files
+        if save_files and not os.path.exists(output_dir):
             os.makedirs(output_dir)
             
     def xml_to_html(self, xml_content):
@@ -259,7 +261,7 @@ class MedRxivMarkdownConverter:
     
     def download_image(self, img_url, base_url, image_directory):
         """
-        Download an image and return its local path.
+        Download an image and return its local path or URL.
         
         Args:
             img_url (str): URL of the image
@@ -267,15 +269,19 @@ class MedRxivMarkdownConverter:
             image_directory (str): Directory to save images
             
         Returns:
-            str: Local path to the saved image
+            str: Local path to the saved image or the original URL if not saving
         """
-        # Make sure the image directory exists
-        if not os.path.exists(image_directory):
-            os.makedirs(image_directory)
-        
         # Handle relative URLs
         if not img_url.startswith(('http://', 'https://')):
             img_url = urljoin(base_url, img_url)
+            
+        # If we're not saving files, just return the URL
+        if not self.save_files:
+            return img_url
+        
+        # Make sure the image directory exists
+        if not os.path.exists(image_directory):
+            os.makedirs(image_directory)
         
         try:
             response = self.session.get(img_url, stream=True, timeout=10)
@@ -291,16 +297,16 @@ class MedRxivMarkdownConverter:
                     if chunk:
                         f.write(chunk)
             
-            logger.info(f"Downloaded image: {filepath}")
+            #logger.info(f"Downloaded image: {filepath}")
             return filepath
             
         except requests.RequestException as e:
             logger.error(f"Error downloading image {img_url}: {e}")
-            return None
+            return img_url  # Return original URL if download fails
     
     def html_to_markdown_with_local_images(self, html_content, base_url, article_name):
         """
-        Convert HTML to Markdown and download images.
+        Convert HTML to Markdown and process images.
         
         Args:
             html_content (str): HTML content
@@ -308,7 +314,7 @@ class MedRxivMarkdownConverter:
             article_name (str): Name of the article (for image directory)
             
         Returns:
-            tuple: (Markdown content with local image references, has_images boolean)
+            tuple: (Markdown content with image references, has_images boolean)
         """
         # Parse HTML
         soup = BeautifulSoup(html_content, 'html.parser')
@@ -317,23 +323,29 @@ class MedRxivMarkdownConverter:
         images = soup.find_all('img')
         has_images = len(images) > 0
         
-        # Only create image directory if there are actually images
+        # Process images
         if has_images:
-            # Create a specific image directory for this article
+            # Create article image directory path (whether we use it or not)
             article_image_dir = os.path.join(self.output_dir, self.image_dir, article_name)
-            if not os.path.exists(article_image_dir):
+            
+            # Create the directory only if we're saving files
+            if self.save_files and not os.path.exists(article_image_dir):
                 os.makedirs(article_image_dir)
             
             # Process all images
             for img in images:
                 if img.get('src'):
-                    # Download the image
-                    local_path = self.download_image(img['src'], base_url, article_image_dir)
+                    # Download or get URL for the image
+                    result_path = self.download_image(img['src'], base_url, article_image_dir)
                     
-                    if local_path:
-                        # Update the src to point to the local file
-                        relative_path = os.path.relpath(local_path, self.output_dir)
-                        img['src'] = relative_path
+                    if result_path:
+                        # If saving files, update src to relative path
+                        if self.save_files:
+                            relative_path = os.path.relpath(result_path, self.output_dir)
+                            img['src'] = relative_path
+                        else:
+                            # Otherwise just use the full URL
+                            img['src'] = result_path
         
         # Convert to markdown
         markdown_content = md(str(soup), heading_style="ATX")
@@ -348,7 +360,12 @@ class MedRxivMarkdownConverter:
             doi (str): DOI of the preprint
             
         Returns:
-            tuple: (markdown content, markdown file path, has_images boolean)
+            dict: Dictionary containing {
+                'markdown': markdown content, 
+                'filepath': markdown file path (if saved),
+                'has_images': boolean indicating if images were processed,
+                'image_dir': path to image directory (if images were saved)
+            }
         """
         # Clean the DOI format
         doi = self.fetcher._clean_doi(doi)
@@ -363,10 +380,12 @@ class MedRxivMarkdownConverter:
         base_url = f"https://www.medrxiv.org/content/{doi}"
         
         has_images = False
+        markdown_content = None
+        markdown_path = None
         
         # Try HTML first, then XML if HTML is not available
         if availability['html']:
-            logger.info(f"HTML format available for DOI: {doi}, downloading...")
+            #logger.info(f"HTML format available for DOI: {doi}, downloading...")
             download_result = self.fetcher.download_preprint(doi, formats=['html'])
             
             if 'html' in download_result:
@@ -381,11 +400,10 @@ class MedRxivMarkdownConverter:
                     html_content, base_url, article_name
                 )
             else:
-                logger.error(f"Failed to download HTML for DOI: {doi}")
-                return None, None, False
+                logger.info(f"Failed to download HTML for DOI: {doi}")
                 
         elif availability['xml']:
-            logger.info(f"HTML not available but XML is available for DOI: {doi}, downloading XML...")
+            #logger.info(f"HTML not available but XML is available for DOI: {doi}, downloading XML...")
             download_result = self.fetcher.download_preprint(doi, formats=['xml'])
             
             if 'xml' in download_result:
@@ -396,7 +414,7 @@ class MedRxivMarkdownConverter:
                     xml_content = f.read()
                 
                 # Convert XML to HTML
-                logger.info("Converting XML to HTML...")
+                #logger.info("Converting XML to HTML...")
                 html_content = self.xml_to_html(xml_content)
                 
                 # Convert HTML to Markdown with local images
@@ -405,79 +423,31 @@ class MedRxivMarkdownConverter:
                 )
             else:
                 logger.error(f"Failed to download XML for DOI: {doi}")
-                return None, None, False
                 
         else:
             logger.error(f"Neither HTML nor XML format available for DOI: {doi}")
-            return None, None, False
+            return None
         
-        # Save markdown to file
-        markdown_path = os.path.join(self.output_dir, f"{article_name}.md")
-        with open(markdown_path, 'w', encoding='utf-8') as f:
-            f.write(markdown_content)
+        # Only save markdown to file if save_files is True
+        if markdown_content and self.save_files:
+            markdown_path = os.path.join(self.output_dir, f"{article_name}.md")
+            with open(markdown_path, 'w', encoding='utf-8') as f:
+                f.write(markdown_content)
+            #logger.info(f"Saved markdown to: {markdown_path}")
         
-        logger.info(f"Saved markdown to: {markdown_path}")
+        # Create result dictionary
+        result = {
+            'markdown': markdown_content,
+            'filepath': markdown_path,
+            'has_images': has_images
+        }
         
-        return markdown_content, markdown_path, has_images
-        
-        # Get base URL
-        base_url = f"https://www.medrxiv.org/content/{doi}"
-        
-        # Try HTML first, then XML if HTML is not available
-        if availability['html']:
-            logger.info(f"HTML format available for DOI: {doi}, downloading...")
-            download_result = self.fetcher.download_preprint(doi, formats=['html'])
+        # Add image directory path only if we have images and we're saving files
+        if has_images and self.save_files:
+            image_dir_path = os.path.join(self.output_dir, self.image_dir, article_name)
+            result['image_dir'] = image_dir_path
             
-            if 'html' in download_result:
-                html_path = download_result['html']
-                
-                # Read HTML content
-                with open(html_path, 'r', encoding='utf-8') as f:
-                    html_content = f.read()
-                
-                # Convert HTML to Markdown with local images
-                markdown_content = self.html_to_markdown_with_local_images(
-                    html_content, base_url, article_name
-                )
-            else:
-                logger.error(f"Failed to download HTML for DOI: {doi}")
-                return None, None
-                
-        elif availability['xml']:
-            logger.info(f"HTML not available but XML is available for DOI: {doi}, downloading XML...")
-            download_result = self.fetcher.download_preprint(doi, formats=['xml'])
-            
-            if 'xml' in download_result:
-                xml_path = download_result['xml']
-                
-                # Read XML content
-                with open(xml_path, 'r', encoding='utf-8') as f:
-                    xml_content = f.read()
-                
-                # Convert XML to HTML
-                logger.info("Converting XML to HTML...")
-                html_content = self.xml_to_html(xml_content)
-                
-                # Convert HTML to Markdown with local images
-                markdown_content = self.html_to_markdown_with_local_images(
-                    html_content, base_url, article_name
-                )
-            else:
-                logger.error(f"Failed to download XML for DOI: {doi}")
-                return None, None
-                
-        else:
-            logger.error(f"Neither HTML nor XML format available for DOI: {doi}")
-            return None, None
-        
-        # Save markdown to file
-        markdown_path = os.path.join(self.output_dir, f"{article_name}.md")
-        with open(markdown_path, 'w', encoding='utf-8') as f:
-            f.write(markdown_content)
-        
-        logger.info(f"Saved markdown to: {markdown_path}")
-        
-        return markdown_content, markdown_path
+        return result
 
 def main():
     """Main function to run the script."""
@@ -485,6 +455,7 @@ def main():
     parser.add_argument('doi', help='DOI of the medRxiv preprint (e.g., 10.1101/2023.01.15.23284593)')
     parser.add_argument('--output-dir', '-o', default='./output', help='Output directory')
     parser.add_argument('--image-dir', '-i', default='assets', help='Image directory (relative to output dir)')
+    parser.add_argument('--no-save', action='store_true', help='Do not save files, just print markdown to stdout')
     
     args = parser.parse_args()
     
@@ -497,23 +468,30 @@ def main():
         logger.error("pip install requests beautifulsoup4 markdownify lxml")
         sys.exit(1)
         
-    converter = MedRxivMarkdownConverter(output_dir=args.output_dir, image_dir=args.image_dir)
+    converter = MedRxivMarkdownConverter(
+        output_dir=args.output_dir, 
+        image_dir=args.image_dir, 
+        save_files=not args.no_save
+    )
     
     doi = args.doi
     
-    markdown_content, markdown_path, has_images = converter.convert_doi_to_markdown(doi)
+    result = converter.convert_doi_to_markdown(doi)
     
-    if markdown_content:
-        print(f"Successfully converted {doi} to Markdown.")
-        print(f"Markdown file saved to: {markdown_path}")
-        
-        if has_images:
-            # Only mention the images directory if images were actually downloaded
-            article_name = converter._sanitize_filename(converter.fetcher._clean_doi(doi).replace('10.1101/', ''))
-            image_dir_path = os.path.join(args.output_dir, args.image_dir, article_name)
-            print(f"Images saved to: {image_dir_path}")
+    if result and result['markdown']:
+        if args.no_save:
+            # Print markdown content to stdout if not saving to file
+            print(result['markdown'])
         else:
-            print("No images were found in the document.")
+            print(f"Successfully converted {doi} to Markdown.")
+            print(f"Markdown file saved to: {result['filepath']}")
+            
+            if result['has_images'] and 'image_dir' in result:
+                print(f"Images saved to: {result['image_dir']}")
+            elif result['has_images']:
+                print("Images were processed but not saved locally.")
+            else:
+                print("No images were found in the document.")
     else:
         print(f"Failed to convert {doi} to Markdown.")
         sys.exit(1)

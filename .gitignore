@@ -13,4 +13,5 @@ venv/
 
 #log files
 *.log
+*.xml
 

@@ -15,7 +15,7 @@ import logging
 
 # Configure logging
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.ERROR,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger('medrxiv_fetcher')
@@ -150,7 +150,7 @@ class MedRxivFetcher:
             metadata = self._get_metadata_from_api(doi)
             if 'jatsxml' in metadata and metadata['jatsxml']:
                 format_urls['xml'] = metadata['jatsxml']
-                logger.info(f"Found XML URL from API: {format_urls['xml']}")
+                #logger.info(f"Found XML URL from API: {format_urls['xml']}")
         
         # If we couldn't get XML from API or don't have a DOI, fall back to scraping
         try:
@@ -198,7 +198,7 @@ class MedRxivFetcher:
         api_url = f"https://api.medrxiv.org/details/medrxiv/{cleaned_doi}"
         
         try:
-            logger.info(f"Fetching metadata from API: {api_url}")
+            #logger.info(f"Fetching metadata from API: {api_url}")
             response = self.session.get(api_url)
             response.raise_for_status()
             
@@ -218,7 +218,7 @@ class MedRxivFetcher:
                     'jatsxml': paper_metadata.get('jatsxml', '').replace('\\/', '/')
                 }
                 
-                logger.info(f"Found metadata for DOI {cleaned_doi}")
+                #logger.info(f"Found metadata for DOI {cleaned_doi}")
                 return metadata
             else:
                 logger.warning(f"No metadata found for DOI {cleaned_doi}")
@@ -227,7 +227,7 @@ class MedRxivFetcher:
                 if '/' in cleaned_doi.split('10.1101/')[-1]:
                     # Try without the second slash
                     alt_doi = '10.1101/' + cleaned_doi.split('10.1101/')[-1].replace('/', '')
-                    logger.info(f"Trying alternative DOI format: {alt_doi}")
+                    #logger.info(f"Trying alternative DOI format: {alt_doi}")
                     return self._get_metadata_from_api_direct(alt_doi)
                 
                 return {}
@@ -253,7 +253,7 @@ class MedRxivFetcher:
         api_url = f"https://api.medrxiv.org/details/medrxiv/{doi}"
         
         try:
-            logger.info(f"Fetching metadata with alternative format: {api_url}")
+            #logger.info(f"Fetching metadata with alternative format: {api_url}")
             response = self.session.get(api_url)
             response.raise_for_status()
             
@@ -272,7 +272,7 @@ class MedRxivFetcher:
                     'jatsxml': paper_metadata.get('jatsxml', '').replace('\\/', '/')
                 }
                 
-                logger.info(f"Found metadata with alternative format for DOI {doi}")
+                #logger.info(f"Found metadata with alternative format for DOI {doi}")
                 return metadata
             else:
                 # If API doesn't work, try constructing URL manually as fallback
@@ -294,7 +294,7 @@ class MedRxivFetcher:
                         # Verify the URL works
                         check_response = self.session.head(xml_url)
                         if check_response.status_code == 200:
-                            logger.info(f"Manually constructed XML URL works: {xml_url}")
+                            #logger.info(f"Manually constructed XML URL works: {xml_url}")
                             return {'jatsxml': xml_url}
                     
                 except Exception as e:
@@ -338,7 +338,7 @@ class MedRxivFetcher:
             match = re.search(r'10\.1101/([^/]+)', preprint_url)
             doc_id = match.group(0) if match else None
             
-        logger.info(f"Fetching preprint: {preprint_url}")
+        #logger.info(f"Fetching preprint: {preprint_url}")
         
         # Get URLs for different formats
         format_urls = self._get_format_urls(preprint_url)
@@ -348,7 +348,7 @@ class MedRxivFetcher:
             direct_xml_url = self._try_direct_xml_url(doc_id)
             if direct_xml_url:
                 format_urls['xml'] = direct_xml_url
-                logger.info(f"Found XML using direct URL pattern: {direct_xml_url}")
+                #logger.info(f"Found XML using direct URL pattern: {direct_xml_url}")
         
         downloaded_files = {}
         
@@ -362,7 +362,7 @@ class MedRxivFetcher:
             if fmt in format_urls and format_urls[fmt]:
                 try:
                     self._wait()  # Respect rate limits
-                    logger.info(f"Downloading {fmt} format...")
+                    #logger.info(f"Downloading {fmt} format...")
                     
                     response = self.session.get(format_urls[fmt], stream=True)
                     response.raise_for_status()
@@ -376,7 +376,7 @@ class MedRxivFetcher:
                                 f.write(chunk)
                                 
                     downloaded_files[fmt] = filepath
-                    logger.info(f"Successfully downloaded {fmt} to {filepath}")
+                    #logger.info(f"Successfully downloaded {fmt} to {filepath}")
                     
                 except requests.RequestException as e:
                     logger.error(f"Error downloading {fmt} format: {e}")
@@ -400,7 +400,7 @@ class MedRxivFetcher:
         results = {}
         
         for item in dois_or_urls:
-            logger.info(f"Processing item: {item}")
+            #logger.info(f"Processing item: {item}")
             results[item] = self.download_preprint(item, formats)
             self._wait()  # Add delay between preprints
             
@@ -437,7 +437,7 @@ class MedRxivFetcher:
             direct_xml_url = self._try_direct_xml_url(doc_id)
             if direct_xml_url:
                 format_urls['xml'] = direct_xml_url
-                logger.info(f"Found XML using direct URL pattern: {direct_xml_url}")
+                #logger.info(f"Found XML using direct URL pattern: {direct_xml_url}")
         
         availability = {
             'pdf': format_urls['pdf'] is not None,

@@ -31,6 +31,8 @@ sys.path.insert(0, parent_dir)
 
 # Now import our custom modules
 from remove_line_numbers import remove_sequential_line_numbers
+from medrxiv_fetcher import MedRxivFetcher
+from medrxiv_to_markdown import MedRxivMarkdownConverter
 
 # Load environment variables from .env file
 from dotenv import load_dotenv
@@ -507,7 +509,7 @@ def update_medrxiv_database(download_pdfs=False, max_retries=5, start_date_overr
             pass
 
 
-def fetch_missing_pdfs(max_retries=5, limit=None, convert_to_markdown=True):
+def fetch_missing_pdfs(max_retries=5, limit=None, convert_to_markdown=True, use_html_xml=True):
     """
     Fetch missing PDF files for papers in the database
     
@@ -518,6 +520,7 @@ def fetch_missing_pdfs(max_retries=5, limit=None, convert_to_markdown=True):
     - max_retries: Maximum number of retry attempts for failed downloads
     - limit: Maximum number of PDFs to fetch (None for no limit)
     - convert_to_markdown: Whether to convert PDFs to markdown text
+    - use_html_xml: Whether to try HTML/XML conversion first (more accurate) before falling back to PDF
     
     Returns:
     - Number of successfully downloaded PDFs
@@ -565,10 +568,30 @@ def fetch_missing_pdfs(max_retries=5, limit=None, convert_to_markdown=True):
             'version': version
         }
         
-        # Try to download with retries
+        # Variables to track our progress
         filename = None
         retry_count = 0
+        full_text = ""
         
+        # First try HTML/XML conversion if requested (usually better quality)
+        if convert_to_markdown and use_html_xml:
+            try:
+                tqdm.write(f"Trying HTML/XML conversion for {doi}")
+                full_text = fetch_and_convert_to_markdown(doi, save_files=False)
+                
+                if full_text:
+                    # If we got markdown from HTML/XML, we can still download the PDF for reference
+                    # but we won't use it for text extraction
+                    filename = download_pdf(paper)
+                    
+                    # Update the database with the markdown text
+                    db_manager.update_pdf_path(doi, filename or "", full_text)
+                    success_count += 1
+                    continue  # Skip to next paper since we've handled this one
+            except Exception as e:
+                tqdm.write(f"HTML/XML conversion failed for {doi}: {str(e)}. Falling back to PDF.")
+        
+        # If HTML/XML conversion failed or wasn't requested, try PDF download
         while retry_count < max_retries and not filename:
             try:
                 # Download the PDF (returns just the filename)
@@ -606,6 +629,48 @@ def fetch_missing_pdfs(max_retries=5, limit=None, convert_to_markdown=True):
     return success_count
 
 
+def fetch_and_convert_to_markdown(doi, save_files=False, output_dir=None):
+    """
+    Fetch a preprint by DOI and convert HTML/XML to markdown.
+    
+    This function uses the MedRxivMarkdownConverter to fetch either HTML or XML format
+    of a preprint and convert it to markdown. This is often more reliable than 
+    converting PDFs to markdown, especially for text extraction and structure preservation.
+    
+    Args:
+        doi (str): DOI of the preprint
+        save_files (bool): Whether to save the markdown and images to disk
+        output_dir (str): Directory to save output files if save_files is True
+        
+    Returns:
+        str: Markdown text of the preprint or empty string if conversion fails
+    """
+    try:
+        if output_dir is None:
+            output_dir = os.path.join(get_pdf_base_dir(), "markdown")
+            
+        # Create the converter with file saving option
+        converter = MedRxivMarkdownConverter(
+            output_dir=output_dir, 
+            image_dir="assets",
+            save_files=save_files
+        )
+        
+        # Convert the preprint to markdown
+        tqdm.write(f"Converting {doi} to markdown...")
+        result = converter.convert_doi_to_markdown(doi)
+        
+        if result and result['markdown']:
+            return result['markdown']
+        else:
+            tqdm.write(f"Failed to convert {doi} to markdown")
+            return ""
+            
+    except Exception as e:
+        tqdm.write(f"Error converting {doi} to markdown: {str(e)}")
+        return ""
+
+
 def main():
     """Main function that parses command line arguments and runs the appropriate actions"""
     import argparse
@@ -633,6 +698,17 @@ def main():
                           help='Maximum number of PDFs to fetch')
     pdf_parser.add_argument('--no-convert', action='store_true', 
                           help='Skip converting PDFs to markdown text')
+    pdf_parser.add_argument('--pdf-only', action='store_true',
+                          help='Use only PDF conversion, skip HTML/XML conversion')
+    
+    # Markdown conversion command (new)
+    md_parser = subparsers.add_parser('markdown', help='Convert papers to markdown using HTML/XML')
+    md_parser.add_argument('--doi', type=str, required=True,
+                        help='DOI of the paper to convert')
+    md_parser.add_argument('--save', action='store_true',
+                        help='Save markdown and images to disk')
+    md_parser.add_argument('--output-dir', type=str,
+                        help='Directory to save output files if --save is used')
     
     args = parser.parse_args()
     
@@ -647,8 +723,19 @@ def main():
         fetch_missing_pdfs(
             max_retries=args.retries,
             limit=args.limit,
-            convert_to_markdown=not args.no_convert
+            convert_to_markdown=not args.no_convert,
+            use_html_xml=not args.pdf_only
         )
+    elif args.command == 'markdown':
+        markdown_text = fetch_and_convert_to_markdown(
+            args.doi,
+            save_files=args.save,
+            output_dir=args.output_dir
+        )
+        if markdown_text:
+            print(markdown_text)
+        else:
+            print("Failed to convert to markdown.")
     else:
         # Default action if no command provided
         parser.print_help()

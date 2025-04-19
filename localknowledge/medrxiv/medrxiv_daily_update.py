@@ -46,7 +46,8 @@ load_dotenv()  # Load environment variables from .env file if it exists
 
 # Import required modules
 try:
-    from localknowledge.medrxiv.medrxiv_import_new import update_medrxiv_database
+    from localknowledge.medrxiv.medrxiv_import_new import update_medrxiv_database, fetch_and_convert_to_markdown
+    from localknowledge.medrxiv.medrxiv_to_markdown import MedRxivMarkdownConverter
     from localknowledge.db.medrxiv import MedRxivDatabaseManager
     from localknowledge.ai.summarizer import summarize_interesting_text
     logger.info("Successfully imported required modules")
@@ -121,13 +122,80 @@ def generate_summaries(limit: int = 100) -> int:
         logger.error(f"Error during summarization process: {e}")
         return 0
 
-def run_daily_update(summarize: bool = False, summary_limit: int = 100):
+def fetch_markdown_for_recent_papers(days_back: int = 7, limit: int = 100) -> int:
+    """
+    Fetch markdown versions of recently added papers that don't have full text yet.
+    
+    This function retrieves papers from the database that were added within the 
+    specified timeframe and don't have full-text content. It then attempts to 
+    convert them to markdown using HTML/XML sources, which typically produces 
+    better results than PDF extraction.
+    
+    Args:
+        days_back: Number of days to look back for papers
+        limit: Maximum number of papers to process
+        
+    Returns:
+        Number of papers successfully converted to markdown
+    """
+    try:
+        logger.info(f"Starting markdown conversion for papers from the last {days_back} days")
+        
+        # Connect to the database
+        db_manager = MedRxivDatabaseManager()
+        
+        # Get recent papers without full text
+        papers = db_manager.get_recent_preprints_without_fulltext(days_back=days_back, limit=limit)
+        
+        if not papers:
+            logger.info("No recent papers found that need markdown conversion")
+            db_manager.close()
+            return 0
+            
+        logger.info(f"Found {len(papers)} recent papers that need markdown conversion")
+        success_count = 0
+        
+        # Process each paper
+        for i, paper in enumerate(papers):
+            try:
+                doi = paper['doi']
+                logger.info(f"Converting paper {i+1}/{len(papers)}: {doi}")
+                
+                # Try to convert to markdown using HTML/XML
+                markdown_text = fetch_and_convert_to_markdown(doi, save_files=False)
+                
+                if markdown_text:
+                    # Update the database with the markdown text
+                    db_manager.update_full_text(doi, markdown_text)
+                    success_count += 1
+                    logger.info(f"Successfully converted {doi} to markdown")
+                else:
+                    logger.warning(f"Failed to convert {doi} to markdown")
+                
+                # Avoid hammering the server
+                time.sleep(1)
+                
+            except Exception as e:
+                logger.error(f"Error converting paper {paper['doi']} to markdown: {e}")
+                continue
+        
+        logger.info(f"Successfully converted {success_count} papers to markdown")
+        db_manager.close()
+        return success_count
+        
+    except Exception as e:
+        logger.error(f"Error during markdown conversion process: {e}")
+        return 0
+
+def run_daily_update(summarize: bool = False, summary_limit: int = 100, convert_to_markdown: bool = False, markdown_limit: int = 100):
     """
     Run the daily update process to fetch papers from the last fetch date until yesterday
     
     Args:
         summarize: Whether to generate AI summaries for newly fetched papers
         summary_limit: Maximum number of papers to summarize
+        convert_to_markdown: Whether to convert papers to markdown using HTML/XML
+        markdown_limit: Maximum number of papers to convert to markdown
     """
     try:
         logger.info("Starting daily medRxiv update process")
@@ -152,6 +220,12 @@ def run_daily_update(summarize: bool = False, summary_limit: int = 100):
         
         logger.info("Daily update of papers completed successfully")
         
+        # Convert papers to markdown if requested
+        if convert_to_markdown:
+            logger.info("Starting markdown conversion process")
+            markdown_count = fetch_markdown_for_recent_papers(days_back=7, limit=markdown_limit)
+            logger.info(f"Markdown conversion completed: {markdown_count} papers converted")
+        
         # Generate summaries if requested
         if summarize:
             logger.info("Starting summarization process")
@@ -168,12 +242,21 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Update medRxiv database and generate summaries")
     parser.add_argument("--summarize", action="store_true", 
                       help="Generate AI summaries for papers without summaries")
-    parser.add_argument("--limit", type=int, default=100,
+    parser.add_argument("--markdown", action="store_true",
+                      help="Convert papers to markdown using HTML/XML sources")
+    parser.add_argument("--summary-limit", type=int, default=100,
                       help="Maximum number of papers to summarize")
+    parser.add_argument("--markdown-limit", type=int, default=100,
+                      help="Maximum number of papers to convert to markdown")
     args = parser.parse_args()
     
     start_time = time.time()
-    success = run_daily_update(summarize=args.summarize, summary_limit=args.limit)
+    success = run_daily_update(
+        summarize=args.summarize, 
+        summary_limit=args.summary_limit,
+        convert_to_markdown=args.markdown,
+        markdown_limit=args.markdown_limit
+    )
     end_time = time.time()
     duration = round(end_time - start_time, 2)
     
