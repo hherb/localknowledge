@@ -515,6 +515,11 @@ class ReadingTrackerManager(DatabaseManager):
             """
             result = self.execute(query, (source_type, content_id, user_id, user_id), commit=True)
             
+            # Check if result is None (might happen if there's no connection or other DB issues)
+            if result is None:
+                logger.warning("execute() returned None in delete_reading_record")
+                return False
+                
             # Return True if a record was deleted
             return result.rowcount > 0
         except Exception as e:

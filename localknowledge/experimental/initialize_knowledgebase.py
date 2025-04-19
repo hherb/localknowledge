@@ -8,7 +8,7 @@ import time
 import pandas as pd
 from datetime import datetime
 from bs4 import BeautifulSoup
-import PyPDF2
+#import PyPDF2
 import shutil
 import logging
 
@@ -371,22 +371,22 @@ def process_medrxiv_papers(papers, db_conn):
             pdf_path = download_medrxiv_pdf(paper)
             
             # Extract full text if PDF available
-            full_text = ""
-            if pdf_path and os.path.exists(pdf_path):
-                try:
-                    with open(pdf_path, 'rb') as pdf_file:
-                        reader = PyPDF2.PdfReader(pdf_file)
-                        for page_num in range(len(reader.pages)):
-                            full_text += reader.pages[page_num].extract_text() + "\n"
-                except Exception as e:
-                    logger.error(f"Error extracting text from PDF {pdf_path}: {e}")
+            # full_text = ""
+            # if pdf_path and os.path.exists(pdf_path):
+            #     try:
+            #         with open(pdf_path, 'rb') as pdf_file:
+            #             reader = PyPDF2.PdfReader(pdf_file)
+            #             for page_num in range(len(reader.pages)):
+            #                 full_text += reader.pages[page_num].extract_text() + "\n"
+            #     except Exception as e:
+            #         logger.error(f"Error extracting text from PDF {pdf_path}: {e}")
             
             # Insert into database
             cursor.execute(
                 """INSERT OR REPLACE INTO preprints 
                    (doi, title, abstract, authors, date_posted, category, version, pdf_url, pdf_path, full_text) 
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (doi, title, abstract, authors, date_posted, category, version, pdf_url, pdf_path, full_text)
+                (doi, title, abstract, authors, date_posted, category, version, pdf_url, pdf_path, "")
             )
             
             if i % 100 == 0:

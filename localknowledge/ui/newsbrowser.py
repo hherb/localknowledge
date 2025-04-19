@@ -16,7 +16,7 @@ from PySide6.QtWidgets import (
     QPushButton, QSplitter, QListWidget, QListWidgetItem,
     QTabWidget, QLabel, QMessageBox, QApplication, QTextBrowser, QTextEdit,
     QFrame, QComboBox, QCheckBox, QToolBar, QMainWindow, QStatusBar,
-    QDialog, QDialogButtonBox
+    QDialog, QDialogButtonBox, QSizePolicy
 )
 from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtPdfWidgets import QPdfView
@@ -41,24 +41,24 @@ class SummaryItem(QListWidgetItem):
         Initialize a summary list item.
         
         Args:
-            publication: Dictionary containing publication data
-            summary: Dictionary containing summary data
+            publication: Dictionary containing publication details
+            summary: Dictionary containing summary details
             is_read: Whether the summary has been read
         """
         self.publication = publication
         self.summary = summary
         self.is_read = is_read
         
-        # Create display text with HTML formatting
+        # Get display data
         title = publication.get('title', 'No Title')
         date = publication.get('date_posted', '')
         evaluation = "✓" if summary.get('evaluation', False) else "✗"
         
-        # Truncate the title if it's too long
+        # Format title with HTML - handle long titles
         if len(title) > 80:
             title = title[:77] + "..."
         
-        # Format with HTML for bold titles for unread items
+        # Set display text based on read status
         if not is_read:
             display_text = f"<b>{title}</b>\n{date} • Relevance: {evaluation}"
         else:
@@ -112,7 +112,7 @@ class SummaryItem(QListWidgetItem):
         self.setText(f"{title}\n{date} • Relevance: {evaluation}")
 
 
-class NewsBrowser(QMainWindow):
+class NewsBrowser(QWidget):
     """A PySide6 widget for browsing publication summaries like an email client."""
     
     # Signal emitted when a publication is selected
@@ -146,17 +146,12 @@ class NewsBrowser(QMainWindow):
     
     def _init_ui(self):
         """Initialize the user interface."""
-        # Set window properties
-        self.setWindowTitle("Publication News Browser")
-        self.resize(1200, 800)
-        
-        # Create central widget and layout
-        central_widget = QWidget()
-        main_layout = QVBoxLayout(central_widget)
+        # Create main layout
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(0, 0, 0, 0)
         
         # Create toolbar
         toolbar = QToolBar()
-        self.addToolBar(toolbar)
         
         # Add filter combo box
         self.filter_label = QLabel("Filter by: ")
@@ -191,8 +186,11 @@ class NewsBrowser(QMainWindow):
         self.refresh_btn.clicked.connect(self._load_summaries)
         toolbar.addWidget(self.refresh_btn)
         
+        # Add toolbar to main layout
+        main_layout.addWidget(toolbar)
+        
         # Main splitter - vertical
-        self.main_splitter = QSplitter(Qt.Vertical)
+        #self.main_splitter = QSplitter(Qt.Vertical)
         
         # Main horizontal splitter for list and tabbed view
         self.main_splitter = QSplitter(Qt.Horizontal)
@@ -332,12 +330,18 @@ class NewsBrowser(QMainWindow):
         # Add splitter to main layout
         main_layout.addWidget(self.main_splitter)
         
-        # Set central widget
-        self.setCentralWidget(central_widget)
+        # Create status bar - wrap in container to better control height
+        status_container = QWidget()
+        status_container.setFixedHeight(25)  # Fix container height to exactly one line
+        status_layout = QHBoxLayout(status_container)
+        status_layout.setContentsMargins(0, 0, 0, 0)
+        status_layout.setSpacing(0)
         
-        # Create status bar
         self.status_bar = QStatusBar()
-        self.setStatusBar(self.status_bar)
+        self.status_bar.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        status_layout.addWidget(self.status_bar)
+        
+        main_layout.addWidget(status_container)
         self.status_bar.showMessage("Ready")
     
     def _get_pdf_base_dir(self) -> Path:
@@ -1026,9 +1030,36 @@ class NewsBrowser(QMainWindow):
             self.notes_btn.setText("Edit Notes")
 
 
+class NewsBrowserWindow(QMainWindow):
+    """A standalone window for the NewsBrowser widget."""
+    
+    def __init__(self, parent=None):
+        """Initialize the main window for the news browser."""
+        super().__init__(parent)
+        
+        # Set window properties
+        self.setWindowTitle("Publication News Browser")
+        self.resize(1200, 800)
+        
+        # Create the news browser widget
+        self.news_browser = NewsBrowser()
+        
+        # Set as central widget
+        self.setCentralWidget(self.news_browser)
+    
+    def closeEvent(self, event):
+        """Handle window close event."""
+        # Ensure database connections are closed
+        self.news_browser.close_database()
+        super().closeEvent(event)
+
+
 # Example usage
 if __name__ == "__main__":
     app = QApplication(sys.argv)
-    browser = NewsBrowser()
-    browser.show()
+    
+    # For standalone usage, use the window wrapper
+    browser_window = NewsBrowserWindow()
+    browser_window.show()
+    
     sys.exit(app.exec())

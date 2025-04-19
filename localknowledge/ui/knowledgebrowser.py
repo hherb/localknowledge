@@ -38,7 +38,7 @@ except ImportError:
 
 # Try to import remove_line_numbers
 try:
-    from localknowledge.experimental.remove_line_numbers import remove_sequential_line_numbers
+    from localknowledge.medrxiv.remove_line_numbers import remove_sequential_line_numbers
     LINE_NUMBERS_REMOVAL_AVAILABLE = True
 except ImportError:
     LINE_NUMBERS_REMOVAL_AVAILABLE = False
