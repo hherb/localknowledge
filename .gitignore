@@ -11,4 +11,6 @@ wheels/
 .env
 venv/
 
+#log files
+*.log
 

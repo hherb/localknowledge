@@ -1,10 +1,11 @@
 """
 PubMed database access functionality.
 """
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 from datetime import datetime
 
 from localknowledge.base import LocalKnowledgeBase
+from localknowledge.pubmed.import_downloads import import_downloads
 
 
 class PubMedClient(LocalKnowledgeBase):

@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 # Import database managers
 from localknowledge.db.medrxiv import MedRxivDatabaseManager
 from localknowledge.db.user import UserDatabaseManager
+from localknowledge.db.pubmed import PubMedDatabaseManager
 # Import additional database managers here as they are added
 
 def create_all_tables() -> None:
@@ -45,6 +46,15 @@ def create_all_tables() -> None:
         logger.info("User tables initialized successfully")
     except Exception as e:
         logger.error(f"Error initializing User tables: {e}")
+    
+    try:
+        logger.info("Initializing PubMed tables...")
+        pubmed_db = PubMedDatabaseManager()
+        pubmed_db.create_tables()
+        managers.append(pubmed_db)
+        logger.info("PubMed tables initialized successfully")
+    except Exception as e:
+        logger.error(f"Error initializing PubMed tables: {e}")
     
     # Add calls to additional database modules' create_tables methods here
     
