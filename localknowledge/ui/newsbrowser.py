@@ -14,7 +14,7 @@ from PySide6.QtGui import QColor, QFont
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLineEdit, 
     QPushButton, QSplitter, QListWidget, QListWidgetItem,
-    QTabWidget, QLabel, QMessageBox, QApplication, QTextBrowser,
+    QTabWidget, QLabel, QMessageBox, QApplication, QTextBrowser, QTextEdit,
     QFrame, QComboBox, QCheckBox, QToolBar, QMainWindow, QStatusBar,
     QDialog, QDialogButtonBox
 )
@@ -30,6 +30,7 @@ except ImportError:
     MARKDOWN_AVAILABLE = False
 
 from localknowledge.db.medrxiv import MedRxivDatabaseManager
+from localknowledge.db.reading_tracker import ReadingTrackerManager
 
 
 class SummaryItem(QListWidgetItem):
@@ -98,7 +99,7 @@ class SummaryItem(QListWidgetItem):
             self.setFont(font)
             self.setBackground(QColor(255, 255, 255))  # White
         
-        # Update the text to reflect read status
+        # Update the text to reflect read status - without using HTML tags
         title = self.publication.get('title', 'No Title')
         if len(title) > 80:
             title = title[:77] + "..."
@@ -106,10 +107,9 @@ class SummaryItem(QListWidgetItem):
         date = self.publication.get('date_posted', '')
         evaluation = "✓" if self.summary.get('evaluation', False) else "✗"
         
-        if not is_read:
-            self.setText(f"<b>{title}</b>\n{date} • Relevance: {evaluation}")
-        else:
-            self.setText(f"{title}\n{date} • Relevance: {evaluation}")
+        # Don't use HTML tags in setText() since QListWidgetItem doesn't render HTML
+        # The bold font is already set with setFont() above
+        self.setText(f"{title}\n{date} • Relevance: {evaluation}")
 
 
 class NewsBrowser(QMainWindow):
@@ -128,10 +128,12 @@ class NewsBrowser(QMainWindow):
         super().__init__(parent)
         
         self.db_manager = MedRxivDatabaseManager()
+        # Initialize reading tracker for persistent read/unread status
+        self.reading_tracker = ReadingTrackerManager()
         self.current_publication = None
         self.current_summary = None
         self.pdf_base_dir = self._get_pdf_base_dir()
-        self.read_summaries = set()  # Set to track which summaries have been read
+        self.read_summaries = set()  # Local cache of read summaries for performance
         
         # Initialize thread pool for background tasks
         self.threadpool = QThreadPool()
@@ -220,10 +222,55 @@ class NewsBrowser(QMainWindow):
         # Right side - tabbed interface
         self.tab_widget = QTabWidget()
         
-        # Summary tab
+        # Summary tab with rating and notes controls
+        summary_container = QWidget()
+        summary_layout = QVBoxLayout(summary_container)
+        
         self.summary_view = QTextBrowser()
         self.summary_view.setOpenExternalLinks(True)
-        self.tab_widget.addTab(self.summary_view, "Summary")
+        
+        # User interaction panel (ratings and notes)
+        interaction_panel = QFrame()
+        interaction_panel.setFrameShape(QFrame.StyledPanel)
+        interaction_panel.setFrameShadow(QFrame.Raised)
+        interaction_panel.setLineWidth(1)
+        interaction_panel_layout = QHBoxLayout(interaction_panel)
+        
+        # Rating controls
+        rating_group = QWidget()
+        rating_layout = QHBoxLayout(rating_group)
+        rating_layout.setContentsMargins(0, 0, 0, 0)
+        
+        rating_label = QLabel("Rating:")
+        self.thumbs_up_btn = QPushButton("👍")
+        self.thumbs_up_btn.setToolTip("Thumbs Up (+1)")
+        self.thumbs_up_btn.clicked.connect(self._rate_positive)
+        
+        self.thumbs_down_btn = QPushButton("👎")
+        self.thumbs_down_btn.setToolTip("Thumbs Down (-1)")
+        self.thumbs_down_btn.clicked.connect(self._rate_negative)
+        
+        self.rating_label = QLabel("0")  # Shows current rating
+        
+        rating_layout.addWidget(rating_label)
+        rating_layout.addWidget(self.thumbs_up_btn)
+        rating_layout.addWidget(self.thumbs_down_btn)
+        rating_layout.addWidget(self.rating_label)
+        
+        # Notes button
+        self.notes_btn = QPushButton("Edit Notes")
+        self.notes_btn.clicked.connect(self._show_notes_dialog)
+        
+        # Add to interaction panel
+        interaction_panel_layout.addWidget(rating_group)
+        interaction_panel_layout.addStretch(1)
+        interaction_panel_layout.addWidget(self.notes_btn)
+        
+        # Add elements to summary layout
+        summary_layout.addWidget(self.summary_view)
+        summary_layout.addWidget(interaction_panel)
+        
+        self.tab_widget.addTab(summary_container, "Summary")
         
         # PDF tab
         self.pdf_container = QWidget()
@@ -322,6 +369,9 @@ class NewsBrowser(QMainWindow):
         self.status_bar.showMessage("Loading summaries...")
         self.summary_list.clear()
         
+        # Refresh the read status cache from the database
+        self._refresh_read_status_cache()
+        
         # Get all summaries with their publication data
         # This assumes we have a method to get this combined data
         try:
@@ -333,7 +383,7 @@ class NewsBrowser(QMainWindow):
                 summaries = self._get_all_summaries()
             elif filter_idx == 1:  # Unread Only
                 summaries = self._get_all_summaries()
-                # Filter for unread in Python since we're tracking read status in memory
+                # Filter for unread using the read_summaries set
                 summaries = [s for s in summaries if s['summary']['id'] not in self.read_summaries]
             elif filter_idx == 2:  # Relevant Only
                 summaries = self._get_relevant_summaries()
@@ -345,7 +395,7 @@ class NewsBrowser(QMainWindow):
                 publication = summary_data['publication']
                 summary = summary_data['summary']
                 
-                # Check if this summary is in the read set
+                # Check if this summary is in the read set (cached from database)
                 is_read = summary['id'] in self.read_summaries
                 
                 # Create list item
@@ -535,6 +585,9 @@ class NewsBrowser(QMainWindow):
         # Mark as read when selected
         self._mark_current_as_read()
         
+        # Load the reading record to get rating and notes
+        self._load_reading_record()
+        
         # Display the summary in the summary view
         self._display_summary()
         
@@ -665,37 +718,103 @@ class NewsBrowser(QMainWindow):
         """Mark the currently selected summary as read."""
         current_item = self.summary_list.currentItem()
         if current_item and isinstance(current_item, SummaryItem) and not current_item.is_read:
-            # Add to the read set
-            self.read_summaries.add(current_item.summary['id'])
-            # Update the UI
-            current_item.update_read_status(True)
+            summary_id = current_item.summary['id']
             
-            # Update the status bar
-            self.status_bar.showMessage(f"Marked as read: {current_item.publication.get('title', 'Unknown')}")
+            try:
+                # Record in the database
+                self.reading_tracker.mark_as_read(
+                    source_type='medrxiv',
+                    content_id=str(summary_id),
+                    # We're not using user_id for now, can add if multi-user support is needed
+                )
+                
+                # Update local cache
+                self.read_summaries.add(summary_id)
+                
+                # Update the UI
+                current_item.update_read_status(True)
+                
+                # Update the status bar
+                self.status_bar.showMessage(f"Marked as read: {current_item.publication.get('title', 'Unknown')}")
+            except Exception as e:
+                print(f"Error marking as read: {e}")
+                traceback.print_exc()
     
     def _mark_as_read(self):
         """Mark the selected summary as read."""
         current_item = self.summary_list.currentItem()
         if current_item and isinstance(current_item, SummaryItem) and not current_item.is_read:
-            # Add to the read set
-            self.read_summaries.add(current_item.summary['id'])
-            # Update the UI
-            current_item.update_read_status(True)
+            summary_id = current_item.summary['id']
             
-            # Update the status bar
-            self.status_bar.showMessage(f"Marked as read: {current_item.publication.get('title', 'Unknown')}")
+            try:
+                # Record in the database
+                self.reading_tracker.mark_as_read(
+                    source_type='medrxiv',
+                    content_id=str(summary_id),
+                    # We're not using user_id for now, can add if multi-user support is needed
+                )
+                
+                # Update local cache
+                self.read_summaries.add(summary_id)
+                
+                # Update the UI
+                current_item.update_read_status(True)
+                
+                # Update the status bar
+                self.status_bar.showMessage(f"Marked as read: {current_item.publication.get('title', 'Unknown')}")
+            except Exception as e:
+                print(f"Error marking as read: {e}")
+                traceback.print_exc()
     
     def _mark_as_unread(self):
         """Mark the selected summary as unread."""
         current_item = self.summary_list.currentItem()
         if current_item and isinstance(current_item, SummaryItem) and current_item.is_read:
-            # Remove from the read set
-            self.read_summaries.discard(current_item.summary['id'])
-            # Update the UI
-            current_item.update_read_status(False)
+            summary_id = current_item.summary['id']
             
-            # Update the status bar
-            self.status_bar.showMessage(f"Marked as unread: {current_item.publication.get('title', 'Unknown')}")
+            try:
+                # Delete the reading record from the database
+                self.reading_tracker.delete_reading_record(
+                    source_type='medrxiv',
+                    content_id=str(summary_id)
+                )
+                
+                # Remove from local cache
+                self.read_summaries.discard(summary_id)
+                
+                # Update the UI
+                current_item.update_read_status(False)
+                
+                # Update the status bar
+                self.status_bar.showMessage(f"Marked as unread: {current_item.publication.get('title', 'Unknown')}")
+            except Exception as e:
+                print(f"Error marking as unread: {e}")
+                traceback.print_exc()
+    
+    def _refresh_read_status_cache(self):
+        """
+        Refresh the in-memory cache of read summaries from the database.
+        This helps improve performance by avoiding database lookups for each item.
+        """
+        try:
+            # Get recent read records for medrxiv articles
+            read_records = self.reading_tracker.get_recent_reads(
+                limit=1000,  # Fetch up to 1000 recent reads
+                source_type='medrxiv'
+            )
+            
+            # Clear and update the cache
+            self.read_summaries.clear()
+            for record in read_records:
+                # Store the content_id (which corresponds to summary id) in our cache
+                content_id = record.get('content_id')
+                if content_id and content_id.isdigit():
+                    self.read_summaries.add(int(content_id))
+            
+            print(f"Refreshed read status cache: {len(self.read_summaries)} read items")
+        except Exception as e:
+            print(f"Error refreshing read status cache: {e}")
+            traceback.print_exc()
     
     def _filter_summaries(self):
         """Filter the summaries based on the selected filter."""
@@ -750,9 +869,161 @@ class NewsBrowser(QMainWindow):
         self.pdf_view.setZoomMode(QPdfView.ZoomMode.FitToWidth)
     
     def close_database(self):
-        """Close the database connection."""
+        """Close the database connections."""
         if hasattr(self, 'db_manager'):
             self.db_manager.close()
+        
+        if hasattr(self, 'reading_tracker'):
+            self.reading_tracker.close()
+    
+    def _rate_positive(self):
+        """Rate the current article positively (thumbs up)."""
+        if not self.current_summary:
+            return
+            
+        try:
+            summary_id = self.current_summary['id']
+            
+            # Update the rating in the database
+            self.reading_tracker.update_record_rating(
+                source_type='medrxiv',
+                content_id=str(summary_id),
+                rating=1  # +1 for thumbs up
+            )
+            
+            # Update the UI
+            self.rating_label.setText("+1")
+            self.status_bar.showMessage("Article rated positively")
+            
+        except Exception as e:
+            print(f"Error rating article positively: {e}")
+            traceback.print_exc()
+            self.status_bar.showMessage("Error updating rating")
+    
+    def _rate_negative(self):
+        """Rate the current article negatively (thumbs down)."""
+        if not self.current_summary:
+            return
+            
+        try:
+            summary_id = self.current_summary['id']
+            
+            # Update the rating in the database
+            self.reading_tracker.update_record_rating(
+                source_type='medrxiv',
+                content_id=str(summary_id),
+                rating=-1  # -1 for thumbs down
+            )
+            
+            # Update the UI
+            self.rating_label.setText("-1")
+            self.status_bar.showMessage("Article rated negatively")
+            
+        except Exception as e:
+            print(f"Error rating article negatively: {e}")
+            traceback.print_exc()
+            self.status_bar.showMessage("Error updating rating")
+    
+    def _show_notes_dialog(self):
+        """Show a dialog for editing notes for the current article."""
+        if not self.current_summary:
+            return
+            
+        try:
+            summary_id = self.current_summary['id']
+            
+            # Get existing notes
+            record = self.reading_tracker.get_reading_record(
+                source_type='medrxiv',
+                content_id=str(summary_id)
+            )
+            
+            existing_notes = record.get('notes', '') if record else ''
+            
+            # Create dialog
+            dialog = QDialog(self)
+            dialog.setWindowTitle("Edit Notes")
+            dialog.setMinimumSize(500, 300)
+            
+            layout = QVBoxLayout(dialog)
+            
+            # Notes editor
+            notes_edit = QTextEdit(existing_notes)
+            layout.addWidget(QLabel("Notes:"))
+            layout.addWidget(notes_edit)
+            
+            # Tag editor (for future use)
+            # tag_edit = QLineEdit()
+            # layout.addWidget(QLabel("Tags (comma separated):"))
+            # layout.addWidget(tag_edit)
+            
+            # Buttons
+            button_box = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
+            button_box.accepted.connect(dialog.accept)
+            button_box.rejected.connect(dialog.reject)
+            layout.addWidget(button_box)
+            
+            # Show dialog
+            if dialog.exec() == QDialog.Accepted:
+                notes = notes_edit.toPlainText()
+                
+                # Save notes to database
+                self.reading_tracker.update_record_notes(
+                    source_type='medrxiv',
+                    content_id=str(summary_id),
+                    notes=notes
+                )
+                
+                # Mark as read if not already
+                if summary_id not in self.read_summaries:
+                    self.read_summaries.add(summary_id)
+                    current_item = self.summary_list.currentItem()
+                    if current_item and isinstance(current_item, SummaryItem):
+                        current_item.update_read_status(True)
+                
+                self.status_bar.showMessage("Notes saved")
+                
+        except Exception as e:
+            print(f"Error handling notes: {e}")
+            traceback.print_exc()
+            self.status_bar.showMessage("Error saving notes")
+    
+    def _load_reading_record(self):
+        """Load the current article's reading record including rating and notes."""
+        if not self.current_summary:
+            return
+        
+        try:
+            summary_id = self.current_summary['id']
+            
+            # Get the reading record
+            record = self.reading_tracker.get_reading_record(
+                source_type='medrxiv',
+                content_id=str(summary_id)
+            )
+            
+            if record:
+                # Update rating display
+                rating = record.get('rating')
+                if rating is not None:
+                    self.rating_label.setText(f"{rating:+d}")  # Format as +1 or -1
+                else:
+                    self.rating_label.setText("0")
+                
+                # We don't need to display notes here since they're shown in the dialog
+                # But we could indicate if notes exist
+                has_notes = bool(record.get('notes'))
+                self.notes_btn.setText("Edit Notes" if not has_notes else "Edit Notes ✓")
+            else:
+                # Reset UI for no record
+                self.rating_label.setText("0")
+                self.notes_btn.setText("Edit Notes")
+                
+        except Exception as e:
+            print(f"Error loading reading record: {e}")
+            traceback.print_exc()
+            self.rating_label.setText("?")
+            self.notes_btn.setText("Edit Notes")
 
 
 # Example usage
