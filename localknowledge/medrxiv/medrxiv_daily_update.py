@@ -46,7 +46,7 @@ load_dotenv()  # Load environment variables from .env file if it exists
 
 # Import required modules
 try:
-    from medrxiv_import_new import update_medrxiv_database
+    from localknowledge.medrxiv.medrxiv_import_new import update_medrxiv_database
     from localknowledge.db.medrxiv import MedRxivDatabaseManager
     from localknowledge.ai.summarizer import summarize_interesting_text
     logger.info("Successfully imported required modules")

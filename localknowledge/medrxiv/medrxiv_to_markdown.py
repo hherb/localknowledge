@@ -4,6 +4,10 @@ MedRxiv to Markdown Converter
 
 Fetches a medRxiv preprint by DOI, converts HTML to Markdown,
 and downloads all images to a local directory.
+
+Note: When processing XML, actual images cannot be downloaded since the XML only
+contains references to images, not the actual image data or direct URLs.
+For XML papers, the script will include figure captions but not the images themselves.
 """
 
 import os
@@ -27,6 +31,14 @@ logging.basicConfig(
 )
 logger = logging.getLogger('medrxiv_markdown')
 
+# Check if lxml is installed, if not, display a helpful message
+try:
+    import lxml
+except ImportError:
+    logger.error("The lxml library is required for XML parsing. Please install it using: pip install lxml")
+    logger.error("If you see 'Failed to convert XML to HTML' errors, this is likely the cause.")
+
+
 class MedRxivMarkdownConverter:
     """Class to convert medRxiv preprints to Markdown with local images."""
     
@@ -49,6 +61,173 @@ class MedRxivMarkdownConverter:
         # Create output directory if it doesn't exist
         if not os.path.exists(output_dir):
             os.makedirs(output_dir)
+            
+    def xml_to_html(self, xml_content):
+        """
+        Convert XML to HTML for easier markdown conversion.
+        
+        Args:
+            xml_content (str): XML content
+            
+        Returns:
+            str: HTML content
+        """
+        try:
+            # Parse XML with lxml parser explicitly
+            soup = BeautifulSoup(xml_content, 'lxml-xml')
+            
+            # Create a new HTML document
+            html = BeautifulSoup('', 'html.parser')
+            
+            # Create the basic structure
+            html_body = html.new_tag('body')
+            html.append(html_body)
+            
+            # Extract title
+            title_elem = soup.find('article-title')
+            if title_elem:
+                title_tag = html.new_tag('h1')
+                title_tag.string = title_elem.get_text()
+                html_body.append(title_tag)
+            
+            # Extract authors
+            authors = []
+            for contrib in soup.find_all('contrib'):
+                if contrib.get('contrib-type') == 'author':
+                    surname = contrib.find('surname')
+                    given_names = contrib.find('given-names')
+                    if surname and given_names:
+                        authors.append(f"{given_names.get_text()} {surname.get_text()}")
+            
+            if authors:
+                authors_p = html.new_tag('p')
+                authors_p.string = "Authors: " + ", ".join(authors)
+                html_body.append(authors_p)
+            
+            # Extract abstract
+            abstract = soup.find('abstract')
+            if abstract:
+                abstract_div = html.new_tag('div')
+                abstract_div['class'] = 'abstract'
+                
+                abstract_title = html.new_tag('h2')
+                abstract_title.string = "Abstract"
+                abstract_div.append(abstract_title)
+                
+                for p in abstract.find_all('p'):
+                    p_tag = html.new_tag('p')
+                    p_tag.string = p.get_text()
+                    abstract_div.append(p_tag)
+                
+                html_body.append(abstract_div)
+            
+            # Extract sections
+            body = soup.find('body')
+            if body:
+                for sec in body.find_all('sec'):
+                    section_div = html.new_tag('div')
+                    section_div['class'] = 'section'
+                    
+                    # Section title
+                    title = sec.find('title')
+                    if title:
+                        h2 = html.new_tag('h2')
+                        h2.string = title.get_text()
+                        section_div.append(h2)
+                    
+                    # Section paragraphs
+                    for p in sec.find_all('p'):
+                        p_tag = html.new_tag('p')
+                        p_tag.string = p.get_text()
+                        section_div.append(p_tag)
+                    
+                    # Tables
+                    for table in sec.find_all('table-wrap'):
+                        table_tag = html.new_tag('table')
+                        table_tag['border'] = '1'
+                        
+                        # Table caption
+                        caption = table.find('caption')
+                        if caption:
+                            caption_tag = html.new_tag('caption')
+                            caption_tag.string = caption.get_text()
+                            table_tag.append(caption_tag)
+                        
+                        # Table body
+                        tbody_tag = html.new_tag('tbody')
+                        
+                        for row in table.find_all('tr'):
+                            tr_tag = html.new_tag('tr')
+                            
+                            for cell in row.find_all(['th', 'td']):
+                                cell_tag = html.new_tag(cell.name)
+                                cell_tag.string = cell.get_text()
+                                tr_tag.append(cell_tag)
+                            
+                            tbody_tag.append(tr_tag)
+                        
+                        table_tag.append(tbody_tag)
+                        section_div.append(table_tag)
+                    
+                    # Figures
+                    for fig in sec.find_all('fig'):
+                        fig_div = html.new_tag('div')
+                        fig_div['class'] = 'figure'
+                        
+                        # Figure label
+                        label = fig.find('label')
+                        if label:
+                            fig_label = html.new_tag('p')
+                            fig_label['class'] = 'figure-label'
+                            fig_label.string = label.get_text()
+                            fig_div.append(fig_label)
+                        
+                        # Figure caption
+                        caption = fig.find('caption')
+                        if caption:
+                            fig_caption = html.new_tag('p')
+                            fig_caption['class'] = 'figure-caption'
+                            fig_caption.string = caption.get_text()
+                            fig_div.append(fig_caption)
+                        
+                        # Figure graphics - We'll add a placeholder since we can't directly access the image
+                        # We just note that there was a figure, but don't try to include the actual image
+                        # since XML doesn't contain the actual image data, just references
+                        fig_notice = html.new_tag('p')
+                        fig_notice['class'] = 'figure-placeholder'
+                        fig_notice.string = "[Figure described in caption above]"
+                        fig_div.append(fig_notice)
+                        
+                        section_div.append(fig_div)
+                    
+                    html_body.append(section_div)
+            
+            # References
+            ref_list = soup.find('ref-list')
+            if ref_list:
+                refs_div = html.new_tag('div')
+                refs_div['class'] = 'references'
+                
+                refs_title = html.new_tag('h2')
+                refs_title.string = "References"
+                refs_div.append(refs_title)
+                
+                refs_ol = html.new_tag('ol')
+                
+                for ref in ref_list.find_all('ref'):
+                    ref_li = html.new_tag('li')
+                    ref_li.string = ref.get_text().strip()
+                    refs_ol.append(ref_li)
+                
+                refs_div.append(refs_ol)
+                html_body.append(refs_div)
+            
+            return str(html)
+            
+        except Exception as e:
+            logger.error(f"Error converting XML to HTML: {e}")
+            # Return a simple HTML with error message
+            return f"<html><body><h1>Error</h1><p>Failed to convert XML to HTML: {e}</p></body></html>"
     
     def _sanitize_filename(self, filename):
         """Remove invalid characters from filenames."""
@@ -129,31 +308,37 @@ class MedRxivMarkdownConverter:
             article_name (str): Name of the article (for image directory)
             
         Returns:
-            str: Markdown content with local image references
+            tuple: (Markdown content with local image references, has_images boolean)
         """
-        # Create a specific image directory for this article
-        article_image_dir = os.path.join(self.output_dir, self.image_dir, article_name)
-        if not os.path.exists(article_image_dir):
-            os.makedirs(article_image_dir)
-        
         # Parse HTML
         soup = BeautifulSoup(html_content, 'html.parser')
         
-        # Process all images
-        for img in soup.find_all('img'):
-            if img.get('src'):
-                # Download the image
-                local_path = self.download_image(img['src'], base_url, article_image_dir)
-                
-                if local_path:
-                    # Update the src to point to the local file
-                    relative_path = os.path.relpath(local_path, self.output_dir)
-                    img['src'] = relative_path
+        # Check if there are any images to process
+        images = soup.find_all('img')
+        has_images = len(images) > 0
+        
+        # Only create image directory if there are actually images
+        if has_images:
+            # Create a specific image directory for this article
+            article_image_dir = os.path.join(self.output_dir, self.image_dir, article_name)
+            if not os.path.exists(article_image_dir):
+                os.makedirs(article_image_dir)
+            
+            # Process all images
+            for img in images:
+                if img.get('src'):
+                    # Download the image
+                    local_path = self.download_image(img['src'], base_url, article_image_dir)
+                    
+                    if local_path:
+                        # Update the src to point to the local file
+                        relative_path = os.path.relpath(local_path, self.output_dir)
+                        img['src'] = relative_path
         
         # Convert to markdown
         markdown_content = md(str(soup), heading_style="ATX")
         
-        return markdown_content
+        return markdown_content, has_images
     
     def convert_doi_to_markdown(self, doi):
         """
@@ -163,27 +348,13 @@ class MedRxivMarkdownConverter:
             doi (str): DOI of the preprint
             
         Returns:
-            tuple: (markdown content, markdown file path)
+            tuple: (markdown content, markdown file path, has_images boolean)
         """
+        # Clean the DOI format
+        doi = self.fetcher._clean_doi(doi)
+        
         # Check format availability
         availability = self.fetcher.check_format_availability(doi)
-        
-        if not availability['html']:
-            logger.error(f"HTML format not available for DOI: {doi}")
-            return None, None
-        
-        # Download HTML
-        download_result = self.fetcher.download_preprint(doi, formats=['html'])
-        
-        if 'html' not in download_result:
-            logger.error(f"Failed to download HTML for DOI: {doi}")
-            return None, None
-        
-        html_path = download_result['html']
-        
-        # Read HTML content
-        with open(html_path, 'r', encoding='utf-8') as f:
-            html_content = f.read()
         
         # Create article name from DOI
         article_name = self._sanitize_filename(doi.replace('10.1101/', ''))
@@ -191,10 +362,113 @@ class MedRxivMarkdownConverter:
         # Get base URL
         base_url = f"https://www.medrxiv.org/content/{doi}"
         
-        # Convert HTML to Markdown with local images
-        markdown_content = self.html_to_markdown_with_local_images(
-            html_content, base_url, article_name
-        )
+        has_images = False
+        
+        # Try HTML first, then XML if HTML is not available
+        if availability['html']:
+            logger.info(f"HTML format available for DOI: {doi}, downloading...")
+            download_result = self.fetcher.download_preprint(doi, formats=['html'])
+            
+            if 'html' in download_result:
+                html_path = download_result['html']
+                
+                # Read HTML content
+                with open(html_path, 'r', encoding='utf-8') as f:
+                    html_content = f.read()
+                
+                # Convert HTML to Markdown with local images
+                markdown_content, has_images = self.html_to_markdown_with_local_images(
+                    html_content, base_url, article_name
+                )
+            else:
+                logger.error(f"Failed to download HTML for DOI: {doi}")
+                return None, None, False
+                
+        elif availability['xml']:
+            logger.info(f"HTML not available but XML is available for DOI: {doi}, downloading XML...")
+            download_result = self.fetcher.download_preprint(doi, formats=['xml'])
+            
+            if 'xml' in download_result:
+                xml_path = download_result['xml']
+                
+                # Read XML content
+                with open(xml_path, 'r', encoding='utf-8') as f:
+                    xml_content = f.read()
+                
+                # Convert XML to HTML
+                logger.info("Converting XML to HTML...")
+                html_content = self.xml_to_html(xml_content)
+                
+                # Convert HTML to Markdown with local images
+                markdown_content, has_images = self.html_to_markdown_with_local_images(
+                    html_content, base_url, article_name
+                )
+            else:
+                logger.error(f"Failed to download XML for DOI: {doi}")
+                return None, None, False
+                
+        else:
+            logger.error(f"Neither HTML nor XML format available for DOI: {doi}")
+            return None, None, False
+        
+        # Save markdown to file
+        markdown_path = os.path.join(self.output_dir, f"{article_name}.md")
+        with open(markdown_path, 'w', encoding='utf-8') as f:
+            f.write(markdown_content)
+        
+        logger.info(f"Saved markdown to: {markdown_path}")
+        
+        return markdown_content, markdown_path, has_images
+        
+        # Get base URL
+        base_url = f"https://www.medrxiv.org/content/{doi}"
+        
+        # Try HTML first, then XML if HTML is not available
+        if availability['html']:
+            logger.info(f"HTML format available for DOI: {doi}, downloading...")
+            download_result = self.fetcher.download_preprint(doi, formats=['html'])
+            
+            if 'html' in download_result:
+                html_path = download_result['html']
+                
+                # Read HTML content
+                with open(html_path, 'r', encoding='utf-8') as f:
+                    html_content = f.read()
+                
+                # Convert HTML to Markdown with local images
+                markdown_content = self.html_to_markdown_with_local_images(
+                    html_content, base_url, article_name
+                )
+            else:
+                logger.error(f"Failed to download HTML for DOI: {doi}")
+                return None, None
+                
+        elif availability['xml']:
+            logger.info(f"HTML not available but XML is available for DOI: {doi}, downloading XML...")
+            download_result = self.fetcher.download_preprint(doi, formats=['xml'])
+            
+            if 'xml' in download_result:
+                xml_path = download_result['xml']
+                
+                # Read XML content
+                with open(xml_path, 'r', encoding='utf-8') as f:
+                    xml_content = f.read()
+                
+                # Convert XML to HTML
+                logger.info("Converting XML to HTML...")
+                html_content = self.xml_to_html(xml_content)
+                
+                # Convert HTML to Markdown with local images
+                markdown_content = self.html_to_markdown_with_local_images(
+                    html_content, base_url, article_name
+                )
+            else:
+                logger.error(f"Failed to download XML for DOI: {doi}")
+                return None, None
+                
+        else:
+            logger.error(f"Neither HTML nor XML format available for DOI: {doi}")
+            return None, None
         
         # Save markdown to file
         markdown_path = os.path.join(self.output_dir, f"{article_name}.md")
@@ -214,18 +488,32 @@ def main():
     
     args = parser.parse_args()
     
+    # Check for required dependencies
+    try:
+        import lxml
+    except ImportError:
+        logger.error("The lxml library is required for XML parsing.")
+        logger.error("Please install the required dependencies using:")
+        logger.error("pip install requests beautifulsoup4 markdownify lxml")
+        sys.exit(1)
+        
     converter = MedRxivMarkdownConverter(output_dir=args.output_dir, image_dir=args.image_dir)
     
     doi = args.doi
-    if not doi.startswith('10.1101/'):
-        doi = f"10.1101/{doi}"
     
-    markdown_content, markdown_path = converter.convert_doi_to_markdown(doi)
+    markdown_content, markdown_path, has_images = converter.convert_doi_to_markdown(doi)
     
     if markdown_content:
         print(f"Successfully converted {doi} to Markdown.")
         print(f"Markdown file saved to: {markdown_path}")
-        print(f"Images saved to: {os.path.join(args.output_dir, args.image_dir)}")
+        
+        if has_images:
+            # Only mention the images directory if images were actually downloaded
+            article_name = converter._sanitize_filename(converter.fetcher._clean_doi(doi).replace('10.1101/', ''))
+            image_dir_path = os.path.join(args.output_dir, args.image_dir, article_name)
+            print(f"Images saved to: {image_dir_path}")
+        else:
+            print("No images were found in the document.")
     else:
         print(f"Failed to convert {doi} to Markdown.")
         sys.exit(1)

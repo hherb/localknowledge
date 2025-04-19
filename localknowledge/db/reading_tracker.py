@@ -147,7 +147,25 @@ class ReadingTrackerManager(DatabaseManager):
                     (source_type, content_id, user_id, datetime.now(), rating, notes),
                     commit=True
                 )
-                record_id = result[0]['id']
+                
+                if result and len(result) > 0:
+                    record_id = result[0]['id']
+                else:
+                    # Fallback: Get the ID of the record we just inserted
+                    fallback_query = """
+                    SELECT id FROM reading_records 
+                    WHERE source_type = %s AND content_id = %s AND 
+                    (user_id = %s OR (user_id IS NULL AND %s IS NULL))
+                    ORDER BY read_timestamp DESC LIMIT 1
+                    """
+                    fallback_result = self.execute(fallback_query, (source_type, content_id, user_id, user_id))
+                    if fallback_result and len(fallback_result) > 0:
+                        record_id = fallback_result[0]['id']
+                    else:
+                        # If all else fails, just return a placeholder ID
+                        # The tags won't be associated but at least the read status will be recorded
+                        logger.error(f"Failed to get ID for newly inserted reading record")
+                        return 0
             
             # Update tags if provided
             if tags:

@@ -19,7 +19,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from localknowledge.db.medrxiv import MedRxivDatabaseManager
-from medrxiv_import_new import fetch_medrxiv_metadata, process_papers, split_date_range_into_weeks
+from localknowledge.medrxiv.medrxiv_import_new import fetch_medrxiv_metadata, process_papers, split_date_range_into_weeks
 
 def get_paper_counts_by_date(db_manager):
     """
