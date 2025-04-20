@@ -7,23 +7,7 @@ It also tracks which files have been processed to avoid redundant processing whe
 """
 import os
 import gzip
-import xml.e        # Try processing the file, but only if not already known to be corrupt
-        try:
-            main_pbar.set_postfix(status="Processing articles")
-            processed, stored = process_xml_file(xml_path, db_manager)
-            
-            total_processed += processed
-            total_stored += stored
-            
-            # Update progress bar to include article counts
-            main_pbar.set_postfix(articles=f"{stored}/{processed}", 
-                                 total=f"{total_stored}/{total_processed}")
-        except Exception as e:
-            logger.error(f"Error processing file {xml_file}: {e}")
-            tqdm.write(f"✗ Error processing file {xml_file}: {e}")
-            processed, stored = 0, 0
-            # Update progress bar to show error
-            main_pbar.set_postfix(status="Processing failed")ee as ET
+import xml.etree.ElementTree as ET
 import shutil
 import logging
 from typing import Dict, Any, List, Optional, Tuple
