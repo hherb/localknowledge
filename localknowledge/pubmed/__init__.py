@@ -5,7 +5,9 @@ from typing import List, Dict, Any, Optional, Tuple
 from datetime import datetime
 
 from localknowledge.base import LocalKnowledgeBase
-from localknowledge.pubmed.import_downloads import import_downloads
+
+# Remove circular import to avoid warning when module is run directly
+# from localknowledge.pubmed.import_downloads import import_downloads
 
 
 class PubMedClient(LocalKnowledgeBase):

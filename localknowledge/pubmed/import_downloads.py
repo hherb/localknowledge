@@ -19,6 +19,7 @@ import sys
 
 from localknowledge.db.pubmed import PubMedDatabaseManager
 from localknowledge.pubmed.download_tracker import PubMedDownloadTracker
+from localknowledge.pubmed.file_verification import verify_and_handle_corrupt_file, check_xml_integrity
 
 # Set up logging - Configure file handler for all logs, and stream handler only for errors
 # Create logger
@@ -36,9 +37,9 @@ file_format = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
 file_handler.setFormatter(file_format)
 logger.addHandler(file_handler)
 
-# Create console handler that only logs ERROR and higher
+# Create console handler that logs INFO and higher (for better visibility)
 console_handler = logging.StreamHandler()
-console_handler.setLevel(logging.ERROR)  # Only show ERROR and CRITICAL in console
+console_handler.setLevel(logging.INFO)  # Show INFO, WARNING, ERROR and CRITICAL in console
 console_format = logging.Formatter('%(levelname)s: %(message)s')
 console_handler.setFormatter(console_format)
 logger.addHandler(console_handler)
@@ -182,21 +183,41 @@ def process_xml_file(xml_file_path: str, db_manager: PubMedDatabaseManager, batc
         Tuple of (processed_count, successful_count)
     """
     try:
-        logger.info(f"Processing {os.path.basename(xml_file_path)}...")
+        file_name = os.path.basename(xml_file_path)
+        logger.info(f"Processing {file_name}...")
         processed_count = 0
         successful_count = 0
         
+        # First count the number of articles for the progress bar
+        article_count = 0
+        with gzip.open(xml_file_path, 'rb') as count_f:
+            for _, line in enumerate(count_f):
+                if b'<PubmedArticle>' in line:
+                    article_count += 1
+        
+        # Now process with a progress bar
         with gzip.open(xml_file_path, 'rb') as f:
             # Use iterparse to avoid loading entire file into memory
             context = ET.iterparse(f, events=('end',))
             
             batch = []
             
+            # Create article processing progress bar
+            article_pbar = tqdm(
+                total=article_count,
+                desc=f"Articles in {file_name}",
+                unit="article", 
+                position=1,  # Position below the main progress bar
+                leave=False  # Don't leave this bar when done
+            )
+            
             for event, elem in context:
                 if elem.tag == 'PubmedArticle':
                     processed_count += 1
                     
                     article_data = process_article(elem)
+                    # Update the progress bar
+                    article_pbar.update(1)
                     if article_data:
                         batch.append(article_data)
                         successful_count += 1
@@ -311,24 +332,54 @@ def import_downloads(download_dir: str = None,
     
     logger.info(f"Found {len(xml_files)} files to process")
     
+
     # Create database manager
-    db_manager = PubMedDatabaseManager()
-    
+    try:
+        db_manager = PubMedDatabaseManager()
+        logger.info(f"Database Manager instantiated successfully")
+    except Exception as e:
+        logger.error(f"ERROR creating database manager: {e}")
+        raise
+        
     total_processed = 0
     total_stored = 0
     
     # Process files with a progress bar
-    # Main progress bar for files
     main_pbar = tqdm(total=len(xml_files), desc="Importing PubMed files", 
                     unit="file", position=0, leave=True, 
                     bar_format="{desc}: {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]")
-    
+    logger.info("Starting file processing...")
     for i, xml_file in enumerate(xml_files):
         xml_path = os.path.join(download_dir, xml_file)
         
         # Update progress bar description to show current file
         main_pbar.set_description(f"Processing {xml_file}")
         
+        # Verify file integrity before processing
+        try:
+            # First, check if the file can be opened without decompression errors
+            if not check_xml_integrity(xml_path):
+                logger.warning(f"File {xml_file} appears to be corrupt (decompression error)")
+                
+                # Verify MD5 and handle corrupt file - this will delete and re-download if needed
+                is_repaired = verify_and_handle_corrupt_file(
+                    xml_path, 
+                    updates_dir=os.path.dirname(xml_path) if file_type == 'update' else None,
+                    baseline_dir=os.path.dirname(xml_path) if file_type == 'baseline' else None,
+                    tracker=tracker
+                )
+                
+                if is_repaired:
+                    logger.info(f"Successfully repaired corrupt file {xml_file}")
+                    # Update the path in case the file was moved during repair
+                    xml_path = os.path.join(download_dir, xml_file)
+                else:
+                    logger.error(f"Failed to repair corrupt file {xml_file}, skipping")
+                    main_pbar.update(1)
+                    continue
+        except Exception as e:
+            logger.error(f"Error during file verification: {e}")
+            
         # Process file
         processed, stored = process_xml_file(xml_path, db_manager)
         
@@ -343,15 +394,26 @@ def import_downloads(download_dir: str = None,
         if using_db_tracker and processed > 0:
             tracker.mark_as_processed(xml_file)
         
-        # Move file to imported directory if successful
+        # Move file and corresponding MD5 to imported directory if successful
         if processed > 0:
             try:
+                # Move the XML file
                 dest_path = os.path.join(imported_dir, xml_file)
                 shutil.move(xml_path, dest_path)
-                # Use tqdm.write for logging to avoid disrupting progress bar
-                tqdm.write(f"✓ Moved {xml_file} to {imported_dir}")
+                
+                # Move the corresponding MD5 file if it exists
+                md5_path = xml_path + '.md5'
+                md5_file = xml_file + '.md5'
+                md5_dest_path = os.path.join(imported_dir, md5_file)
+                
+                if os.path.exists(md5_path):
+                    shutil.move(md5_path, md5_dest_path)
+                    # Use tqdm.write for logging to avoid disrupting progress bar
+                    tqdm.write(f"✓ Moved {xml_file} and {md5_file} to {imported_dir}")
+                else:
+                    tqdm.write(f"✓ Moved {xml_file} to {imported_dir} (no MD5 file found)")
             except Exception as e:
-                tqdm.write(f"✗ Error moving {xml_file} to {imported_dir}: {e}")
+                tqdm.write(f"✗ Error moving files to {imported_dir}: {e}")
         
         # Update the main progress bar
         main_pbar.update(1)

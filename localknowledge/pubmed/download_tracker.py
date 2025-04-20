@@ -125,6 +125,28 @@ class PubMedDownloadTracker(DatabaseManager):
             logger.error(f"Error marking file as processed: {e}")
             self.connection.rollback()
     
+    def is_file_processed(self, file_name: str) -> bool:
+        """
+        Check if a file has been processed already.
+        
+        Args:
+            file_name: Name of the file to check
+            
+        Returns:
+            Boolean indicating if the file has been processed
+        """
+        try:
+            with self.connection.cursor() as cursor:
+                cursor.execute(
+                    "SELECT processed FROM pubmed_download_log WHERE file_name = %s",
+                    (file_name,)
+                )
+                result = cursor.fetchone()
+                return result is not None and result[0] is True
+        except Exception as e:
+            logger.error(f"Error checking processing status: {e}")
+            return False
+
     def get_unprocessed_files(self, file_type: Optional[str] = None) -> List[str]:
         """
         Get list of downloaded but unprocessed files.

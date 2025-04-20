@@ -47,9 +47,9 @@ logger = logging.getLogger()
 
 # Constants for FTP connection
 FTP_HOST = 'ftp.ncbi.nlm.nih.gov'
-FTP_TIMEOUT = 180  # Increase timeout to 3 minutes
+FTP_TIMEOUT = 300  # Increase timeout to 5 minutes for large files
 MAX_RETRIES = 5
-RETRY_DELAY = 10  # seconds
+RETRY_DELAY = 15  # seconds
 
 def create_ftp_connection():
     """Create and return a new FTP connection with appropriate timeout settings"""
@@ -57,13 +57,27 @@ def create_ftp_connection():
     ftp = FTP(timeout=FTP_TIMEOUT)
     ftp.connect(FTP_HOST)
     ftp.login()
-    ftp.cwd('/pubmed/baseline')
+    # Don't set directory here - will be set by the calling function
+    
     # Set a keepalive option if possible
     if hasattr(ftp.sock, 'setsockopt') and hasattr(socket, 'SO_KEEPALIVE'):
         ftp.sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+    
+    # Increase buffer size if possible
+    if hasattr(ftp, 'sock') and hasattr(socket, 'SO_RCVBUF'):
+        ftp.sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 8388608)  # 8MB buffer
+        
     return ftp
 
-import backoff
+# Use backoff for implementing retry with exponential backoff
+try:
+    import backoff
+except ImportError:
+    logger.info("Installing required backoff package...")
+    import subprocess
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "backoff"])
+    import backoff
+    logger.info("Backoff package installed successfully")
 
 @backoff.on_exception(
     backoff.expo, 
@@ -80,7 +94,7 @@ def ftp_download(ftp, xml_file, callback, rest_pos=0):
         try:
             return ftp.retrbinary(f'RETR {xml_file}', callback, rest=rest_pos)
         except Exception as e:
-            # If we get an invalid REST error, restart from beginning
+            # If we get an invalid REST argument, restart from beginning
             if "invalid REST argument" in str(e):
                 logger.warning(f"Invalid resume position for {xml_file}, restarting download from beginning")
                 return ftp.retrbinary(f'RETR {xml_file}', callback)
@@ -104,17 +118,20 @@ def ftp_download_with_retry(ftp, xml_file, callback, rest_pos=0, max_retries=3):
                 ftp.quit()
             except:
                 pass
+            
+            # Create a new connection and set the correct directory
             ftp = create_ftp_connection()
             
-            # If we're downloading baseline files
-            if xml_file.endswith('.xml.gz') and '/baseline/' not in xml_file:
-                ftp.cwd('/pubmed/baseline')
-            # If we're downloading update files
-            elif xml_file.endswith('.xml.gz') and '/updatefiles/' not in xml_file:
+            # Set the correct directory based on the file being downloaded
+            if '/updatefiles/' in xml_file or xml_file.startswith('pubmed') or xml_file.endswith('xml.gz.md5'):
+                # For update files
                 ftp.cwd('/pubmed/updatefiles')
+            else:
+                # For baseline files
+                ftp.cwd('/pubmed/baseline')
                 
             # Sleep briefly before retry
-            time.sleep(2)
+            time.sleep(RETRY_DELAY)
             
 def verify_md5(file_path):
     """
@@ -133,6 +150,7 @@ def verify_md5(file_path):
     
     # Check if the MD5 file exists
     if not os.path.exists(md5_file_path):
+        logger.warning(f"MD5 file not found: {md5_file_path}")
         return False, None, "MD5 file not found"
     
     try:
@@ -153,12 +171,16 @@ def verify_md5(file_path):
         # Compare the hashes
         is_valid = calculated_hash.lower() == expected_hash.lower()
         
-        if not is_valid:
+        if is_valid:
+            logger.info(f"MD5 checksum verification passed for {file_path}")
+        else:
+            logger.warning(f"MD5 checksum mismatch for {file_path}: expected {expected_hash}, got {calculated_hash}")
             return False, calculated_hash, f"Checksum mismatch: expected {expected_hash}, got {calculated_hash}"
             
         return True, calculated_hash, None
     
     except Exception as e:
+        logger.error(f"Error verifying MD5 for {file_path}: {e}")
         return False, None, f"Error verifying MD5: {e}"
 
 def download_pubmed_baseline(baseline_dir='~/knowledgebase/pubmed_data/baseline', tracker=None):
@@ -193,16 +215,6 @@ def download_pubmed_baseline(baseline_dir='~/knowledgebase/pubmed_data/baseline'
             logger.warning(f"Error reading checkpoint file: {e}")
     
     logger.info(f"Starting PubMed baseline download to {baseline_dir}")
-    
-    # Check if backoff package is available, install if needed
-    try:
-        import backoff
-    except ImportError:
-        logger.info("Installing required backoff package...")
-        import subprocess
-        subprocess.check_call([sys.executable, "-m", "pip", "install", "backoff"])
-        import backoff
-        logger.info("Backoff package installed successfully")
 
     ftp = None
     retry_count = 0
@@ -210,7 +222,9 @@ def download_pubmed_baseline(baseline_dir='~/knowledgebase/pubmed_data/baseline'
     while retry_count < MAX_RETRIES:
         try:
             if ftp is None:
+                # Create new FTP connection
                 ftp = create_ftp_connection()
+                ftp.cwd('/pubmed/baseline')
                 
             files = ftp.nlst()
             xml_files = [f for f in files if f.endswith('.xml.gz')]
@@ -248,6 +262,31 @@ def download_pubmed_baseline(baseline_dir='~/knowledgebase/pubmed_data/baseline'
                             if local_size == remote_size:
                                 logger.info(f"Skipped existing complete baseline file {xml_file} ({i}/{total_files})")
                                 should_download = False
+                                
+                                # Verify MD5 checksum for existing files periodically
+                                if i % 10 == 0:  # Check every 10th file
+                                    # Download MD5 file if needed
+                                    md5_file = xml_file + '.md5'
+                                    local_md5_file = local_file + '.md5'
+                                    if not os.path.exists(local_md5_file):
+                                        try:
+                                            # Create a new connection just for MD5 download to avoid timeout issues
+                                            md5_ftp = create_ftp_connection()
+                                            md5_ftp.cwd('/pubmed/baseline')
+                                            
+                                            with open(local_md5_file, 'wb') as md5_fp:
+                                                md5_ftp.retrbinary(f'RETR {md5_file}', md5_fp.write)
+                                            md5_ftp.quit()
+                                            logger.info(f"Downloaded MD5 file for {xml_file}")
+                                        except Exception as md5_error:
+                                            logger.warning(f"Error downloading MD5 file: {md5_error}")
+                                    
+                                    # Verify if MD5 file exists
+                                    if os.path.exists(local_md5_file):
+                                        is_valid, checksum, error = verify_md5(local_file)
+                                        if not is_valid:
+                                            logger.warning(f"MD5 verification failed for {xml_file}: {error}")
+                                            should_download = True  # Re-download if checksum fails
                             else:
                                 logger.info(f"Found incomplete baseline file {xml_file}, resuming download")
                                 # Will resume download below
@@ -276,14 +315,19 @@ def download_pubmed_baseline(baseline_dir='~/knowledgebase/pubmed_data/baseline'
                     except:
                         pass
                     ftp = create_ftp_connection()
+                    ftp.cwd('/pubmed/baseline')
                     # Continue with download attempt
                 
                 if should_download:
                     file_downloaded = False
                     download_retries = 0
                     time.sleep(2)  # Sleep for a second before starting the download
+                    
                     while not file_downloaded and download_retries < MAX_RETRIES:
-                        time.sleep(2)  # Sleep for a second before starting the download
+                        # Add a slight delay between attempts
+                        if download_retries > 0:
+                            time.sleep(RETRY_DELAY)
+                            
                         try:
                             # Try to resume download if file exists
                             rest_pos = os.path.getsize(local_file) if os.path.exists(local_file) else 0
@@ -300,6 +344,7 @@ def download_pubmed_baseline(baseline_dir='~/knowledgebase/pubmed_data/baseline'
                                 except:
                                     pass
                                 ftp = create_ftp_connection()
+                                ftp.cwd('/pubmed/baseline')
                                 ftp.voidcmd('TYPE I')
                                 file_size = ftp.size(xml_file)
                             
@@ -313,12 +358,17 @@ def download_pubmed_baseline(baseline_dir='~/knowledgebase/pubmed_data/baseline'
                                 ncols=100
                             )
                             
-                            # Define callback to update progress bar
-                            def callback(data):
-                                pbar.update(len(data))
-                                fp.write(data)
+                            # Use a function factory to create the callback
+                            # This avoids closure issues with the file pointer
+                            def make_callback(fp, progress_bar):
+                                def callback(data):
+                                    progress_bar.update(len(data))
+                                    fp.write(data)
+                                return callback
                             
                             with open(local_file, 'ab' if rest_pos > 0 else 'wb') as fp:
+                                # Create a proper callback
+                                callback = make_callback(fp, pbar)
                                 # Use our retry-capable download function
                                 ftp_download_with_retry(ftp, xml_file, callback, rest_pos)
                             
@@ -334,21 +384,49 @@ def download_pubmed_baseline(baseline_dir='~/knowledgebase/pubmed_data/baseline'
                             # Download MD5 file for checksum verification
                             md5_download_successful = False
                             md5_retries = 0
+                            
+                            # Use a separate FTP connection for MD5 download to avoid issues
+                            md5_ftp = None
+                            
                             while not md5_download_successful and md5_retries < 3:
                                 try:
-                                    # Define callback for MD5 download
-                                    with open(local_md5_file, 'wb') as md5_fp:
-                                        def md5_callback(data):
-                                            md5_fp.write(data)
+                                    if md5_ftp is None:
+                                        md5_ftp = create_ftp_connection()
+                                        md5_ftp.cwd('/pubmed/baseline')
                                         
-                                        ftp_download_with_retry(ftp, md5_file, md5_callback)
+                                    # Define callback for MD5 download using a factory function
+                                    with open(local_md5_file, 'wb') as md5_fp:
+                                        def make_md5_callback(fp):
+                                            def callback(data):
+                                                fp.write(data)
+                                            return callback
+                                        
+                                        md5_callback = make_md5_callback(md5_fp)
+                                        md5_ftp.retrbinary(f'RETR {md5_file}', md5_callback)
                                         
                                     logger.info(f"Downloaded MD5 file for {xml_file}")
                                     md5_download_successful = True
                                 except Exception as md5_error:
                                     md5_retries += 1
                                     logger.warning(f"Error downloading MD5 file for {xml_file} (attempt {md5_retries}/3): {md5_error}")
-                                    time.sleep(1)  # Short delay before retry
+                                    
+                                    # Try to reconnect
+                                    try:
+                                        if md5_ftp:
+                                            md5_ftp.quit()
+                                    except:
+                                        pass
+                                    md5_ftp = create_ftp_connection()
+                                    md5_ftp.cwd('/pubmed/baseline')
+                                    
+                                    time.sleep(2)  # Short delay before retry
+                            
+                            # Close MD5 FTP connection
+                            try:
+                                if md5_ftp:
+                                    md5_ftp.quit()
+                            except:
+                                pass
                             
                             # Verify MD5 checksum
                             checksum = None
@@ -358,6 +436,13 @@ def download_pubmed_baseline(baseline_dir='~/knowledgebase/pubmed_data/baseline'
                                     logger.info(f"✓ MD5 verification passed for {xml_file}")
                                 else:
                                     logger.warning(f"✗ MD5 verification failed for {xml_file}: {error}")
+                                    
+                                    # If MD5 verification fails, consider re-downloading the file
+                                    # But only if we haven't already retried too many times
+                                    if download_retries < MAX_RETRIES - 1:
+                                        logger.warning(f"Will retry downloading {xml_file} due to MD5 mismatch")
+                                        download_retries += 1
+                                        continue
                             
                             file_downloaded = True
                             
@@ -406,6 +491,7 @@ def download_pubmed_baseline(baseline_dir='~/knowledgebase/pubmed_data/baseline'
                             except:
                                 pass
                             ftp = create_ftp_connection()
+                            ftp.cwd('/pubmed/baseline')
                             
                             if download_retries >= MAX_RETRIES:
                                 logger.error(f"Failed to download {xml_file} after {MAX_RETRIES} attempts, moving to next file")
@@ -433,7 +519,6 @@ def download_pubmed_baseline(baseline_dir='~/knowledgebase/pubmed_data/baseline'
             ftp = None
             
     logger.error(f"Failed to complete PubMed baseline download after {MAX_RETRIES} attempts")
-
 
 
 def download_pubmed_updates(updates_dir=None, tracker=None):
@@ -480,14 +565,8 @@ def download_pubmed_updates(updates_dir=None, tracker=None):
         try:
             if ftp is None:
                 # Create a new FTP connection with appropriate timeout
-                from ftplib import FTP
-                ftp = FTP(timeout=FTP_TIMEOUT)
-                ftp.connect(FTP_HOST)
-                ftp.login()
+                ftp = create_ftp_connection()
                 ftp.cwd('/pubmed/updatefiles')
-                # Set a keepalive option if possible
-                if hasattr(ftp.sock, 'setsockopt') and hasattr(socket, 'SO_KEEPALIVE'):
-                    ftp.sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
                 
             files = ftp.nlst()
             xml_files = [f for f in files if f.endswith('.xml.gz')]
@@ -513,12 +592,8 @@ def download_pubmed_updates(updates_dir=None, tracker=None):
                 # Check if file exists and has correct size
                 should_download = True
                 try:
-                    # Check if the file has been processed in the database - skip if it has
-                    if using_db_tracker and tracker.is_file_processed(xml_file):
-                        logger.info(f"File {xml_file} already processed, skipping ({i}/{total_files})")
-                        should_download = False
                     # First check if the file has been downloaded before and tracked in the database
-                    elif using_db_tracker and tracker.is_file_downloaded(xml_file):
+                    if using_db_tracker and tracker.is_file_downloaded(xml_file):
                         logger.info(f"File {xml_file} already tracked in database as downloaded ({i}/{total_files})")
                         # Always verify it exists and has the correct size
                         if os.path.exists(local_file):
@@ -529,6 +604,31 @@ def download_pubmed_updates(updates_dir=None, tracker=None):
                             if local_size == remote_size:
                                 logger.info(f"Skipped existing complete update file {xml_file} ({i}/{total_files})")
                                 should_download = False
+                                
+                                # Verify MD5 checksum for existing files periodically
+                                if i % 10 == 0:  # Check every 10th file
+                                    # Download MD5 file if needed
+                                    md5_file = xml_file + '.md5'
+                                    local_md5_file = local_file + '.md5'
+                                    if not os.path.exists(local_md5_file):
+                                        try:
+                                            # Create a new connection just for MD5 download to avoid timeout issues
+                                            md5_ftp = create_ftp_connection()
+                                            md5_ftp.cwd('/pubmed/updatefiles')
+                                            
+                                            with open(local_md5_file, 'wb') as md5_fp:
+                                                md5_ftp.retrbinary(f'RETR {md5_file}', md5_fp.write)
+                                            md5_ftp.quit()
+                                            logger.info(f"Downloaded MD5 file for {xml_file}")
+                                        except Exception as md5_error:
+                                            logger.warning(f"Error downloading MD5 file: {md5_error}")
+                                    
+                                    # Verify if MD5 file exists
+                                    if os.path.exists(local_md5_file):
+                                        is_valid, checksum, error = verify_md5(local_file)
+                                        if not is_valid:
+                                            logger.warning(f"MD5 verification failed for {xml_file}: {error}")
+                                            should_download = True  # Re-download if checksum fails
                             else:
                                 logger.info(f"Found incomplete update file {xml_file}, resuming download")
                                 # Will resume download below
@@ -557,38 +657,21 @@ def download_pubmed_updates(updates_dir=None, tracker=None):
                     except:
                         pass
                     ftp = create_ftp_connection()
-                    ftp.cwd('/pubmed/updatefiles')  # Change to updates directory
+                    ftp.cwd('/pubmed/updatefiles')
                     # Continue with download attempt
                 
                 if should_download:
                     file_downloaded = False
                     download_retries = 0
-                    time.sleep(2)  # Sleep for a second before starting the download
+                    
                     while not file_downloaded and download_retries < MAX_RETRIES:
-                        time.sleep(2)  # Sleep for a second before starting the download
+                        # Add a slight delay between attempts
+                        if download_retries > 0:
+                            time.sleep(RETRY_DELAY)
+                            
                         try:
-                            # Check if the file exists but is potentially corrupt (much larger than expected)
-                            if os.path.exists(local_file):
-                                try:
-                                    # Get remote file size for comparison
-                                    ftp.voidcmd('TYPE I')  # Switch to binary mode
-                                    remote_size = ftp.size(xml_file)
-                                    local_size = os.path.getsize(local_file)
-                                    
-                                    # If local file is significantly larger than remote (corrupt), delete it
-                                    if local_size > remote_size * 1.1:  # 10% buffer for any metadata differences
-                                        logger.warning(f"File {local_file} appears corrupt (local: {local_size} bytes, remote: {remote_size} bytes) - removing and downloading fresh")
-                                        os.remove(local_file)
-                                        rest_pos = 0
-                                    else:
-                                        rest_pos = local_size if local_size < remote_size else 0
-                                except Exception as e:
-                                    logger.warning(f"Error checking file size for {xml_file}: {e} - restarting download")
-                                    if os.path.exists(local_file):
-                                        os.remove(local_file)
-                                    rest_pos = 0
-                            else:
-                                rest_pos = 0
+                            # Try to resume download if file exists
+                            rest_pos = os.path.getsize(local_file) if os.path.exists(local_file) else 0
                             
                             # Ensure FTP connection is active
                             try:
@@ -602,7 +685,7 @@ def download_pubmed_updates(updates_dir=None, tracker=None):
                                 except:
                                     pass
                                 ftp = create_ftp_connection()
-                                ftp.cwd('/pubmed/updatefiles')  # Change to updates directory
+                                ftp.cwd('/pubmed/updatefiles')
                                 ftp.voidcmd('TYPE I')
                                 file_size = ftp.size(xml_file)
                             
@@ -616,12 +699,16 @@ def download_pubmed_updates(updates_dir=None, tracker=None):
                                 ncols=100
                             )
                             
-                            # Define callback to update progress bar
-                            def callback(data):
-                                pbar.update(len(data))
-                                fp.write(data)
+                            # Use a function factory to create the callback
+                            def make_callback(fp, progress_bar):
+                                def callback(data):
+                                    progress_bar.update(len(data))
+                                    fp.write(data)
+                                return callback
                             
                             with open(local_file, 'ab' if rest_pos > 0 else 'wb') as fp:
+                                # Create a proper callback
+                                callback = make_callback(fp, pbar)
                                 # Use our retry-capable download function
                                 ftp_download_with_retry(ftp, xml_file, callback, rest_pos)
                             
@@ -637,21 +724,49 @@ def download_pubmed_updates(updates_dir=None, tracker=None):
                             # Download MD5 file for checksum verification
                             md5_download_successful = False
                             md5_retries = 0
+                            
+                            # Use a separate FTP connection for MD5 download to avoid issues
+                            md5_ftp = None
+                            
                             while not md5_download_successful and md5_retries < 3:
                                 try:
-                                    # Define callback for MD5 download
-                                    with open(local_md5_file, 'wb') as md5_fp:
-                                        def md5_callback(data):
-                                            md5_fp.write(data)
+                                    if md5_ftp is None:
+                                        md5_ftp = create_ftp_connection()
+                                        md5_ftp.cwd('/pubmed/updatefiles')
                                         
-                                        ftp_download_with_retry(ftp, md5_file, md5_callback)
+                                    # Define callback for MD5 download using a factory function
+                                    with open(local_md5_file, 'wb') as md5_fp:
+                                        def make_md5_callback(fp):
+                                            def callback(data):
+                                                fp.write(data)
+                                            return callback
+                                        
+                                        md5_callback = make_md5_callback(md5_fp)
+                                        md5_ftp.retrbinary(f'RETR {md5_file}', md5_callback)
                                         
                                     logger.info(f"Downloaded MD5 file for {xml_file}")
                                     md5_download_successful = True
                                 except Exception as md5_error:
                                     md5_retries += 1
                                     logger.warning(f"Error downloading MD5 file for {xml_file} (attempt {md5_retries}/3): {md5_error}")
-                                    time.sleep(1)  # Short delay before retry
+                                    
+                                    # Try to reconnect
+                                    try:
+                                        if md5_ftp:
+                                            md5_ftp.quit()
+                                    except:
+                                        pass
+                                    md5_ftp = create_ftp_connection()
+                                    md5_ftp.cwd('/pubmed/updatefiles')
+                                    
+                                    time.sleep(2)  # Short delay before retry
+                            
+                            # Close MD5 FTP connection
+                            try:
+                                if md5_ftp:
+                                    md5_ftp.quit()
+                            except:
+                                pass
                             
                             # Verify MD5 checksum
                             checksum = None
@@ -661,6 +776,13 @@ def download_pubmed_updates(updates_dir=None, tracker=None):
                                     logger.info(f"✓ MD5 verification passed for {xml_file}")
                                 else:
                                     logger.warning(f"✗ MD5 verification failed for {xml_file}: {error}")
+                                    
+                                    # If MD5 verification fails, consider re-downloading the file
+                                    # But only if we haven't already retried too many times
+                                    if download_retries < MAX_RETRIES - 1:
+                                        logger.warning(f"Will retry downloading {xml_file} due to MD5 mismatch")
+                                        download_retries += 1
+                                        continue
                             
                             file_downloaded = True
                             
@@ -709,7 +831,7 @@ def download_pubmed_updates(updates_dir=None, tracker=None):
                             except:
                                 pass
                             ftp = create_ftp_connection()
-                            ftp.cwd('/pubmed/updatefiles')  # Change to updates directory
+                            ftp.cwd('/pubmed/updatefiles')
                             
                             if download_retries >= MAX_RETRIES:
                                 logger.error(f"Failed to download update {xml_file} after {MAX_RETRIES} attempts, moving to next file")
@@ -745,7 +867,6 @@ if __name__ == "__main__":
     import sys  # For pip install
     import argparse
     
-    print ("Downloading PubMed data... V3")
     # Set up command line arguments
     parser = argparse.ArgumentParser(description='Download PubMed data')
     parser.add_argument('--from_scratch', action='store_true', 

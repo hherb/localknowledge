@@ -14,10 +14,12 @@ from localknowledge.db.base import DatabaseManager
 class MedRxivDatabaseManager(DatabaseManager):
     """Database manager for medRxiv preprints."""
     
-    def __init__(self):
+    def __init__(self, create_indices: bool = False):
         """Initialize the medRxiv database manager."""
         super().__init__()
         self.create_tables()
+        if create_indices:
+            self.create_indices()
     
     def create_tables(self) -> None:
         """Create medRxiv tables if they don't exist."""
@@ -49,6 +51,8 @@ class MedRxivDatabaseManager(DatabaseManager):
         )
         """, commit=True)
         
+    def create_indices(self) -> None:
+        """Create indices for the preprints and summaries tables."""
         # Create indexes for searching
         self.execute("CREATE INDEX IF NOT EXISTS idx_title_rx ON preprints(title)", commit=True)
         # Drop the old B-tree index if it exists
@@ -61,8 +65,9 @@ class MedRxivDatabaseManager(DatabaseManager):
         self.execute("CREATE INDEX IF NOT EXISTS idx_category ON preprints(category)", commit=True)
         # Create index for summaries
         self.execute("CREATE INDEX IF NOT EXISTS idx_summaries_publication_id ON summaries(publication_id)", commit=True)
-    
+
     def store_preprint(self, preprint: Dict[str, Any]) -> None:
+
         """
         Store a preprint in the database.
         

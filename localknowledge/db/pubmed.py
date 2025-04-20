@@ -11,14 +11,18 @@ logger = logging.getLogger()
 class PubMedDatabaseManager(DatabaseManager):
     """Database manager for PubMed articles."""
     
-    def __init__(self):
+    def __init__(self, create_indices: bool=False):
         """Initialize the PubMed database manager."""
         super().__init__()
+        logger.info("Initializing PubMed database manager")
         self.create_tables()
+        if create_indices:
+            self.create_indices()
     
     def create_tables(self) -> None:
         """Create PubMed tables if they don't exist."""
         # Create articles table
+        logger.info("Creating PubMed database tables")
         self.execute("""
         CREATE TABLE IF NOT EXISTS pubmed_articles (
             pmid TEXT PRIMARY KEY,
@@ -37,14 +41,20 @@ class PubMedDatabaseManager(DatabaseManager):
             imported_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
         """, commit=True)
+        logger.info("PubMed articles table created or verified")
         
-        # Drop existing indices to ensure they're recreated with the latest definition
+        
+
+    def create_indices(self) -> None:
+        logger.info("Dropping existing indices for PubMed articles")
+        self.execute("DROP INDEX IF EXISTS idx_pmid_pm", commit=True)
         self.execute("DROP INDEX IF EXISTS idx_title_pm", commit=True)
         self.execute("DROP INDEX IF EXISTS idx_abstract_fts_pm", commit=True) 
         self.execute("DROP INDEX IF EXISTS idx_authors_pm", commit=True)
         self.execute("DROP INDEX IF EXISTS idx_year_pm", commit=True)
         self.execute("DROP INDEX IF EXISTS idx_mesh_pm", commit=True)
         
+        logger.info("Creating indices (if not existing) for PubMed articles")
         # Create fulltext search indexes
         # Use substring for title to avoid PostgreSQL index size limitations
         self.execute("""
@@ -70,8 +80,7 @@ class PubMedDatabaseManager(DatabaseManager):
         self.execute("""
         CREATE INDEX IF NOT EXISTS idx_mesh_pm ON pubmed_articles(substring(mesh_terms, 1, 2000))
         """, commit=True)
-        
-        logger.info("PubMed database tables created or verified")
+
     
     def store_article(self, article: Dict[str, Any]) -> None:
         """
