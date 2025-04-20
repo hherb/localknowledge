@@ -30,7 +30,7 @@ from PySide6.QtWidgets import (
     QToolBar, QMenuBar, QStatusBar, QLabel, QPushButton,
     QVBoxLayout, QHBoxLayout, QScrollArea, QSplitter,
     QFrame, QTabWidget, QMenu, QToolButton, QSizePolicy,
-    QMessageBox, QFileDialog
+    QMessageBox, QFileDialog, QDialog
 )
 
 
@@ -373,6 +373,9 @@ class MainWindow(QMainWindow):
         # Set up settings
         self.settings = QSettings("RWB", "ResearchersWorkbench")
         
+        # Current logged-in user
+        self.current_user = None
+        
         # Set up plugin manager
         self.plugin_manager = PluginManager()
         self.plugin_manager.discover_plugins()
@@ -383,8 +386,37 @@ class MainWindow(QMainWindow):
         # Restore window state from settings
         self.restore_window_state()
         
-        # Auto-load discovered plugins
-        self.load_discovered_plugins()
+        # Show login dialog before loading plugins
+        self.handle_login()
+        
+    def handle_login(self):
+        """Show login dialog and handle authentication."""
+        from localknowledge.ui.login_dialog import LoginDialog
+        
+        dialog = LoginDialog(self)
+        
+        # Connect login signal
+        dialog.loginSuccessful.connect(self.on_login_successful)
+        
+        if dialog.exec() == QDialog.Accepted:
+            # Login successful, load plugins
+            self.current_user = dialog.get_current_user()
+            
+            # Update window title to show logged-in user
+            if self.current_user:
+                self.setWindowTitle(f"RWB - Researcher's Workbench - {self.current_user['firstname']} {self.current_user['surname']}")
+            
+            # Auto-load discovered plugins
+            self.load_discovered_plugins()
+        else:
+            # User canceled login, close application
+            QTimer.singleShot(0, self.close)
+    
+    @Slot(dict)
+    def on_login_successful(self, user_data):
+        """Handle successful login."""
+        self.current_user = user_data
+        self.statusBar().showMessage(f"Welcome, {user_data['firstname']} {user_data['surname']}")
     
     def setup_ui(self):
         """Set up the user interface."""

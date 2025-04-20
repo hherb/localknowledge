@@ -500,6 +500,48 @@ class MedRxivDatabaseManager(DatabaseManager):
             print(f"Error deleting summary: {e}")
             return False
         
+    def get_preprints_without_fulltext(self, limit: Optional[int] = None) -> List[Dict[str, Any]]:
+        """
+        Get preprints without fulltext content.
+        
+        Args:
+            limit: Maximum number of results to return
+            
+        Returns:
+            List of preprints without fulltext
+        """
+        query = """
+        SELECT doi, title 
+        FROM preprints 
+        WHERE full_text IS NULL OR full_text = '' 
+        ORDER BY date_posted DESC
+        """
+        
+        if limit:
+            query += f" LIMIT {limit}"
+            
+        return self.execute(query) or []
+    
+    def count_preprints_without_fulltext(self) -> int:
+        """
+        Count the number of preprints without fulltext.
+        
+        Returns:
+            Number of preprints without fulltext
+        """
+        query = "SELECT COUNT(*) FROM preprints WHERE full_text IS NULL OR full_text = ''"
+        results = self.execute(query)
+        
+        if results and len(results) > 0:
+            if isinstance(results[0], dict):
+                # If results are returned as dictionaries
+                count_key = next(iter(results[0]))  # Get the first key
+                return results[0][count_key]
+            else:
+                # If results are returned as tuples
+                return results[0][0]
+        return 0
+        
     def get_recent_preprints_without_fulltext(self, days_back: int = 7, limit: int = 100) -> List[Dict[str, Any]]:
         """
         Get recent preprints that don't have full text content.

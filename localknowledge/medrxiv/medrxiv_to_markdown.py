@@ -22,7 +22,7 @@ import logging
 import uuid
 
 # Import the MedRxivFetcher class
-from medrxiv_fetcher import MedRxivFetcher
+from localknowledge.medrxiv.medrxiv_fetcher import MedRxivFetcher
 
 # Configure logging
 logging.basicConfig(

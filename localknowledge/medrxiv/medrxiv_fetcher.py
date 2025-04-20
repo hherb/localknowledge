@@ -52,6 +52,55 @@ class MedRxivFetcher:
         if not os.path.exists(output_dir):
             os.makedirs(output_dir)
 
+    def _try_direct_xml_url(self, doi):
+        """
+        Try to construct a direct XML URL based on DOI patterns.
+        
+        Args:
+            doi (str): DOI of the preprint
+            
+        Returns:
+            str: Direct XML URL if successful, None otherwise
+        """
+        # Clean DOI to ensure proper format
+        doi = self._clean_doi(doi)
+        
+        try:
+            # Extract the document ID part
+            doc_id = doi.split('/')[-1]
+            
+            # Common URL patterns for XML files in medRxiv
+            url_patterns = [
+                # Standard pattern with year/month/day structure
+                lambda doc_id: f"{self.BASE_URL}/content/10.1101/{doc_id}.full.xml",
+                # Alternative pattern with 'early' prefix
+                lambda doc_id: f"{self.BASE_URL}/content/10.1101/{doc_id}.source.xml",
+                # Pattern with year/month/day folders if available in the ID
+                lambda doc_id: f"{self.BASE_URL}/content/medrxiv/early/{doc_id[:4]}/{doc_id[5:7]}/{doc_id[8:10]}/{doc_id}.source.xml" 
+                if len(doc_id) > 10 and doc_id.count('.') >= 2 else None
+            ]
+            
+            # Try each pattern
+            for pattern_func in url_patterns:
+                url = pattern_func(doc_id)
+                if url:
+                    # Test if URL is accessible
+                    try:
+                        head_response = self.session.head(url, timeout=5)
+                        if head_response.status_code == 200:
+                            logger.info(f"Found direct XML URL: {url}")
+                            return url
+                    except requests.RequestException:
+                        # Continue to next pattern if this one fails
+                        pass
+            
+            logger.warning(f"Could not find direct XML URL for DOI {doi}")
+            return None
+            
+        except Exception as e:
+            logger.error(f"Error constructing direct XML URL: {e}")
+            return None
+
     def _clean_doi(self, doi):
         """
         Clean and normalize DOI format.

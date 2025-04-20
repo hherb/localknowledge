@@ -14,18 +14,18 @@ class Publication(BaseModel):
     This class uses Pydantic for data validation and serialization.
     """
     id: int
-    doi : Optional[str] = None
-    pmid: Optional[str] = None
+    doi : Optional[str] = None  #not every publication has one
+    pmid: Optional[str] = None  #only applicable for pubmed records
     source: str   #one of ['medrxiv', 'pubmed', 'url', 'localfile', 'other']
     title: str
     abstract: Optional[str] = None
-    authors: List[str]
-    publication: str
-    publication_date: datetime
-    url: Optional[str] = None
-    pdf_url: Optional[str] = None
-    pdf_filename: Optional[str] = None
-    full_text: Optional[str] = None
+    authors: str #a list of authors formatted as a string
+    publication: str #the journal etc
+    publication_date: datetime  #date of publication, could be just the year
+    url: Optional[str] = None   #where the publication could be found
+    pdf_url: Optional[str] = None  #where the pdf could be found
+    pdf_filename: Optional[str] = None #filename of the pdf on our local system, if available
+    full_text: Optional[str] = None  #markdown, html, or clear text
 
     keywords: List[str] = Field(default_factory=list)
     

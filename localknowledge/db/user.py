@@ -59,6 +59,20 @@ class UserDatabaseManager(DatabaseManager):
             User ID if successful, None if failed
         """
         try:
+            # Check if user already exists
+            check_query = "SELECT id FROM users WHERE username = %s OR email = %s"
+            check_result = self.execute(check_query, (username, email))
+            
+            if check_result and len(check_result) > 0:
+                # Determine if it's the username or email that's duplicated
+                check_username = "SELECT id FROM users WHERE username = %s"
+                username_result = self.execute(check_username, (username,))
+                
+                if username_result and len(username_result) > 0:
+                    raise ValueError("Username already exists")
+                else:
+                    raise ValueError("Email address already exists")
+            
             # Hash the password
             hashed = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt())
             
@@ -72,8 +86,12 @@ class UserDatabaseManager(DatabaseManager):
             if result and len(result) > 0:
                 return result[0]['id']
             return None
+        except ValueError as e:
+            # Specific error for constraint violations
+            print(f"User creation error: {e}")
+            raise  # Re-raise to be handled by the UI
         except Exception as e:
-            print(f"Error creating user: {e}")
+            print(f"Unexpected error creating user: {e}")
             return None
     
     def authenticate_user(self, username: str, password: str) -> Optional[Dict[str, Any]]:
