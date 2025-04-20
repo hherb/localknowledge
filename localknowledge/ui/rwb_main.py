@@ -91,6 +91,121 @@ class PluginBase(QWidget):
         """
         return []
 
+    def find_splitters(self) -> Dict[str, QSplitter]:
+        """
+        Find all splitters in this plugin.
+
+        Returns:
+            Dict[str, QSplitter]: Dictionary of splitters with their object names as keys
+        """
+        splitters = {}
+
+        # Find all splitters in this plugin
+        for splitter in self.findChildren(QSplitter):
+            # Use object name as key, or generate one if not set
+            name = splitter.objectName()
+            if not name:
+                name = f"splitter_{id(splitter)}"
+                splitter.setObjectName(name)
+
+            splitters[name] = splitter
+
+        return splitters
+
+    def save_splitter_states(self) -> Dict[str, Any]:
+        """
+        Save the states of all splitters in this plugin.
+
+        Returns:
+            Dict[str, Any]: Dictionary containing splitter states
+        """
+        splitter_states = {}
+
+        # Find all splitters
+        splitters = self.find_splitters()
+
+        # Save state for each splitter
+        for name, splitter in splitters.items():
+            # Save as list of integers for better compatibility
+            sizes = splitter.sizes()
+            splitter_states[f"{name}_sizes"] = sizes
+
+            # Also save as individual values
+            for i, size in enumerate(sizes):
+                splitter_states[f"{name}_size_{i}"] = size
+
+            # Save orientation
+            orientation = splitter.orientation()
+            # Convert Qt.Orientation enum to int
+            orientation_value = 1 if orientation == Qt.Orientation.Horizontal else 2
+            splitter_states[f"{name}_orientation"] = orientation_value
+
+            print(f"Saving splitter {name} with sizes {sizes}")
+
+        return splitter_states
+
+    def restore_splitter_states(self, state: Dict[str, Any]) -> bool:
+        """
+        Restore the states of all splitters in this plugin.
+
+        Args:
+            state: Dictionary containing splitter states
+
+        Returns:
+            bool: True if states were restored successfully, False otherwise
+        """
+        # Find all splitters
+        splitters = self.find_splitters()
+
+        # Track success
+        success = True
+
+        # Restore state for each splitter
+        for name, splitter in splitters.items():
+            # Try to restore sizes
+            if f"{name}_sizes" in state:
+                try:
+                    sizes = state[f"{name}_sizes"]
+                    if isinstance(sizes, list):
+                        # Convert to integers if needed
+                        sizes = [int(size) for size in sizes]
+                        splitter.setSizes(sizes)
+                        print(f"Restored splitter {name} with sizes {sizes}")
+                    else:
+                        print(f"Invalid splitter sizes for {name}: {sizes}")
+                        success = False
+                except Exception as e:
+                    print(f"Error restoring splitter {name} sizes: {e}")
+                    success = False
+
+                    # Try individual sizes as fallback
+                    try:
+                        sizes = []
+                        i = 0
+                        while f"{name}_size_{i}" in state:
+                            sizes.append(int(state[f"{name}_size_{i}"]))
+                            i += 1
+
+                        if sizes:
+                            splitter.setSizes(sizes)
+                            print(f"Restored splitter {name} with individual sizes {sizes}")
+                    except Exception as e2:
+                        print(f"Error restoring individual sizes for {name}: {e2}")
+                        success = False
+
+            # Try to restore orientation
+            if f"{name}_orientation" in state:
+                try:
+                    orientation_value = int(state[f"{name}_orientation"])
+                    # Convert int to Qt.Orientation
+                    orientation = Qt.Orientation.Horizontal if orientation_value == 1 else Qt.Orientation.Vertical
+                    splitter.setOrientation(orientation)
+                except Exception as e:
+                    print(f"Error restoring splitter {name} orientation: {e}")
+                    success = False
+
+        return success
+
     def save_state(self) -> Dict[str, Any]:
         """
         Save the current state of the plugin.
@@ -98,7 +213,12 @@ class PluginBase(QWidget):
         Returns:
             Dict[str, Any]: Dictionary containing state data
         """
-        return {}
+        # Start with splitter states
+        state = self.save_splitter_states()
+
+        # Add any other plugin-specific state here
+
+        return state
 
     def restore_state(self, state: Dict[str, Any]) -> bool:
         """
@@ -110,7 +230,12 @@ class PluginBase(QWidget):
         Returns:
             bool: True if state was restored successfully, False otherwise
         """
-        return True
+        # Restore splitter states
+        success = self.restore_splitter_states(state)
+
+        # Add any other plugin-specific state restoration here
+
+        return success
 
     def close_plugin(self) -> bool:
         """
@@ -373,6 +498,9 @@ class MainWindow(QMainWindow):
         # Set up settings
         self.settings = QSettings("RWB", "ResearchersWorkbench")
 
+        # Print settings file location for debugging
+        print(f"Settings file location: {self.settings.fileName()}")
+
         # Current logged-in user
         self.current_user = None
 
@@ -383,8 +511,8 @@ class MainWindow(QMainWindow):
         # Set up UI
         self.setup_ui()
 
-        # Restore window state from settings
-        self.restore_window_state()
+        # Store window state restoration for after window is shown
+        self.window_state_restored = False
 
         # Show login dialog before loading plugins
         self.handle_login()
@@ -417,6 +545,17 @@ class MainWindow(QMainWindow):
         """Handle successful login."""
         self.current_user = user_data
         self.statusBar().showMessage(f"Welcome, {user_data['firstname']} {user_data['surname']}")
+
+        # Restore window state after login if not already done
+        if not self.window_state_restored:
+            # Use a timer to ensure the window is fully shown before restoring state
+            QTimer.singleShot(100, self.delayed_restore_window_state)
+
+    def delayed_restore_window_state(self):
+        """Restore window state after a short delay to ensure window is fully shown."""
+        print("Delayed window state restoration...")
+        self.restore_window_state()
+        self.window_state_restored = True
 
     def setup_ui(self):
         """Set up the user interface."""
@@ -562,12 +701,11 @@ class MainWindow(QMainWindow):
             # Switch to the new tab
             self.tab_widget.setCurrentIndex(self.tab_widget.count() - 1)
 
-            # Show configuration panel if plugin has config widget
+            # Set configuration panel content if plugin has config widget
+            # but don't automatically show it
             config_widget = plugin.get_config_widget()
             if config_widget:
                 self.config_panel.set_content(config_widget)
-                if not self.config_panel.isVisible():
-                    self.toggle_config_panel()
 
             # Update UI
             self.statusBar().showMessage(f"Loaded plugin: {plugin.plugin_name}")
@@ -659,14 +797,182 @@ class MainWindow(QMainWindow):
             "A platform for research tools and knowledge management."
         )
 
+    def find_all_splitters(self) -> Dict[str, QSplitter]:
+        """
+        Find all splitters in the main window and its children.
+
+        Returns:
+            Dict[str, QSplitter]: Dictionary of splitters with their object names as keys
+        """
+        splitters = {}
+
+        # Find all splitters in the main window
+        for splitter in self.findChildren(QSplitter):
+            # Skip splitters that belong to plugins
+            parent_plugin = None
+            parent = splitter.parent()
+            while parent:
+                if isinstance(parent, PluginBase):
+                    parent_plugin = parent
+                    break
+                parent = parent.parent()
+
+            if parent_plugin:
+                # This splitter belongs to a plugin, skip it
+                continue
+
+            # Use object name as key, or generate one if not set
+            name = splitter.objectName()
+            if not name:
+                name = f"splitter_{id(splitter)}"
+                splitter.setObjectName(name)
+
+            splitters[name] = splitter
+
+        return splitters
+
+    def save_all_splitter_states(self) -> Dict[str, Any]:
+        """
+        Save the states of all splitters in the main window.
+
+        Returns:
+            Dict[str, Any]: Dictionary containing splitter states
+        """
+        splitter_states = {}
+
+        # Find all splitters
+        splitters = self.find_all_splitters()
+
+        # Save state for each splitter
+        for name, splitter in splitters.items():
+            # Save as list of integers for better compatibility
+            sizes = splitter.sizes()
+            splitter_states[f"{name}_sizes"] = sizes
+
+            # Also save as individual values
+            for i, size in enumerate(sizes):
+                splitter_states[f"{name}_size_{i}"] = size
+
+            # Save orientation
+            orientation = splitter.orientation()
+            # Convert Qt.Orientation enum to int
+            orientation_value = 1 if orientation == Qt.Orientation.Horizontal else 2
+            splitter_states[f"{name}_orientation"] = orientation_value
+
+            print(f"Saving main window splitter {name} with sizes {sizes}")
+
+        return splitter_states
+
+    def restore_all_splitter_states(self, state: Dict[str, Any]) -> bool:
+        """
+        Restore the states of all splitters in the main window.
+
+        Args:
+            state: Dictionary containing splitter states
+
+        Returns:
+            bool: True if states were restored successfully, False otherwise
+        """
+        # Find all splitters
+        splitters = self.find_all_splitters()
+
+        # Track success
+        success = True
+
+        # Restore state for each splitter
+        for name, splitter in splitters.items():
+            # Try to restore sizes
+            if f"{name}_sizes" in state:
+                try:
+                    sizes = state[f"{name}_sizes"]
+                    if isinstance(sizes, list):
+                        # Convert to integers if needed
+                        sizes = [int(size) for size in sizes]
+                        splitter.setSizes(sizes)
+                        print(f"Restored main window splitter {name} with sizes {sizes}")
+                    else:
+                        print(f"Invalid splitter sizes for {name}: {sizes}")
+                        success = False
+                except Exception as e:
+                    print(f"Error restoring splitter {name} sizes: {e}")
+                    success = False
+
+                    # Try individual sizes as fallback
+                    try:
+                        sizes = []
+                        i = 0
+                        while f"{name}_size_{i}" in state:
+                            sizes.append(int(state[f"{name}_size_{i}"]))
+                            i += 1
+
+                        if sizes:
+                            splitter.setSizes(sizes)
+                            print(f"Restored main window splitter {name} with individual sizes {sizes}")
+                    except Exception as e2:
+                        print(f"Error restoring individual sizes for {name}: {e2}")
+                        success = False
+
+            # Try to restore orientation
+            if f"{name}_orientation" in state:
+                try:
+                    orientation_value = int(state[f"{name}_orientation"])
+                    # Convert int to Qt.Orientation
+                    orientation = Qt.Orientation.Horizontal if orientation_value == 1 else Qt.Orientation.Vertical
+                    splitter.setOrientation(orientation)
+                except Exception as e:
+                    print(f"Error restoring splitter {name} orientation: {e}")
+                    success = False
+
+        return success
+
     def save_window_state(self):
         """Save window state to settings."""
-        self.settings.setValue("geometry", self.saveGeometry())
-        self.settings.setValue("windowState", self.saveState())
+        # Add debug output
+        print("Saving window state to settings...")
+
+        # Save window geometry and state
+        geometry = self.saveGeometry()
+        print(f"Saving geometry: {type(geometry)}")
+        self.settings.setValue("geometry", geometry)
+
+        state = self.saveState()
+        print(f"Saving window state: {type(state)}")
+        self.settings.setValue("windowState", state)
+
+        # Save window size and position explicitly
+        size = self.size()
+        pos = self.pos()
+        print(f"Saving window size: {size.width()}x{size.height()}")
+        print(f"Saving window position: {pos.x()},{pos.y()}")
+        self.settings.setValue("windowWidth", size.width())
+        self.settings.setValue("windowHeight", size.height())
+        self.settings.setValue("windowX", pos.x())
+        self.settings.setValue("windowY", pos.y())
+        self.settings.setValue("windowMaximized", self.isMaximized())
+
+        # Save main splitter sizes
+        splitter_sizes = self.main_splitter.sizes()
+        print(f"Saving main splitter sizes: {splitter_sizes}")
+        self.settings.setValue("mainSplitterSizes", splitter_sizes)
+
+        # Also save as individual values for better compatibility
+        if len(splitter_sizes) >= 2:
+            self.settings.setValue("splitterSize1", splitter_sizes[0])
+            self.settings.setValue("splitterSize2", splitter_sizes[1])
+
+        # Save all splitter states
+        splitter_states = self.save_all_splitter_states()
+        for key, value in splitter_states.items():
+            self.settings.setValue(f"splitter/{key}", value)
 
         # Save active plugins
         active_plugins = list(self.plugin_manager.get_active_plugins().keys())
+        print(f"Saving active plugins: {active_plugins}")
         self.settings.setValue("activePlugins", active_plugins)
+
+        # Force settings to be written to disk
+        self.settings.sync()
+        print(f"Settings saved to: {self.settings.fileName()}")
 
         # Save plugin states
         for name, plugin in self.plugin_manager.get_active_plugins().items():
@@ -675,11 +981,119 @@ class MainWindow(QMainWindow):
 
     def restore_window_state(self):
         """Restore window state from settings."""
-        if self.settings.contains("geometry"):
-            self.restoreGeometry(self.settings.value("geometry"))
+        # Add debug output
+        print("Restoring window state from settings...")
 
-        if self.settings.contains("windowState"):
-            self.restoreState(self.settings.value("windowState"))
+        # First try to restore using explicit size and position
+        if (self.settings.contains("windowWidth") and
+            self.settings.contains("windowHeight") and
+            self.settings.contains("windowX") and
+            self.settings.contains("windowY")):
+
+            width = self.settings.value("windowWidth", type=int)
+            height = self.settings.value("windowHeight", type=int)
+            x = self.settings.value("windowX", type=int)
+            y = self.settings.value("windowY", type=int)
+            maximized = self.settings.value("windowMaximized", False, type=bool)
+
+            print(f"Restoring window size: {width}x{height}")
+            print(f"Restoring window position: {x},{y}")
+            print(f"Window maximized: {maximized}")
+
+            # Set window size and position
+            print(f"Current window size before resize: {self.width()}x{self.height()}")
+            print(f"Current window position before move: {self.pos().x()},{self.pos().y()}")
+
+            # Force the window to be visible
+            self.show()
+
+            # Apply size and position
+            self.resize(width, height)
+            self.move(x, y)
+
+            # Update the window
+            self.update()
+            self.repaint()
+
+            # Process events to ensure changes take effect
+            QApplication.processEvents()
+
+            print(f"Window size after resize: {self.width()}x{self.height()}")
+            print(f"Window position after move: {self.pos().x()},{self.pos().y()}")
+
+            # Set maximized state if needed
+            if maximized:
+                self.showMaximized()
+
+        # Then try to restore using geometry and state
+        elif self.settings.contains("geometry"):
+            geometry = self.settings.value("geometry")
+            print(f"Restoring geometry: {type(geometry)}")
+            self.restoreGeometry(geometry)
+
+            if self.settings.contains("windowState"):
+                state = self.settings.value("windowState")
+                print(f"Restoring window state: {type(state)}")
+                self.restoreState(state)
+
+        # Restore main splitter sizes
+        splitter_sizes = None
+
+        # First try using individual values
+        if self.settings.contains("splitterSize1") and self.settings.contains("splitterSize2"):
+            size1 = self.settings.value("splitterSize1", type=int)
+            size2 = self.settings.value("splitterSize2", type=int)
+            splitter_sizes = [size1, size2]
+            print(f"Restored main splitter sizes from individual values: {splitter_sizes}")
+
+        # If that failed, try the regular way
+        elif self.settings.contains("mainSplitterSizes"):
+            # Get the saved splitter sizes and convert to list of integers
+            splitter_sizes = self.settings.value("mainSplitterSizes")
+            print(f"Raw main splitter sizes: {splitter_sizes}, type: {type(splitter_sizes)}")
+
+            # Convert to list of integers if needed
+            if isinstance(splitter_sizes, list):
+                try:
+                    # Convert each item to int
+                    splitter_sizes = [int(size) for size in splitter_sizes]
+                    print(f"Converted list main splitter sizes: {splitter_sizes}")
+                except (TypeError, ValueError):
+                    print(f"Error converting list main splitter sizes: {splitter_sizes}")
+                    splitter_sizes = None
+            else:
+                # Not a list, try other methods
+                splitter_sizes = None
+
+        # If all else fails, use default
+        if splitter_sizes is None or len(splitter_sizes) < 2:
+            splitter_sizes = [0, self.width()]
+            print(f"Using default main splitter sizes: {splitter_sizes}")
+
+        # Apply the splitter sizes
+        print(f"Setting main splitter sizes to: {splitter_sizes}")
+        self.main_splitter.setSizes(splitter_sizes)
+
+        # Restore all other splitter states
+        splitter_states = {}
+
+        # Collect all splitter state settings
+        for key in self.settings.allKeys():
+            if key.startswith("splitter/"):
+                # Extract the actual key (remove the "splitter/" prefix)
+                actual_key = key[len("splitter/"):]
+                splitter_states[actual_key] = self.settings.value(key)
+
+        # Restore all splitter states
+        if splitter_states:
+            print(f"Restoring {len(splitter_states)} splitter states")
+            self.restore_all_splitter_states(splitter_states)
+
+        # Ensure config panel is hidden on start
+        print("Ensuring config panel is hidden on start")
+        self.config_panel.setVisible(False)
+        self.config_button.setChecked(False)
+        self.toggle_config_action.setChecked(False)
 
         # Load previously active plugins
         active_plugins = self.settings.value("activePlugins", [])
@@ -702,8 +1116,13 @@ class MainWindow(QMainWindow):
         Args:
             event: Close event
         """
+        print("Window closing, saving state...")
+
         # Save window state
         self.save_window_state()
+
+        # Force settings to be written to disk again
+        self.settings.sync()
 
         # Close all plugins
         for plugin_name in list(self.plugin_manager.get_active_plugins().keys()):
@@ -758,9 +1177,14 @@ def main():
     app.setOrganizationName("RWB")
     app.setOrganizationDomain("rwb.org")
 
-    # Create and show the main window
+    # Create the main window
     main_window = MainWindow()
+
+    # Show the main window
     main_window.show()
+
+    # Process events to ensure window is fully shown
+    app.processEvents()
 
     sys.exit(app.exec())
 

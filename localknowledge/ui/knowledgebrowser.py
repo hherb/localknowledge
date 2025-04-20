@@ -15,21 +15,13 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLineEdit,
     QPushButton, QSplitter, QListWidget, QListWidgetItem,
     QTabWidget, QLabel, QMessageBox, QApplication,
-    QScrollArea
+    QScrollArea, QStatusBar
 )
 from PySide6.QtWebEngineWidgets import QWebEngineView
-from PySide6.QtPdfWidgets import QPdfView
-from PySide6.QtPdf import QPdfDocument, QPdfDocumentRenderOptions
-# Import PdfMultiPageView for better PDF viewing
-try:
-    from PySide6.QtQuickWidgets import QQuickWidget
-    from PySide6.QtQml import QQmlEngine, QQmlComponent
-    QML_AVAILABLE = True
-except ImportError:
-    QML_AVAILABLE = False
-
 import pymupdf4llm
-import fitz  # PyMuPDF for PDF search and highlighting
+
+# Import our custom PDFViewer widget
+from localknowledge.ui.pdfviewer import PDFViewer
 
 # Import optional dependencies
 try:
@@ -126,6 +118,10 @@ class KnowledgeBrowser(QWidget):
         # Main layout
         main_layout = QVBoxLayout(self)
 
+        # Create a status bar
+        self.status_bar = QStatusBar()
+        self.status_bar.showMessage("Ready")
+
         # Search area at top
         search_layout = QHBoxLayout()
         self.search_input = QLineEdit()
@@ -162,89 +158,17 @@ class KnowledgeBrowser(QWidget):
         # Right side - tabbed view
         self.tab_widget = QTabWidget()
 
-        # PDF tab
-        self.pdf_view = QPdfView()
-        self.pdf_document = QPdfDocument()
-        self.pdf_view.setDocument(self.pdf_document)
+        # PDF tab - use our custom PDFViewer widget with status bar for search results
+        self.pdf_viewer = PDFViewer(self, self.status_bar)
 
-        # Enable scrolling in the PDF view
-        self.pdf_view.setPageMode(QPdfView.PageMode.MultiPage)  # Show multiple pages for continuous scrolling
-        self.pdf_view.setZoomMode(QPdfView.ZoomMode.FitToWidth)  # Fit to width by default
-
-        # Create a scroll area to contain the PDF view for better scrolling
-        pdf_scroll_area = QScrollArea()
-        pdf_scroll_area.setWidget(self.pdf_view)
-        pdf_scroll_area.setWidgetResizable(True)  # Allow the view to resize with the scroll area
-        pdf_scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        pdf_scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-
-        # Create a container widget for the PDF view with navigation controls
+        # Create a container widget for the PDF view
         pdf_container = QWidget()
         pdf_layout = QVBoxLayout(pdf_container)
         pdf_layout.setContentsMargins(0, 0, 0, 0)
+        pdf_layout.addWidget(self.pdf_viewer)
 
-        # Add PDF navigation controls
-        pdf_toolbar = QHBoxLayout()
-
-        self.prev_page_btn = QPushButton("← Previous")
-        self.prev_page_btn.clicked.connect(self._go_to_prev_page)
-        self.prev_page_btn.setEnabled(False)
-
-        self.page_label = QLabel("Page 1 of 1")
-        self.page_label.setAlignment(Qt.AlignCenter)
-
-        self.next_page_btn = QPushButton("Next →")
-        self.next_page_btn.clicked.connect(self._go_to_next_page)
-        self.next_page_btn.setEnabled(False)
-
-        # Add PDF search controls
-        self.pdf_search_input = QLineEdit()
-        self.pdf_search_input.setPlaceholderText("Search in PDF...")
-        self.pdf_search_input.returnPressed.connect(self._search_pdf)
-        self.pdf_search_input.setFixedWidth(200)
-
-        self.prev_match_btn = QPushButton("↑")
-        self.prev_match_btn.setToolTip("Previous match")
-        self.prev_match_btn.clicked.connect(self._find_prev_match)
-        self.prev_match_btn.setEnabled(False)
-        self.prev_match_btn.setFixedWidth(30)
-
-        self.next_match_btn = QPushButton("↓")
-        self.next_match_btn.setToolTip("Next match")
-        self.next_match_btn.clicked.connect(self._find_next_match)
-        self.next_match_btn.setEnabled(False)
-        self.next_match_btn.setFixedWidth(30)
-
-        # Add zoom controls
-        self.zoom_in_btn = QPushButton("Zoom In")
-        self.zoom_in_btn.clicked.connect(self._zoom_in)
-
-        self.zoom_out_btn = QPushButton("Zoom Out")
-        self.zoom_out_btn.clicked.connect(self._zoom_out)
-
-        self.fit_width_btn = QPushButton("Fit Width")
-        self.fit_width_btn.clicked.connect(self._fit_width)
-
-        # Add controls to toolbar
-        pdf_toolbar.addWidget(self.prev_page_btn)
-        pdf_toolbar.addWidget(self.page_label)
-        pdf_toolbar.addWidget(self.next_page_btn)
-        pdf_toolbar.addStretch()
-        pdf_toolbar.addWidget(self.pdf_search_input)
-        pdf_toolbar.addWidget(self.prev_match_btn)
-        pdf_toolbar.addWidget(self.next_match_btn)
-        pdf_toolbar.addStretch()
-        pdf_toolbar.addWidget(self.zoom_out_btn)
-        pdf_toolbar.addWidget(self.fit_width_btn)
-        pdf_toolbar.addWidget(self.zoom_in_btn)
-
-        # Add toolbar and PDF view to the layout
-        pdf_layout.addLayout(pdf_toolbar)
-        pdf_layout.addWidget(pdf_scroll_area)  # Use the scroll area instead of the PDF view directly
-
-        # Setup keyboard navigation for the PDF view
-        self.pdf_view.setFocusPolicy(Qt.StrongFocus)
-        self.pdf_view.installEventFilter(self)
+        # Connect signals from the PDF viewer
+        self.pdf_viewer.searchCompleted.connect(self._on_search_completed)
 
         # Add the container to the tab
         self.tab_widget.addTab(pdf_container, "PDF")
@@ -263,6 +187,7 @@ class KnowledgeBrowser(QWidget):
         # Add layouts to main layout
         main_layout.addLayout(search_layout)
         main_layout.addWidget(self.splitter, 1)  # 1 means this will expand to fill available space
+        main_layout.addWidget(self.status_bar)
 
         # Set window properties
         self.setWindowTitle("Knowledge Browser")
@@ -405,31 +330,14 @@ class KnowledgeBrowser(QWidget):
 
 
             if full_pdf_path.exists():
-                # Load the PDF
+                # Load the PDF using our PDFViewer widget
                 pdf_path = str(full_pdf_path)
-                self.pdf_document.load(pdf_path)
-                self.pdf_view.setPageMode(QPdfView.PageMode.MultiPage)  # Ensure MultiPage mode is set
-                self.pdf_view.setZoomMode(QPdfView.ZoomMode.FitToWidth)
-                # Update navigation controls
-                self._update_pdf_navigation()
-
-                # Store the current PDF path and initialize PyMuPDF document
-                self.current_pdf_path = pdf_path
-                try:
-                    # Close previous document if it exists
-                    if self.fitz_document:
-                        self.fitz_document.close()
-                    # Open with PyMuPDF for searching
-                    self.fitz_document = fitz.open(pdf_path)
-                except Exception as e:
-                    print(f"Error opening PDF with PyMuPDF: {e}")
-                    self.fitz_document = None
-
-                # Apply keyword highlighting from search terms
-                self._highlight_search_keywords()
-                # Explicitly set the tab to PDF view
-                self.tab_widget.setCurrentIndex(0)
-                pdf_found = True
+                if self.pdf_viewer.load_pdf(pdf_path):
+                    # Explicitly set the tab to PDF view
+                    self.tab_widget.setCurrentIndex(0)
+                    pdf_found = True
+                else:
+                    print(f"Error loading PDF: {pdf_path}")
 
         # Second case: No path in database, but we have DOI - try to find by filename pattern
         if not pdf_found and 'doi' in self.current_publication:
@@ -450,24 +358,13 @@ class KnowledgeBrowser(QWidget):
                 if possible_path.exists():
                     print(f"Found PDF at: {possible_path}")
                     pdf_path = str(possible_path)
-                    self.pdf_document.load(pdf_path)
-                    self.pdf_view.setPageMode(QPdfView.PageMode.MultiPage)  # Ensure MultiPage mode is set
-                    self.pdf_view.setZoomMode(QPdfView.ZoomMode.FitToWidth)
-                    # Update navigation controls
-                    self._update_pdf_navigation()
-                    self.tab_widget.setCurrentIndex(0)  # Show PDF tab
 
-                    # Store the current PDF path and initialize PyMuPDF document
-                    self.current_pdf_path = pdf_path
-                    try:
-                        # Close previous document if it exists
-                        if self.fitz_document:
-                            self.fitz_document.close()
-                        # Open with PyMuPDF for searching
-                        self.fitz_document = fitz.open(pdf_path)
-                    except Exception as e:
-                        print(f"Error opening PDF with PyMuPDF: {e}")
-                        self.fitz_document = None
+                    # Load the PDF using our PDFViewer widget
+                    if self.pdf_viewer.load_pdf(pdf_path):
+                        self.tab_widget.setCurrentIndex(0)  # Show PDF tab
+                    else:
+                        print(f"Error loading PDF: {pdf_path}")
+                        continue
 
                     # Update the database with the correct path
                     try:
@@ -482,8 +379,7 @@ class KnowledgeBrowser(QWidget):
 
                     pdf_found = True
 
-                    # Apply keyword highlighting from search terms
-                    self._highlight_search_keywords()
+                    # No need to highlight search keywords here - handled by PDFViewer
                     break
 
         # If we still couldn't find the PDF, show the not found message
@@ -509,23 +405,27 @@ class KnowledgeBrowser(QWidget):
 
     def _show_pdf_not_found(self):
         """Show a placeholder when PDF is not available."""
-        # Clear the PDF view
-        self.pdf_document.close()
-
-        # Close PyMuPDF document if it exists
-        if self.fitz_document:
-            self.fitz_document.close()
-            self.fitz_document = None
-
-        # Clear search results
-        self.search_results = []
-        self.current_match_index = -1
+        # Close the PDF in our viewer
+        self.pdf_viewer.close_pdf()
 
         # Create a message in the markdown view about the missing PDF
         self._display_markdown("# PDF Not Available\n\nThe PDF for this publication is not available locally.")
 
         # Switch to markdown tab
         self.tab_widget.setCurrentIndex(1)
+
+    def _on_search_completed(self, match_count):
+        """Handle search completion from the PDF viewer.
+
+        Args:
+            match_count: Number of matches found
+        """
+        # This method is called when the PDF viewer completes a search
+        # We can use it to update the UI or perform additional actions
+        if match_count > 0:
+            print(f"PDF search completed: {match_count} matches found")
+        else:
+            print("PDF search completed: No matches found")
 
     def _display_markdown(self, markdown_text: str):
         """
@@ -665,293 +565,7 @@ class KnowledgeBrowser(QWidget):
         if hasattr(self, 'db_manager'):
             self.db_manager.close()
 
-    def _update_pdf_navigation(self):
-        """Update PDF navigation controls based on current document state."""
-        if self.pdf_document.status() == QPdfDocument.Status.Ready:
-            total_pages = self.pdf_document.pageCount()
-            current_page = self.pdf_view.pageNavigator().currentPage() + 1  # +1 because it's zero-based
-
-            # Update the page label
-            self.page_label.setText(f"Page {current_page} of {total_pages}")
-
-            # Enable/disable navigation buttons
-            self.prev_page_btn.setEnabled(current_page > 1)
-            self.next_page_btn.setEnabled(current_page < total_pages)
-        else:
-            # Reset when no document is loaded
-            self.page_label.setText("Page 1 of 1")
-            self.prev_page_btn.setEnabled(False)
-            self.next_page_btn.setEnabled(False)
-
-    def _go_to_prev_page(self):
-        """Navigate to the previous page in the PDF."""
-        if self.pdf_document.status() == QPdfDocument.Status.Ready:
-            navigator = self.pdf_view.pageNavigator()
-            current_page = navigator.currentPage()
-            if current_page > 0:  # It's zero-based
-                navigator.jump(current_page - 1, QPointF())
-                self._update_pdf_navigation()
-
-    def _go_to_next_page(self):
-        """Navigate to the next page in the PDF."""
-        if self.pdf_document.status() == QPdfDocument.Status.Ready:
-            navigator = self.pdf_view.pageNavigator()
-            current_page = navigator.currentPage()
-            if current_page < self.pdf_document.pageCount() - 1:  # It's zero-based
-                navigator.jump(current_page + 1, QPointF())
-                self._update_pdf_navigation()
-
-    def _zoom_in(self):
-        """Zoom in on the PDF."""
-        self.pdf_view.setZoomFactor(self.pdf_view.zoomFactor() * 1.25)
-
-    def _zoom_out(self):
-        """Zoom out of the PDF."""
-        self.pdf_view.setZoomFactor(self.pdf_view.zoomFactor() / 1.25)
-
-    def _fit_width(self):
-        """Fit the PDF to the width of the view."""
-        self.pdf_view.setZoomMode(QPdfView.ZoomMode.FitToWidth)
-
-    def _search_pdf(self):
-        """Search for text in the current PDF document using PyMuPDF."""
-        if self.pdf_document.status() != QPdfDocument.Status.Ready or not self.fitz_document:
-            QMessageBox.warning(self, "Search Error", "No PDF document is loaded.")
-            return
-
-        # Get search text
-        search_text = self.pdf_search_input.text().strip()
-        if not search_text:
-            # Clear any existing highlights if search is empty
-            self.prev_match_btn.setEnabled(False)
-            self.next_match_btn.setEnabled(False)
-            self.search_results = []
-            return
-
-        try:
-            # Store the search text
-            self.current_search_text = search_text
-
-            # Reset search results
-            self.search_results = []
-            self.current_match_index = -1
-
-            # Search in all pages
-            for page_num in range(self.fitz_document.page_count):
-                page = self.fitz_document[page_num]
-                # Search for text on this page
-                matches = page.search_for(search_text, quads=True)
-
-                # Store results with page number
-                for match in matches:
-                    self.search_results.append((page_num, match))
-
-            # Update match count
-            self.search_match_count = len(self.search_results)
-
-            if self.search_match_count > 0:
-                # Enable navigation buttons
-                self.prev_match_btn.setEnabled(True)
-                self.next_match_btn.setEnabled(True)
-
-                # Go to the first match
-                self._find_next_match()
-
-                # Show status message in the status bar
-                if hasattr(self, 'status_bar') and self.status_bar:
-                    self.status_bar.showMessage(f"Found {self.search_match_count} matches")
-                else:
-                    # If no status bar, show next to search box
-                    self.pdf_search_input.setPlaceholderText(f"Found {self.search_match_count} matches")
-            else:
-                self.prev_match_btn.setEnabled(False)
-                self.next_match_btn.setEnabled(False)
-                if hasattr(self, 'status_bar') and self.status_bar:
-                    self.status_bar.showMessage("No matches found")
-                else:
-                    self.pdf_search_input.setPlaceholderText("No matches found")
-
-        except Exception as e:
-            QMessageBox.critical(self, "Search Error", f"Error searching PDF: {str(e)}")
-
-    def _search_finished(self):
-        """Handle PDF search completion."""
-        # Update match count
-        self.search_match_count = self.pdf_search.matchCount()
-
-        if self.search_match_count == 0:
-            self.prev_match_btn.setEnabled(False)
-            self.next_match_btn.setEnabled(False)
-            QMessageBox.information(self, "Search Results", "No matches found.")
-
-    def _find_next_match(self):
-        """Find and highlight the next match in the PDF."""
-        if not self.search_results or self.pdf_document.status() != QPdfDocument.Status.Ready:
-            return
-
-        # Move to the next match
-        self.current_match_index = (self.current_match_index + 1) % len(self.search_results)
-        self._go_to_current_match()
-
-    def _find_prev_match(self):
-        """Find and highlight the previous match in the PDF."""
-        if not self.search_results or self.pdf_document.status() != QPdfDocument.Status.Ready:
-            return
-
-        # Move to the previous match
-        self.current_match_index = (self.current_match_index - 1) % len(self.search_results)
-        self._go_to_current_match()
-
-    def _go_to_current_match(self):
-        """Navigate to and highlight the current match."""
-        if not self.search_results or self.current_match_index < 0:
-            return
-
-        # Get the current match
-        page_num, match = self.search_results[self.current_match_index]
-
-        # Navigate to the page containing the match
-        navigator = self.pdf_view.pageNavigator()
-        navigator.jump(page_num, QPointF())
-
-        # Update navigation controls
-        self._update_pdf_navigation()
-
-        # Create a temporary highlight annotation in PyMuPDF
-        try:
-            # Clear any previous highlights
-            self._clear_highlights()
-
-            # Add highlight to the current match
-            page = self.fitz_document[page_num]
-
-            # Try to create a more visible highlight
-            try:
-                # First attempt: Create a yellow text marker style highlight
-                highlight = page.add_highlight_annot(match)
-                highlight.set_colors({"stroke": (1, 1, 0)})  # Bright yellow
-                highlight.set_opacity(0.7)  # More opaque
-                highlight.update()
-
-                # Add a red rectangle around the text for extra visibility
-                rect = match.rect  # Get the rectangle of the match
-                rect_annot = page.add_rect_annot(rect)
-                rect_annot.set_colors({"stroke": (1, 0, 0)})  # Red border
-                rect_annot.set_border(width=2)  # Thicker border
-                rect_annot.update()
-            except Exception as e:
-                print(f"Error with advanced highlighting, falling back to basic: {e}")
-                # Fallback: Simple red rectangle
-                try:
-                    rect = match.rect
-                    rect_annot = page.add_rect_annot(rect)
-                    rect_annot.set_colors({"stroke": (1, 0, 0)})  # Red border
-                    rect_annot.set_border(width=2)  # Thicker border
-                    rect_annot.update()
-                except Exception as e2:
-                    print(f"Error with fallback highlighting: {e2}")
-
-            # Force a refresh of the PDF view
-            # This is a workaround since we can't directly access the PySide6 PDF renderer
-            # We'll reload the current page to show the highlight
-            current_zoom = self.pdf_view.zoomFactor()
-            self.pdf_view.setZoomFactor(current_zoom * 1.01)  # Slightly change zoom to force refresh
-            QApplication.processEvents()
-            self.pdf_view.setZoomFactor(current_zoom)  # Restore original zoom
-
-        except Exception as e:
-            print(f"Error highlighting match: {e}")
-
-    def _clear_highlights(self):
-        """Clear all highlight and rectangle annotations from the PDF."""
-        if not self.fitz_document:
-            return
-
-        try:
-            for page_num in range(self.fitz_document.page_count):
-                page = self.fitz_document[page_num]
-                for annot in page.annots():
-                    # Type 8 is highlight annotation, type 4 is rectangle annotation
-                    if annot.type[0] in [8, 4]:  # Clear both highlight and rectangle annotations
-                        page.delete_annot(annot)
-        except Exception as e:
-            print(f"Error clearing highlights: {e}")
-
-    def _highlight_search_keywords(self):
-        """
-        Highlight search keywords in the PDF if there's an active search.
-        """
-        if self.pdf_document.status() != QPdfDocument.Status.Ready or not self.fitz_document:
-            return
-
-        # Update navigation controls
-        self._update_pdf_navigation()
-
-        # If we have an active search, re-run it
-        if self.current_search_text and self.current_search_text.strip():
-            # Store the current text in a temporary variable
-            temp_text = self.current_search_text
-
-            # Clear the search input and results
-            self.pdf_search_input.setText(temp_text)
-            self.search_results = []
-            self.current_match_index = -1
-
-            # Run the search again
-            self._search_pdf()
-
-    def eventFilter(self, watched, event):
-        """
-        Filter events to handle keyboard navigation in the PDF view.
-
-        Args:
-            watched: The object that triggered the event
-            event: The event
-
-        Returns:
-            True if the event was handled, False otherwise
-        """
-        # Check if the PDF view has focus and a PDF is loaded
-        if (watched == self.pdf_view and
-            event.type() == event.Type.KeyPress and
-            self.pdf_document.status() == QPdfDocument.Status.Ready):
-
-            key = event.key()
-
-            # Handle left/right arrow keys for navigation
-            if key == Qt.Key.Key_Left or key == Qt.Key.Key_Up:
-                self._go_to_prev_page()
-                return True
-
-            elif key == Qt.Key.Key_Right or key == Qt.Key.Key_Down:
-                self._go_to_next_page()
-                return True
-
-            # Handle Page Up/Down keys
-            elif key == Qt.Key.Key_PageUp:
-                self._go_to_prev_page()
-                return True
-
-            elif key == Qt.Key.Key_PageDown:
-                self._go_to_next_page()
-                return True
-
-            # Handle Home/End keys
-            elif key == Qt.Key.Key_Home:
-                # Go to first page
-                self.pdf_view.pageNavigator().jump(0, QPointF())
-                self._update_pdf_navigation()
-                return True
-
-            elif key == Qt.Key.Key_End:
-                # Go to last page
-                last_page = self.pdf_document.pageCount() - 1
-                self.pdf_view.pageNavigator().jump(last_page, QPointF())
-                self._update_pdf_navigation()
-                return True
-
-        # Let the parent class handle the event
-        return super().eventFilter(watched, event)
+    # PDF-related methods are now handled by the PDFViewer widget
 
 
 class WorkerSignals(QObject):
