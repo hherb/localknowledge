@@ -7,7 +7,23 @@ It also tracks which files have been processed to avoid redundant processing whe
 """
 import os
 import gzip
-import xml.etree.ElementTree as ET
+import xml.e        # Try processing the file, but only if not already known to be corrupt
+        try:
+            main_pbar.set_postfix(status="Processing articles")
+            processed, stored = process_xml_file(xml_path, db_manager)
+            
+            total_processed += processed
+            total_stored += stored
+            
+            # Update progress bar to include article counts
+            main_pbar.set_postfix(articles=f"{stored}/{processed}", 
+                                 total=f"{total_stored}/{total_processed}")
+        except Exception as e:
+            logger.error(f"Error processing file {xml_file}: {e}")
+            tqdm.write(f"✗ Error processing file {xml_file}: {e}")
+            processed, stored = 0, 0
+            # Update progress bar to show error
+            main_pbar.set_postfix(status="Processing failed")ee as ET
 import shutil
 import logging
 from typing import Dict, Any, List, Optional, Tuple
@@ -357,9 +373,13 @@ def import_downloads(download_dir: str = None,
         
         # Verify file integrity before processing
         try:
-            # First, check if the file can be opened without decompression errors
+            # Display that we're checking file integrity
+            main_pbar.set_postfix(status="Checking integrity")
+            
+            # Perform thorough integrity check - this will read the entire file to ensure it's valid
             if not check_xml_integrity(xml_path):
                 logger.warning(f"File {xml_file} appears to be corrupt (decompression error)")
+                main_pbar.set_postfix(status="Attempting repair")
                 
                 # Verify MD5 and handle corrupt file - this will delete and re-download if needed
                 is_repaired = verify_and_handle_corrupt_file(
@@ -371,24 +391,41 @@ def import_downloads(download_dir: str = None,
                 
                 if is_repaired:
                     logger.info(f"Successfully repaired corrupt file {xml_file}")
+                    tqdm.write(f"✓ Successfully repaired corrupt file {xml_file}")
                     # Update the path in case the file was moved during repair
                     xml_path = os.path.join(download_dir, xml_file)
+                    main_pbar.set_postfix(status="Repaired successfully")
                 else:
                     logger.error(f"Failed to repair corrupt file {xml_file}, skipping")
+                    tqdm.write(f"✗ Failed to repair corrupt file {xml_file}, skipping")
+                    main_pbar.set_postfix(status="Repair failed")
                     main_pbar.update(1)
                     continue
         except Exception as e:
             logger.error(f"Error during file verification: {e}")
+            tqdm.write(f"✗ Error checking file integrity for {xml_file}: {e}")
+            main_pbar.set_postfix(status="Verification error")
             
-        # Process file
-        processed, stored = process_xml_file(xml_path, db_manager)
-        
-        total_processed += processed
-        total_stored += stored
-        
-        # Update progress bar to include article counts
-        main_pbar.set_postfix(articles=f"{stored}/{processed}", 
-                             total=f"{total_stored}/{total_processed}")
+        # Try processing the file, but only if not already known to be corrupt
+        try:
+            # Show that we're now processing articles
+            main_pbar.set_postfix(status="Processing articles")
+            
+            processed, stored = process_xml_file(xml_path, db_manager)
+            
+            total_processed += processed
+            total_stored += stored
+            
+            # Update progress bar to include article counts
+            main_pbar.set_postfix(articles=f"{stored}/{processed}", 
+                                 total=f"{total_stored}/{total_processed}")
+        except Exception as e:
+            logger.error(f"Error processing file {xml_file}: {e}")
+            tqdm.write(f"✗ Error processing file {xml_file}: {e}")
+            processed, stored = 0, 0
+            main_pbar.set_postfix(status="Processing failed")
+            # Update progress bar to show error
+            main_pbar.set_postfix(error=f"Failed to process")
         
         # Mark as processed in the tracker if available
         if using_db_tracker and processed > 0:
