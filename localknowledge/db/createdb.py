@@ -21,15 +21,24 @@ from localknowledge.db.medrxiv import MedRxivDatabaseManager
 from localknowledge.db.user import UserDatabaseManager
 from localknowledge.db.pubmed import PubMedDatabaseManager
 from localknowledge.db.reading_tracker import ReadingTrackerManager
+
+# Import embedding database manager
+try:
+    from localknowledge.embeddings.database import EmbeddingDatabaseManager
+    EMBEDDINGS_AVAILABLE = True
+except ImportError:
+    logger.warning("Embeddings module not available. Skipping embedding tables.")
+    EMBEDDINGS_AVAILABLE = False
+
 # Import additional database managers here as they are added
 
 def create_all_tables() -> None:
     """Create all tables across all database modules."""
     logger.info("Initializing database tables...")
-    
+
     # List of database managers to initialize
     managers = []
-    
+
     try:
         logger.info("Initializing MedRxiv tables...")
         medrxiv_db = MedRxivDatabaseManager()
@@ -38,7 +47,7 @@ def create_all_tables() -> None:
         logger.info("MedRxiv tables initialized successfully")
     except Exception as e:
         logger.error(f"Error initializing MedRxiv tables: {e}")
-    
+
     try:
         logger.info("Initializing User tables...")
         user_db = UserDatabaseManager()
@@ -47,7 +56,7 @@ def create_all_tables() -> None:
         logger.info("User tables initialized successfully")
     except Exception as e:
         logger.error(f"Error initializing User tables: {e}")
-    
+
     try:
         logger.info("Initializing PubMed tables...")
         pubmed_db = PubMedDatabaseManager()
@@ -56,7 +65,7 @@ def create_all_tables() -> None:
         logger.info("PubMed tables initialized successfully")
     except Exception as e:
         logger.error(f"Error initializing PubMed tables: {e}")
-    
+
     try:
         logger.info("Initializing Reading Tracker tables...")
         reading_tracker_db = ReadingTrackerManager()
@@ -65,16 +74,27 @@ def create_all_tables() -> None:
         logger.info("Reading Tracker tables initialized successfully")
     except Exception as e:
         logger.error(f"Error initializing Reading Tracker tables: {e}")
-    
+
+    # Initialize Embedding tables if available
+    if EMBEDDINGS_AVAILABLE:
+        try:
+            logger.info("Initializing Embedding tables...")
+            embedding_db = EmbeddingDatabaseManager()
+            embedding_db.create_tables()
+            managers.append(embedding_db)
+            logger.info("Embedding tables initialized successfully")
+        except Exception as e:
+            logger.error(f"Error initializing Embedding tables: {e}")
+
     # Add calls to additional database modules' create_tables methods here
-    
+
     # Close all connections
     for manager in managers:
         try:
             manager.close()
         except Exception as e:
             logger.error(f"Error closing database connection: {e}")
-    
+
     logger.info("Database initialization complete")
 
 def main():
