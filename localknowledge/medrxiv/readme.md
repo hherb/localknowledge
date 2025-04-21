@@ -1,4 +1,8 @@
-# MedRxiv to Markdown Converter
+# MedRxiv Module
+
+This module provides functionality for working with medRxiv preprints in the LocalKnowledge system.
+
+## MedRxiv to Markdown Converter
 
 A Python tool for fetching preprints from medRxiv in HTML or XML format, converting them to Markdown, and downloading associated images.
 
@@ -74,7 +78,7 @@ The tool tries to get the HTML version first, and if not available, falls back t
 2. **API Integration**: Uses the medRxiv API to get accurate metadata including the exact XML URL
 3. **Format Selection**: Attempts to download HTML first, then XML if HTML isn't available
 4. **Multiple Fallbacks**: If the API fails, tries direct URL construction based on known patterns
-5. **Conversion**: 
+5. **Conversion**:
    - HTML is directly converted to Markdown using markdownify
    - XML is first converted to HTML, then to Markdown
 6. **Smart Image Handling**: Only creates image directories when images are actually present
@@ -132,6 +136,84 @@ if has_images:
 - MedRxiv's statement that all preprints are available in HTML/XML format is not entirely accurate. Some papers may only be available as PDFs.
 - The XML format is more commonly available than HTML for many papers, especially recent ones.
 - This tool uses the official medRxiv API to find the correct XML URLs when possible, and falls back to alternative methods when needed.
+
+## Abstract Embedding
+
+The `embed_abstracts.py` module provides functionality to identify and embed medRxiv abstracts that haven't been embedded yet. It uses Ollama with the `snowflake-arctic-embed2` model to create embeddings.
+
+### Command-line Usage
+
+You can run the abstract embedding process from the command line using:
+
+```bash
+python -m localknowledge.medrxiv.embed_abstracts_cli [options]
+```
+
+Options:
+- `--limit N`: Maximum number of abstracts to embed
+- `--batch-size N`: Number of abstracts to process in each batch (default: 100)
+- `--model MODEL`: Name of the Ollama model to use for embeddings (default: "snowflake-arctic-embed2:latest")
+- `--count`: Only count abstracts without embeddings, do not embed
+- `--debug`: Enable debug logging
+
+Examples:
+
+```bash
+# Count abstracts without embeddings
+python -m localknowledge.medrxiv.embed_abstracts_cli --count
+
+# Embed 10 abstracts
+python -m localknowledge.medrxiv.embed_abstracts_cli --limit 10
+
+# Embed 100 abstracts with debug logging
+python -m localknowledge.medrxiv.embed_abstracts_cli --limit 100 --debug
+
+# Embed all abstracts with a custom model
+python -m localknowledge.medrxiv.embed_abstracts_cli --model "nomic-embed-text:latest"
+```
+
+### Programmatic Usage
+
+You can also use the embedding functionality programmatically:
+
+```python
+from localknowledge.medrxiv import MedRxivClient
+
+# Create a client
+client = MedRxivClient()
+
+# Count abstracts without embeddings
+count = client.count_abstracts_without_embeddings()
+print(f"Found {count} abstracts without embeddings")
+
+# Embed abstracts
+embedded = client.embed_abstracts(limit=10, batch_size=100, model_name="snowflake-arctic-embed2:latest")
+print(f"Successfully embedded {embedded} abstracts")
+
+# Close the client
+client.close()
+```
+
+Or directly using the `MedrxivAbstractEmbedder` class:
+
+```python
+from localknowledge.medrxiv.embed_abstracts import MedrxivAbstractEmbedder
+
+# Create an embedder
+embedder = MedrxivAbstractEmbedder(model_name="snowflake-arctic-embed2:latest")
+
+try:
+    # Count abstracts without embeddings
+    count = embedder.count_abstracts_without_embeddings()
+    print(f"Found {count} abstracts without embeddings")
+
+    # Embed abstracts
+    embedded = embedder.embed_abstracts(limit=10, batch_size=100)
+    print(f"Successfully embedded {embedded} abstracts")
+finally:
+    # Close the embedder
+    embedder.close()
+```
 
 ## License
 

@@ -7,8 +7,7 @@ from datetime import datetime, timedelta
 from localknowledge.base import LocalKnowledgeBase
 from localknowledge.db.medrxiv import MedRxivDatabaseManager
 
-# Import the abstract embedder
-from localknowledge.medrxiv.embed_abstracts import MedrxivAbstractEmbedder
+# Abstract embedder is imported lazily in methods to avoid circular imports
 
 
 class MedRxivClient(LocalKnowledgeBase):
@@ -110,6 +109,9 @@ class MedRxivClient(LocalKnowledgeBase):
         Returns:
             Number of abstracts embedded
         """
+        # Import here to avoid circular imports
+        from localknowledge.medrxiv.embed_abstracts import MedrxivAbstractEmbedder
+
         embedder = MedrxivAbstractEmbedder(model_name=model_name)
         try:
             return embedder.embed_abstracts(limit=limit, batch_size=batch_size)
@@ -123,6 +125,9 @@ class MedRxivClient(LocalKnowledgeBase):
         Returns:
             Number of abstracts without embeddings
         """
+        # Import here to avoid circular imports
+        from localknowledge.medrxiv.embed_abstracts import MedrxivAbstractEmbedder
+
         embedder = MedrxivAbstractEmbedder()
         try:
             return embedder.count_abstracts_without_embeddings()
