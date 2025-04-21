@@ -100,7 +100,13 @@ class TextChunker(BaseChunker):
             chunks.append(Chunk(text=chunk_text, metadata=chunk_metadata))
 
             # Move to next chunk with overlap
-            start = end - overlap
+            # Ensure we always make forward progress to avoid infinite loops
+            new_start = end - overlap
+            if new_start <= start:
+                # If overlap would cause us to stay in place or go backwards,
+                # move forward by at least one character
+                new_start = start + 1
+            start = new_start
             chunk_number += 1
 
         return chunks

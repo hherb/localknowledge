@@ -1,0 +1,75 @@
+%%{init: { 'theme': 'default', 'themeVariables': { 'background': '#ffffff', 'fontSize': '16px' } }}%%
+flowchart TD
+    %% Data Sources
+    PubMed["PubMed"]:::sources
+    MedRxiv["MedRxiv"]:::sources
+    OtherSources["Other Sources"]:::sources
+    
+    %% Initial Processing
+    DataFetching["Daily Data Fetching"]:::processing
+    MarkdownConversion["Convert to Markdown Format"]:::processing
+    
+    %% Document Processing
+    SemanticChunking["Semantic Chunking & Embedding<br>with Source Metadata"]:::processing
+    KeywordExtraction["Sophisticated Keyword Extraction"]:::processing
+    Summarization["LLM Text Summarization"]:::processing
+    QuestionGeneration["Purpose Fine-tuned LLM<br>Question/Answer Generation"]:::processing
+    
+    %% Storage Layer
+    VectorStorage["Vector Database Storage<br>(PostgreSQL + pgvector)"]:::storage
+    KeywordStorage["Keyword Storage<br>(Full-text Indexed Tables)"]:::storage
+    
+    %% Search Processing
+    UserQuery["User Query"]:::search
+    QueryRephraser["Query Rephraser<br>(Multiple Reformulations)"]:::queryText
+    KeywordExpander["Keyword Expander<br>(Synonym Provider)"]:::queryText
+    WebSearch["Optional Agentic Web Search<br>(When Online Access Available)"]:::queryText
+    SemanticSearch["Embedding-based Semantic Search"]:::search
+    KeywordSearch["BM25 & Keyword Full-text Search"]:::search
+    ResultMerging["Search Results Merging"]:::search
+    Deduplication["Result Deduplication"]:::search
+    Reranking["Result Reranking"]:::search
+    ResultCaching["Caching of Reranked Results"]:::search
+    
+    %% User Interface
+    ResultPresentation["Present Results to User"]:::presentation
+    AdvancedAnalysis["Advanced Analysis<br>using Results Cache"]:::presentation
+    
+    %% Flow Connections
+    PubMed --> DataFetching
+    MedRxiv --> DataFetching
+    OtherSources --> DataFetching
+    DataFetching --> MarkdownConversion
+    MarkdownConversion --> SemanticChunking
+    MarkdownConversion --> KeywordExtraction
+    MarkdownConversion --> Summarization
+    MarkdownConversion --> QuestionGeneration
+    
+    SemanticChunking --> VectorStorage
+    KeywordExtraction --> KeywordStorage
+    Summarization -.->|"Creates Summary Chunk"| VectorStorage
+    QuestionGeneration -.->|"Creates Q/A Chunks"| VectorStorage
+    
+    UserQuery --> QueryRephraser
+    UserQuery --> KeywordExpander
+    UserQuery --> WebSearch
+    QueryRephraser --> SemanticSearch
+    KeywordExpander --> KeywordSearch
+    WebSearch -.->|"If Online"| ResultMerging
+    VectorStorage --> SemanticSearch
+    KeywordStorage --> KeywordSearch
+    
+    SemanticSearch --> ResultMerging
+    KeywordSearch --> ResultMerging
+    ResultMerging --> Deduplication
+    Deduplication --> Reranking
+    Reranking --> ResultCaching
+    ResultCaching --> ResultPresentation
+    ResultCaching --> AdvancedAnalysis
+    
+    classDef sources fill:#f8d7da,stroke:#721c24,stroke-width:2px,color:#000000,font-weight:bold
+    classDef processing fill:#d1ecf1,stroke:#0c5460,stroke-width:2px,color:#000000,font-weight:bold
+    classDef storage fill:#d4edda,stroke:#155724,stroke-width:2px,color:#000000,font-weight:bold
+    classDef search fill:#e2e3e5,stroke:#383d41,stroke-width:2px,color:#000000,font-weight:bold
+    classDef presentation fill:#fff3cd,stroke:#856404,stroke-width:2px,color:#000000,font-weight:bold
+    classDef queryText fill:#f0e6ff,stroke:#5e35b1,stroke-width:2px,color:#000000,font-weight:bold
