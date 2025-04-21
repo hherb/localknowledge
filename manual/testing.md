@@ -102,10 +102,10 @@ class TestDatabaseManager(unittest.TestCase):
         mock_connection = MagicMock()
         mock_connect.return_value = mock_connection
         db = DatabaseManager()
-        
+
         # Act
         db.connect()
-        
+
         # Assert
         mock_connect.assert_called_once()
         self.assertEqual(db.connection, mock_connection)
@@ -128,14 +128,14 @@ class TestMedRxivClient(unittest.TestCase):
         # Set up a test database
         self.db = MedRxivDatabaseManager()
         self.db.execute("CREATE TEMPORARY TABLE preprints AS SELECT * FROM preprints LIMIT 0")
-        
+
         # Create a client with the test database
         self.client = MedRxivClient(db=self.db)
-    
+
     def tearDown(self):
         # Clean up
         self.db.close()
-    
+
     def test_get_preprint_by_doi(self):
         # Arrange
         doi = "10.1101/2023.01.01.12345"
@@ -143,10 +143,10 @@ class TestMedRxivClient(unittest.TestCase):
             "INSERT INTO preprints (doi, title) VALUES (%s, %s)",
             (doi, "Test Preprint")
         )
-        
+
         # Act
         preprint = self.client.get_preprint_by_doi(doi)
-        
+
         # Assert
         self.assertIsNotNone(preprint)
         self.assertEqual(preprint['doi'], doi)
@@ -163,30 +163,30 @@ Example end-to-end test:
 # In localknowledge/ui/tests/test_main.py
 import unittest
 from unittest.mock import patch
-from PyQt5.QtTest import QTest
-from PyQt5.QtCore import Qt
+from PySide6.QtTest import QTest
+from PySide6.QtCore import Qt
 from localknowledge.ui.main import MainWindow
 
 class TestMainWindow(unittest.TestCase):
     def setUp(self):
         # Create a main window
         self.window = MainWindow()
-    
+
     def tearDown(self):
         # Clean up
         self.window.close()
-    
+
     @patch('localknowledge.medrxiv.MedRxivClient')
     def test_search(self, mock_client):
         # Arrange
         mock_client.return_value.search_preprints.return_value = [
             {'doi': '10.1101/2023.01.01.12345', 'title': 'Test Preprint'}
         ]
-        
+
         # Act
         self.window.search_input.setText("test query")
         QTest.mouseClick(self.window.search_button, Qt.LeftButton)
-        
+
         # Assert
         mock_client.return_value.search_preprints.assert_called_once_with("test query")
         self.assertEqual(self.window.results_list.count(), 1)
@@ -251,10 +251,10 @@ class TestEmbeddings(unittest.TestCase):
         # Arrange
         mock_response = {'embeddings': [0.1, 0.2, 0.3]}
         mock_embeddings.return_value = mock_response
-        
+
         # Act
         embedding = create_embedding("Test text")
-        
+
         # Assert
         mock_embeddings.assert_called_once_with(model="snowflake-arctic-embed2:latest", prompt="Test text")
         self.assertEqual(embedding, [0.1, 0.2, 0.3])
@@ -277,40 +277,40 @@ class TestDatabaseManager(unittest.TestCase):
     def setUpClass(cls):
         # Set up a test database
         os.environ['LK_DB_NAME'] = 'localknowledge_test'
-        
+
         # Create the test database
         db = DatabaseManager()
         db.execute("CREATE DATABASE localknowledge_test")
         db.close()
-        
+
         # Initialize the test database
         from localknowledge.db.createdb import create_tables
         create_tables()
-    
+
     @classmethod
     def tearDownClass(cls):
         # Drop the test database
         db = DatabaseManager()
         db.execute("DROP DATABASE localknowledge_test")
         db.close()
-        
+
         # Restore the original database name
         os.environ.pop('LK_DB_NAME')
-    
+
     def setUp(self):
         # Connect to the test database
         self.db = DatabaseManager()
-    
+
     def tearDown(self):
         # Clean up
         self.db.close()
-    
+
     def test_execute(self):
         # Test the execute method
         self.db.execute("CREATE TEMPORARY TABLE test (id SERIAL PRIMARY KEY, name TEXT)")
         self.db.execute("INSERT INTO test (name) VALUES (%s)", ("Test",))
         result = self.db.execute("SELECT * FROM test")
-        
+
         self.assertEqual(len(result), 1)
         self.assertEqual(result[0]['name'], "Test")
 ```
@@ -331,21 +331,21 @@ class TestMarkdownChunker(unittest.TestCase):
         # Test data
         markdown_text = """
         # Introduction
-        
+
         This is the introduction section.
-        
+
         ## Background
-        
+
         This is the background section.
-        
+
         # Methods
-        
+
         This is the methods section.
         """
-        
+
         # Act
         chunks = markdown_chunker(markdown_text)
-        
+
         # Assert
         self.assertEqual(len(chunks), 3)
         self.assertEqual(chunks[0]['heading'], "Introduction")

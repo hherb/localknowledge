@@ -1,4 +1,6 @@
 """Fix for reading_tracker.py to handle NoneType result issue in delete_reading_record"""
+import traceback
+from typing import Optional
 
 def delete_reading_record(self, source_type: str, content_id: str, user_id: Optional[int] = None) -> bool:
     """

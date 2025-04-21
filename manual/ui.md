@@ -2,7 +2,70 @@
 
 ## Overview
 
-The UI Module provides the graphical user interface for the Local Knowledge system. It is built using PyQt5 and includes components for searching, viewing, and interacting with documents and their metadata.
+The UI Module provides the graphical user interface for the Local Knowledge system. It is built using PySide6 (Qt for Python) and includes components for searching, viewing, and interacting with documents and their metadata. The UI is designed with a plugin architecture that allows for easy extension and customization of functionality.
+
+## Plugin Architecture
+
+The UI is built around a plugin architecture that allows for modular development and easy extension of functionality:
+
+### Plugin System
+
+The plugin system is implemented in `localknowledge.ui.plugins`:
+
+- Plugins are discovered and loaded dynamically at runtime
+- Each plugin provides specific functionality (e.g., PDF viewing, search, annotation)
+- Plugins can be enabled or disabled through configuration
+- Plugins can interact with each other through a shared context
+
+### Plugin Interface
+
+Each plugin implements a common interface:
+
+```python
+from localknowledge.ui.plugins import Plugin
+
+class MyPlugin(Plugin):
+    def __init__(self, context):
+        super().__init__(context)
+        self.name = "My Plugin"
+        self.description = "A sample plugin"
+        self.version = "1.0.0"
+
+    def initialize(self):
+        """Initialize the plugin."""
+        # Create widgets, connect signals, etc.
+        self.widget = MyPluginWidget()
+
+    def get_widget(self):
+        """Return the main widget for this plugin."""
+        return self.widget
+
+    def get_actions(self):
+        """Return actions for menus and toolbars."""
+        return [self.action1, self.action2]
+
+    def shutdown(self):
+        """Clean up resources when the plugin is disabled."""
+        # Release resources, save state, etc.
+```
+
+### Plugin Manager
+
+The `PluginManager` class in `localknowledge.ui.plugins` manages the lifecycle of plugins:
+
+- Discovers plugins in the plugin directory
+- Loads and initializes plugins
+- Provides access to loaded plugins
+- Manages plugin dependencies
+- Handles plugin configuration
+
+### Plugin Communication
+
+Plugins can communicate with each other through:
+
+- Shared context object passed to each plugin
+- Signals and slots for event-driven communication
+- Direct method calls for synchronous operations
 
 ## Core Components
 
@@ -75,7 +138,7 @@ main()
 ### Creating a Custom Window
 
 ```python
-from PyQt5.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication
 from localknowledge.ui.main import MainWindow
 
 # Create an application
@@ -88,13 +151,13 @@ window = MainWindow()
 window.show()
 
 # Run the application
-app.exec_()
+app.exec()
 ```
 
 ### Using the Knowledge Browser
 
 ```python
-from PyQt5.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication
 from localknowledge.ui.knowledgebrowser import KnowledgeBrowser
 
 # Create an application
@@ -110,13 +173,13 @@ browser.search("traumatic brain injury")
 browser.show()
 
 # Run the application
-app.exec_()
+app.exec()
 ```
 
 ### Using the PDF Viewer
 
 ```python
-from PyQt5.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication
 from localknowledge.ui.pdfviewer import PDFViewer
 
 # Create an application
@@ -132,7 +195,7 @@ viewer.load_pdf("/path/to/document.pdf")
 viewer.show()
 
 # Run the application
-app.exec_()
+app.exec()
 ```
 
 ## Customization
@@ -142,7 +205,7 @@ app.exec_()
 The UI supports themes through Qt stylesheets:
 
 ```python
-from PyQt5.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication
 from localknowledge.ui.main import MainWindow
 from localknowledge.ui.themes import load_theme
 
@@ -159,7 +222,7 @@ window = MainWindow()
 window.show()
 
 # Run the application
-app.exec_()
+app.exec()
 ```
 
 ### Custom Widgets
@@ -167,23 +230,23 @@ app.exec_()
 You can create custom widgets by subclassing Qt widgets:
 
 ```python
-from PyQt5.QtWidgets import QWidget, QVBoxLayout, QLabel
+from PySide6.QtWidgets import QWidget, QVBoxLayout, QLabel
 
 class CustomWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
-        
+
         # Create layout
         layout = QVBoxLayout()
         self.setLayout(layout)
-        
+
         # Add widgets
         label = QLabel("Custom Widget")
         layout.addWidget(label)
-        
+
         # Initialize state
         self.initialize()
-    
+
     def initialize(self):
         """Initialize the widget state."""
         pass
@@ -237,7 +300,7 @@ preferences.save()
 The UI uses icons and resources from `localknowledge.ui.icons` and `localknowledge.ui.resources`:
 
 ```python
-from PyQt5.QtGui import QIcon
+from PySide6.QtGui import QIcon
 from localknowledge.ui.icons import get_icon
 
 # Get an icon
@@ -252,14 +315,14 @@ button.setIcon(icon)
 The UI uses Qt's signal and slot mechanism for event handling:
 
 ```python
-from PyQt5.QtWidgets import QPushButton
-from PyQt5.QtCore import pyqtSlot
+from PySide6.QtWidgets import QPushButton
+from PySide6.QtCore import Slot
 
 # Create a button
 button = QPushButton("Click Me")
 
 # Connect a slot to the button's clicked signal
-@pyqtSlot()
+@Slot()
 def on_button_clicked():
     print("Button clicked")
 
@@ -271,27 +334,27 @@ button.clicked.connect(on_button_clicked)
 For long-running operations, use Qt's threading capabilities:
 
 ```python
-from PyQt5.QtCore import QThread, pyqtSignal
+from PySide6.QtCore import QThread, Signal
 
 class WorkerThread(QThread):
     # Define signals
-    result_ready = pyqtSignal(object)
-    error_occurred = pyqtSignal(str)
-    
+    result_ready = Signal(object)
+    error_occurred = Signal(str)
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.data = None
-    
+
     def set_data(self, data):
         """Set the data to process."""
         self.data = data
-    
+
     def run(self):
         """Process the data."""
         try:
             # Perform long-running operation
             result = process_data(self.data)
-            
+
             # Emit result signal
             self.result_ready.emit(result)
         except Exception as e:
@@ -349,11 +412,11 @@ from PyQt5.QtWidgets import QWidget, QVBoxLayout, QLabel
 class CustomWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
-        
+
         # Create layout
         layout = QVBoxLayout()
         self.setLayout(layout)
-        
+
         # Add widgets
         label = QLabel("Custom Widget")
         layout.addWidget(label)
@@ -393,7 +456,7 @@ For detailed debugging:
 
 1. Enable Qt debugging:
    ```python
-   from PyQt5.QtCore import QLoggingCategory
+   from PySide6.QtCore import QLoggingCategory
    QLoggingCategory.setFilterRules("*.debug=true")
    ```
 
@@ -412,6 +475,185 @@ For detailed debugging:
    app.setOrganizationName("LocalKnowledge")
    app.setOrganizationDomain("localknowledge.org")
    ```
+
+## Built-in Plugins
+
+The Local Knowledge system comes with several built-in plugins:
+
+### PDF Viewer Plugin
+
+The PDF Viewer plugin (`localknowledge.ui.plugins.pdfviewer`) provides PDF viewing capabilities:
+
+- PDF rendering with pagination
+- Zoom and rotation controls
+- Text selection and copying
+- Search functionality with result highlighting
+- Scrolling with both mouse and keyboard
+
+```python
+from localknowledge.ui.plugins.pdfviewer import PDFViewerPlugin
+
+# Create the plugin
+plugin = PDFViewerPlugin(context)
+
+# Initialize the plugin
+plugin.initialize()
+
+# Get the main widget
+viewer = plugin.get_widget()
+
+# Load a PDF
+viewer.load_pdf("/path/to/document.pdf")
+```
+
+### Knowledge Browser Plugin
+
+The Knowledge Browser plugin (`localknowledge.ui.plugins.knowledgebrowser`) provides search and browsing capabilities:
+
+- Keyword and semantic search
+- Result filtering and sorting
+- Document preview
+- Metadata display
+- Integration with other plugins
+
+```python
+from localknowledge.ui.plugins.knowledgebrowser import KnowledgeBrowserPlugin
+
+# Create the plugin
+plugin = KnowledgeBrowserPlugin(context)
+
+# Initialize the plugin
+plugin.initialize()
+
+# Get the main widget
+browser = plugin.get_widget()
+
+# Perform a search
+browser.search("traumatic brain injury")
+```
+
+### Annotation Plugin
+
+The Annotation plugin (`localknowledge.ui.plugins.annotation`) provides annotation capabilities:
+
+- Text highlighting
+- Note creation and editing
+- Bookmark management
+- Tag assignment
+- Export and sharing of annotations
+
+```python
+from localknowledge.ui.plugins.annotation import AnnotationPlugin
+
+# Create the plugin
+plugin = AnnotationPlugin(context)
+
+# Initialize the plugin
+plugin.initialize()
+
+# Get the main widget
+annotation_panel = plugin.get_widget()
+
+# Add an annotation
+annotation_panel.add_annotation({
+    "type": "highlight",
+    "text": "Important passage",
+    "page": 1,
+    "rect": [100, 200, 300, 220],
+    "color": "yellow"
+})
+```
+
+### Settings Plugin
+
+The Settings plugin (`localknowledge.ui.plugins.settings`) provides configuration capabilities:
+
+- User preferences management
+- Database connection settings
+- Plugin configuration
+- Theme selection
+- Keyboard shortcut customization
+
+```python
+from localknowledge.ui.plugins.settings import SettingsPlugin
+
+# Create the plugin
+plugin = SettingsPlugin(context)
+
+# Initialize the plugin
+plugin.initialize()
+
+# Get the main widget
+settings_dialog = plugin.get_widget()
+
+# Show the settings dialog
+settings_dialog.show()
+```
+
+## Creating Custom Plugins
+
+To create a custom plugin:
+
+1. Create a new Python module in `localknowledge.ui.plugins` or a separate package
+2. Implement the `Plugin` interface
+3. Register the plugin with the plugin manager
+
+Example custom plugin:
+
+```python
+from localknowledge.ui.plugins import Plugin
+from PySide6.QtWidgets import QWidget, QVBoxLayout, QLabel, QPushButton
+from PySide6.QtCore import Slot
+
+class MyCustomPlugin(Plugin):
+    def __init__(self, context):
+        super().__init__(context)
+        self.name = "My Custom Plugin"
+        self.description = "A custom plugin example"
+        self.version = "1.0.0"
+        self.widget = None
+
+    def initialize(self):
+        """Initialize the plugin."""
+        # Create the main widget
+        self.widget = QWidget()
+        layout = QVBoxLayout()
+        self.widget.setLayout(layout)
+
+        # Add widgets
+        label = QLabel("My Custom Plugin")
+        layout.addWidget(label)
+
+        button = QPushButton("Click Me")
+        button.clicked.connect(self.on_button_clicked)
+        layout.addWidget(button)
+
+        # Register for events from other plugins
+        self.context.document_loaded.connect(self.on_document_loaded)
+
+    def get_widget(self):
+        """Return the main widget for this plugin."""
+        return self.widget
+
+    def get_actions(self):
+        """Return actions for menus and toolbars."""
+        return []
+
+    @Slot()
+    def on_button_clicked(self):
+        """Handle button click."""
+        print("Button clicked in custom plugin")
+
+    @Slot(str)
+    def on_document_loaded(self, document_path):
+        """Handle document loaded event."""
+        print(f"Document loaded: {document_path}")
+
+    def shutdown(self):
+        """Clean up resources when the plugin is disabled."""
+        # Release resources, save state, etc.
+        pass
+```
 
 ## UI Components
 
