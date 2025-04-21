@@ -30,6 +30,14 @@ except ImportError:
     logger.warning("Embeddings module not available. Skipping embedding tables.")
     EMBEDDINGS_AVAILABLE = False
 
+# Import QA embedding database manager
+try:
+    from localknowledge.db.qafinder import QAEmbeddingDatabaseManager
+    QA_EMBEDDINGS_AVAILABLE = True
+except ImportError:
+    logger.warning("QA embeddings module not available. Skipping QA embedding tables.")
+    QA_EMBEDDINGS_AVAILABLE = False
+
 # Import additional database managers here as they are added
 
 def create_all_tables() -> None:
@@ -88,6 +96,18 @@ def create_all_tables() -> None:
             logger.info("Embedding tables initialized successfully")
         except Exception as e:
             logger.error(f"Error initializing Embedding tables: {e}")
+
+    # Initialize QA Embedding tables if available
+    if QA_EMBEDDINGS_AVAILABLE:
+        try:
+            logger.info("Initializing QA Embedding tables...")
+            qa_embedding_db = QAEmbeddingDatabaseManager()
+            qa_embedding_db.create_tables()
+            qa_embedding_db.create_indices()
+            managers.append(qa_embedding_db)
+            logger.info("QA Embedding tables initialized successfully")
+        except Exception as e:
+            logger.error(f"Error initializing QA Embedding tables: {e}")
 
     # Add calls to additional database modules' create_tables methods here
 

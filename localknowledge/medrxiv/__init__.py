@@ -134,6 +134,44 @@ class MedRxivClient(LocalKnowledgeBase):
         finally:
             embedder.close()
 
+    def update_qa_embeddings(self, limit: Optional[int] = None, batch_size: int = 10, qa_model: str = "gemma3:4b", embedding_model: str = "snowflake-arctic-embed2:latest") -> int:
+        """
+        Generate QA pairs and embeddings for medrxiv abstracts that don't have them yet.
+
+        Args:
+            limit: Maximum number of abstracts to process
+            batch_size: Number of abstracts to process in each batch
+            qa_model: Name of the Ollama model to use for QA generation
+            embedding_model: Name of the Ollama model to use for embeddings
+
+        Returns:
+            Number of abstracts processed
+        """
+        # Import here to avoid circular imports
+        from localknowledge.medrxiv.update_qaembeddings import MedrxivQAEmbedder
+
+        embedder = MedrxivQAEmbedder(model_name=qa_model, embedding_model=embedding_model)
+        try:
+            return embedder.update_qa_embeddings(limit=limit, batch_size=batch_size)
+        finally:
+            embedder.close()
+
+    def count_abstracts_without_qa_embeddings(self) -> int:
+        """
+        Count the number of abstracts without QA embeddings.
+
+        Returns:
+            Number of abstracts without QA embeddings
+        """
+        # Import here to avoid circular imports
+        from localknowledge.medrxiv.update_qaembeddings import MedrxivQAEmbedder
+
+        embedder = MedrxivQAEmbedder()
+        try:
+            return embedder.count_abstracts_without_qa_embeddings()
+        finally:
+            embedder.close()
+
     def close(self):
         """Close the database connection."""
         if hasattr(self, 'db'):
