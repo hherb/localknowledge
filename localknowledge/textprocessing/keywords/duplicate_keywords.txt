@@ -1,0 +1,11 @@
+HLA-DPB1 Mismatches and DPB1 mismatches in Hematopoietic Cell Transplantation
+
+The impact of HLA-DPB1 allele mismatches and DPB1 Allele Mismatches on outcomes after hematopoietic cell transplantation (HCT) has been extensively studied. Several studies have shown that certain DPB1 mismatches are associated with increased risk of graft-versus-host disease (GVHD), while others may be permissive and have minimal impact on outcomes.
+
+DPB1 mismatch categories have been proposed based on T-cell epitope groups, with DPB1 mismatch category determining the clinical relevance of the mismatch. High-risk DPB1 mismatches are associated with increased mortality, while low-risk DPB1 Mismatches may be tolerated.
+
+The expression level of DPB1 alleles also plays a role, with high expression mismatches conferring greater risk than low expression mismatches. Noncoding mismatches and noncoding Mismatches in the regulatory regions may also impact expression levels and functional outcomes.
+
+Recent studies have examined the role of relative HLA mismatches and HLA Mismatches in the context of other genetic factors. The presence of certain DPB1 alleles may modify the effect of DPB1 mismatch, and clade mismatches may be more predictive than allele-level mismatches in some contexts.
+
+Donor mismatch status remains an important consideration in donor selection algorithms, with permissive DPB1 mismatches preferred over non-permissive ones when a fully matched donor is not available.
