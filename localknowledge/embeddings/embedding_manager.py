@@ -61,37 +61,26 @@ class EmbeddingManager:
             Vector embedding as a list of floats
         """
         try:
-            # Log the request
-            print(f"Creating embedding with model {self.model_name} for text: {text[:50]}...")
-
             # Make the request to Ollama
             response = ollama.embeddings(model=self.model_name, prompt=text)
-
-            # Debug the response structure
-            print(f"Ollama response type: {type(response)}")
-
             # Handle the response based on its type
             if hasattr(response, 'embedding'):
                 # New Ollama client returns a Pydantic model
                 embedding = response.embedding
-                print(f"Found embedding attribute in response")
             elif hasattr(response, 'embeddings'):
                 # Some versions might return 'embeddings' instead
                 embedding = response.embeddings
                 if embedding and isinstance(embedding, list) and len(embedding) > 0:
                     # If it's a list of embeddings, take the first one
                     embedding = embedding[0]
-                print(f"Found embeddings attribute in response")
             elif isinstance(response, dict):
                 # Old Ollama client returns a dictionary
                 if 'embedding' in response:
                     embedding = response.get('embedding', [])
-                    print(f"Found embedding key in response dict")
                 elif 'embeddings' in response:
                     embedding = response.get('embeddings', [])
                     if embedding and isinstance(embedding, list) and len(embedding) > 0:
                         embedding = embedding[0]
-                    print(f"Found embeddings key in response dict")
                 else:
                     print(f"Unexpected Ollama response format: {response}")
                     embedding = []
@@ -99,7 +88,6 @@ class EmbeddingManager:
                 # Try to convert the response to a dict
                 try:
                     response_dict = response.__dict__
-                    print(f"Converted response to dict with keys: {list(response_dict.keys())}")
                     if 'embedding' in response_dict:
                         embedding = response_dict.get('embedding', [])
                     elif 'embeddings' in response_dict:
@@ -107,7 +95,6 @@ class EmbeddingManager:
                         if embedding and isinstance(embedding, list) and len(embedding) > 0:
                             embedding = embedding[0]
                     else:
-                        print(f"No embedding found in response dict: {response_dict}")
                         embedding = []
                 except Exception as dict_err:
                     print(f"Error converting response to dict: {dict_err}")
@@ -118,7 +105,6 @@ class EmbeddingManager:
                 print("Failed to create embedding: empty response")
                 return []
 
-            print(f"Created embedding with dimension: {len(embedding)}")
             return embedding
         except Exception as e:
             print(f"Error creating embedding: {e}")
@@ -323,7 +309,6 @@ class EmbeddingManager:
         try:
             # Get the dimension of embeddings in the database
             db_dimension = self.db.get_embedding_dimension()
-            print(f"Database embedding dimension: {db_dimension}")
 
             # If there are no embeddings in the database, it's compatible
             if db_dimension is None:
@@ -333,11 +318,9 @@ class EmbeddingManager:
             # Get the dimension of embeddings from the current model
             try:
                 model_dimension = self.get_embedding_dimension()
-                print(f"Model embedding dimension: {model_dimension}")
 
                 # Check if they match
                 is_compatible = db_dimension == model_dimension
-                print(f"Embedding compatibility check: {is_compatible} (DB: {db_dimension}, Model: {model_dimension})")
                 return is_compatible
             except Exception as model_err:
                 print(f"Error getting model dimension: {model_err}")
@@ -367,8 +350,6 @@ class EmbeddingManager:
             List of similar documents with similarity scores
         """
         try:
-            print(f"Semantic search for query: '{query}' with threshold={threshold}, limit={limit}, source_id={source_id}")
-
             # Check if there are any embeddings in the database
             db_dimension = self.db.get_embedding_dimension()
             if db_dimension is None:
@@ -379,8 +360,6 @@ class EmbeddingManager:
                     'text': 'No embeddings found in the database. Please embed some documents first.',
                     'similarity': 0.0
                 }]
-
-            print(f"Database embedding dimension: {db_dimension}")
 
             # Check if embeddings are compatible
             if not self.check_embedding_compatibility():
@@ -404,13 +383,6 @@ class EmbeddingManager:
                     'text': 'Failed to create an embedding for your query. Please try again or use a different query.',
                     'similarity': 0.0
                 }]
-
-            print(f"Query embedding dimension: {len(query_embedding)}")
-
-            # Lower the threshold for testing
-            if threshold > 0.5:
-                print(f"Lowering threshold from {threshold} to 0.5 for testing")
-                threshold = 0.5
 
             # Search for similar documents
             print(f"Searching for similar documents with threshold={threshold}")

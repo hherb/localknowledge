@@ -110,7 +110,6 @@ class EmbeddingDatabaseManager(DatabaseManager):
         if not self.connection:
             self.connect()
 
-        logger.debug("Beginning a new transaction")
         try:
             # Check if we're already in a transaction
             cursor = self.connection.cursor()
@@ -132,10 +131,8 @@ class EmbeddingDatabaseManager(DatabaseManager):
             logger.warning("No active connection to commit")
             return
 
-        logger.debug("Committing transaction")
         try:
             self.connection.commit()
-            logger.debug("Transaction committed successfully")
         except Exception as e:
             logger.error(f"Error committing transaction: {e}")
             raise
@@ -185,7 +182,6 @@ class EmbeddingDatabaseManager(DatabaseManager):
         Returns:
             ID of the stored embedding
         """
-        logger.debug(f"Storing embedding for {source_id}/{document_id} (chunk {chunk_no})")
 
         query = """
         INSERT INTO embeddings
@@ -203,7 +199,6 @@ class EmbeddingDatabaseManager(DatabaseManager):
 
         # Convert embedding to PostgreSQL vector format
         embedding_str = f"[{','.join(map(str, embedding))}]"
-        logger.debug(f"Converted embedding to PostgreSQL vector format (length: {len(embedding)})")
 
         params = (
             source_id,
@@ -221,16 +216,13 @@ class EmbeddingDatabaseManager(DatabaseManager):
             start_time = time.time()
             result = self.execute(query, params, commit=False)
             execution_time = time.time() - start_time
-            logger.debug(f"Query executed in {execution_time:.3f} seconds")
 
             # Commit if requested
             if commit:
                 self.commit_transaction()
-                logger.debug("Changes committed to database")
 
             if result and len(result) > 0:
                 embedding_id = result[0]['id']
-                logger.debug(f"Embedding stored with ID: {embedding_id}")
                 return embedding_id
 
             logger.warning("No ID returned from embedding insertion")
@@ -281,8 +273,6 @@ class EmbeddingDatabaseManager(DatabaseManager):
             document_id = emb.get('document_id', '')
             chunk_no = emb.get('chunk_no', 0)
 
-            logger.debug(f"Preparing embedding {i+1}/{len(embeddings)}: {source_id}/{document_id} (chunk {chunk_no})")
-
             params = (
                 source_id,
                 document_id,
@@ -300,12 +290,10 @@ class EmbeddingDatabaseManager(DatabaseManager):
             start_time = time.time()
             self.execute_many(query, params_list, commit=False)
             execution_time = time.time() - start_time
-            logger.debug(f"Batch query executed in {execution_time:.3f} seconds")
 
             # Commit if requested
             if commit:
                 self.commit_transaction()
-                logger.debug("Batch changes committed to database")
 
             return len(embeddings)
         except Exception as e:
@@ -314,7 +302,6 @@ class EmbeddingDatabaseManager(DatabaseManager):
             self.rollback_transaction()
 
             # Fall back to storing one by one if batch fails
-            logger.info("Falling back to storing embeddings one by one")
             count = 0
             for emb in embeddings:
                 try:
@@ -339,7 +326,6 @@ class EmbeddingDatabaseManager(DatabaseManager):
             if commit and count > 0:
                 try:
                     self.commit_transaction()
-                    logger.debug(f"Committed {count} individual embeddings")
                 except Exception as commit_e:
                     logger.error(f"Error committing individual embeddings: {commit_e}")
                     self.rollback_transaction()
@@ -364,11 +350,9 @@ class EmbeddingDatabaseManager(DatabaseManager):
         Returns:
             List of similar documents with similarity scores
         """
-        print(f"Database: Searching for similar documents with threshold {threshold} and limit {limit}")
 
         # Convert embedding to PostgreSQL vector format
         embedding_str = f"[{','.join(map(str, query_embedding))}]"
-        print(f"Database: Converted query embedding to PostgreSQL vector format (length: {len(query_embedding)})")
 
         # Build the query
         query = """
@@ -385,7 +369,6 @@ class EmbeddingDatabaseManager(DatabaseManager):
         if source_id:
             where_clauses.append("source_id = %s")
             params.append(source_id)
-            print(f"Database: Filtering by source_id: {source_id}")
 
         # Add similarity threshold
         # We need to add the embedding parameter again since we're using it twice in the query
@@ -399,8 +382,6 @@ class EmbeddingDatabaseManager(DatabaseManager):
         query += " ORDER BY similarity DESC"
         query += f" LIMIT {limit}"
 
-        print(f"Database: Final SQL query:\n{query}")
-        print(f"Database: Query parameters: {params}")
 
         try:
             start_time = time.time()
@@ -409,9 +390,6 @@ class EmbeddingDatabaseManager(DatabaseManager):
 
             if results:
                 print(f"Database: Found {len(results)} similar documents in {execution_time:.3f} seconds")
-                # Print the first result for debugging
-                if len(results) > 0:
-                    print(f"Database: First result - document_id: {results[0].get('document_id')}, similarity: {results[0].get('similarity')}")
             else:
                 print(f"Database: No similar documents found in {execution_time:.3f} seconds")
 
@@ -423,7 +401,6 @@ class EmbeddingDatabaseManager(DatabaseManager):
 
                     # Try with a much lower threshold
                     low_threshold = 0.1
-                    print(f"Database: Trying again with very low threshold {low_threshold}")
 
                     # Modify the query with a lower threshold
                     modified_query = query.replace(f"> {threshold}", f"> {low_threshold}")
@@ -456,7 +433,6 @@ class EmbeddingDatabaseManager(DatabaseManager):
         Returns:
             List of embeddings for the document
         """
-        logger.debug(f"Getting embeddings for document {source_id}/{document_id}")
 
         query = """
         SELECT id, source_id, document_id, chunk_no, page_no, text, keywords, model_name
@@ -469,12 +445,6 @@ class EmbeddingDatabaseManager(DatabaseManager):
             start_time = time.time()
             results = self.execute(query, (source_id, document_id))
             execution_time = time.time() - start_time
-
-            if results:
-                logger.debug(f"Found {len(results)} embeddings for document {source_id}/{document_id} in {execution_time:.3f} seconds")
-            else:
-                logger.debug(f"No embeddings found for document {source_id}/{document_id} in {execution_time:.3f} seconds")
-
             return results or []
         except Exception as e:
             logger.error(f"Error getting document embeddings for {source_id}/{document_id}: {e}")
@@ -488,7 +458,6 @@ class EmbeddingDatabaseManager(DatabaseManager):
         Returns:
             Dimension (vector size) of the embeddings, or None if no embeddings exist
         """
-        logger.debug("Getting embedding dimension from database")
 
         query = """
         SELECT embedding
@@ -511,12 +480,10 @@ class EmbeddingDatabaseManager(DatabaseManager):
             if isinstance(embedding_str, str) and embedding_str.startswith('[') and embedding_str.endswith(']'):
                 values = embedding_str[1:-1].split(',')
                 dimension = len(values)
-                logger.debug(f"Database embedding dimension: {dimension}")
                 return dimension
             else:
                 # If the embedding is already a list or array
                 dimension = len(embedding_str)
-                logger.debug(f"Database embedding dimension: {dimension}")
                 return dimension
 
         except Exception as e:

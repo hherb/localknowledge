@@ -17,7 +17,7 @@ from PySide6.QtWidgets import (
     QTabWidget, QLabel, QMessageBox, QApplication,
     QScrollArea, QStatusBar, QStyledItemDelegate, QStyle,
     QCheckBox, QComboBox, QSlider, QSpinBox, QGroupBox,
-    QFormLayout, QToolButton, QDialog
+    QFormLayout, QToolButton, QDialog, QFrame
 )
 from PySide6.QtWebEngineWidgets import QWebEngineView
 import pymupdf4llm
@@ -44,6 +44,25 @@ except ImportError:
 
 from localknowledge.db.medrxiv import MedRxivDatabaseManager
 from localknowledge.embeddings.embedding_manager import EmbeddingManager
+
+# Try to import rerankers
+try:
+    from localknowledge.ai.rerankers import get_available_rerankers, get_reranker
+    RERANKERS_AVAILABLE = True
+except ImportError:
+    RERANKERS_AVAILABLE = False
+    # Define fallback functions
+    def get_available_rerankers():
+        return [
+            {
+                'id': 'BAAI/bge-reranker-base',
+                'name': 'BGE Reranker Base',
+                'description': 'Good general purpose reranker with balanced performance'
+            }
+        ]
+
+    def get_reranker(model_name):
+        return None
 
 
 class PublicationItemDelegate(QStyledItemDelegate):
@@ -172,7 +191,9 @@ class KnowledgeBrowser(QWidget):
         # Default search settings
         self.search_settings = {
             'similarity_threshold': 0.3,
-            'max_results': 20
+            'max_results': 20,
+            'use_reranker': False,
+            'reranker_model': 'BAAI/bge-reranker-base'
         }
 
         self.current_publication = None
@@ -216,18 +237,26 @@ class KnowledgeBrowser(QWidget):
         self.search_mode = QComboBox()
         self.search_mode.addItem("Keyword Search", "keyword")
         self.search_mode.addItem("Semantic Search", "semantic")
-        self.search_mode.setToolTip("Keyword search uses exact matching. Semantic search uses AI to find related content.")
+        self.search_mode.addItem("Hybrid Search", "hybrid")
+        self.search_mode.setToolTip("Keyword search uses exact matching. Semantic search uses AI to find related content. Hybrid search combines both approaches.")
 
-        # Disable semantic search if not available
+        # Disable semantic and hybrid search if embedding manager is not available
         if not self.embedding_manager:
-            # Find the index of the semantic search option
+            # Find the indices of the semantic and hybrid search options
             semantic_index = self.search_mode.findData("semantic")
+            hybrid_index = self.search_mode.findData("hybrid")
+
+            # Create a model for the combo box
+            model = self.search_mode.model()
+
+            # Disable semantic search
             if semantic_index >= 0:
-                # Create a model for the combo box
-                model = self.search_mode.model()
-                # Get the item at the semantic search index
                 item = model.item(semantic_index)
-                # Make it non-selectable
+                item.setEnabled(False)
+
+            # Disable hybrid search
+            if hybrid_index >= 0:
+                item = model.item(hybrid_index)
                 item.setEnabled(False)
 
         # When search mode changes, update the placeholder text
@@ -313,19 +342,28 @@ class KnowledgeBrowser(QWidget):
         self.resize(1200, 800)
 
     @Slot(int)
-    def _update_search_placeholder(self, index):
+    def _update_search_placeholder(self, _):
         """Update the search input placeholder text based on the selected search mode."""
-        if index == 0:  # Keyword search
+        search_mode = self.search_mode.currentData()
+
+        if search_mode == "keyword":
             self.search_input.setPlaceholderText("Enter keywords (comma separated or use quotes)")
-        else:  # Semantic search
+        elif search_mode == "semantic":
             self.search_input.setPlaceholderText("Enter a question or description of what you're looking for")
+        elif search_mode == "hybrid":
+            self.search_input.setPlaceholderText("Enter keywords or a question to search using both methods")
+        else:
+            self.search_input.setPlaceholderText("Enter search terms")
 
     def _show_search_settings(self):
         """Show the search settings dialog."""
         dialog = SearchSettingsDialog(
             self,
             similarity_threshold=self.search_settings['similarity_threshold'],
-            max_results=self.search_settings['max_results']
+            max_results=self.search_settings['max_results'],
+            use_reranker=self.search_settings.get('use_reranker', False),
+            reranker_model=self.search_settings.get('reranker_model', 'BAAI/bge-reranker-base'),
+            hybrid_weight=self.search_settings.get('hybrid_weight', 0.5)
         )
 
         if dialog.exec() == QDialog.Accepted:
@@ -376,9 +414,15 @@ class KnowledgeBrowser(QWidget):
             if search_mode == "keyword":
                 # Keyword search - use the existing database search
                 self._perform_keyword_search(search_text)
-            else:
+            elif search_mode == "semantic":
                 # Semantic search - use the embedding manager
                 self._perform_semantic_search(search_text)
+            elif search_mode == "hybrid":
+                # Hybrid search - combine keyword and semantic search
+                self._perform_hybrid_search(search_text)
+            else:
+                # Unknown search mode
+                raise ValueError(f"Unknown search mode: {search_mode}")
 
         except Exception as e:
             self.publication_list.clear()
@@ -431,22 +475,27 @@ class KnowledgeBrowser(QWidget):
         # Perform the search
         publications = self.db_manager.search_preprints(query, fields=['abstract'])
 
+        # Store the search query for reference
+        self.last_search_query = "keyword"
+
+        # Display the results
+        self._display_keyword_results(publications)
+
+    def _display_keyword_results(self, publications):
+        """Display keyword search results in the publication list."""
         self.publication_list.clear()
 
         if not publications:
             self.publication_list.addItem("No results found.")
             return
 
-        # Add search results to the list
+        # Add each publication to the list
         for pub in publications:
             item = PublicationItem(pub)
             self.publication_list.addItem(item)
 
         # Update status bar with result count
         self.status_bar.showMessage(f"Found {len(publications)} publications matching keyword search")
-
-        # Store the search query for reference
-        self.last_search_query = "keyword"
 
     def _perform_semantic_search(self, search_text):
         """Perform a semantic search using the embedding manager."""
@@ -506,23 +555,137 @@ class KnowledgeBrowser(QWidget):
                     publication['similarity'] = similarity_pct
                     publication['similarity_value'] = similarity  # Store raw value for sorting
                     publication['matched_text'] = chunk_text
-                    item = PublicationItem(publication)
-                    self.publication_list.addItem(item)
                     found_publications.append(publication)
                 else:
-                    # If we can't find the publication, just show the chunk
-                    self.publication_list.addItem(f"Document {document_id} (Similarity: {similarity_pct})")
-                    self.publication_list.addItem(f"Matched text: {chunk_text[:100]}...")
+                    print(f"Could not find publication {document_id} in database")
             except Exception as e:
                 print(f"Error retrieving publication {document_id}: {e}")
-                # Add a simple item with the document ID and similarity
-                self.publication_list.addItem(f"Document {document_id} (Similarity: {similarity_pct})")
-
-        # Update status bar with result count
-        self.status_bar.showMessage(f"Found {len(found_publications)} publications matching semantic search")
 
         # Store the search query for reference
         self.last_search_query = "semantic"
+        self.last_search_text = self.search_input.text().strip()
+
+        # If reranking is enabled and available, rerank the results
+        if RERANKERS_AVAILABLE and self.search_settings.get('use_reranker', False) and found_publications:
+            self.publication_list.clear()
+            self.publication_list.addItem("Reranking results...")
+            QApplication.processEvents()
+
+            # Create a worker for reranking
+            worker = RerankerWorker(
+                query=self.last_search_text,
+                documents=found_publications,
+                reranker_model=self.search_settings.get('reranker_model', 'BAAI/bge-reranker-base')
+            )
+
+            # Connect signals
+            worker.signals.result.connect(self._handle_reranking_results)
+            worker.signals.error.connect(self._handle_reranking_error)
+
+            # Execute the worker
+            self.threadpool.start(worker)
+        else:
+            # Display the results without reranking
+            self._display_search_results(found_publications)
+
+    def _handle_reranking_results(self, reranked_docs):
+        """Handle the results from reranking."""
+        self._display_search_results(reranked_docs, reranked=True)
+
+    def _handle_reranking_error(self, error_msg, traceback_str):
+        """Handle errors from the reranking worker."""
+        self.publication_list.clear()
+        self.publication_list.addItem(f"Reranking Error: {error_msg}")
+        print(f"Reranking error: {error_msg}\n{traceback_str}")
+
+        # Fall back to displaying the original results
+        if hasattr(self, 'last_search_results'):
+            self._display_search_results(self.last_search_results)
+
+    def _display_search_results(self, publications, reranked=False):
+        """Display search results in the publication list."""
+        self.publication_list.clear()
+
+        if not publications:
+            self.publication_list.addItem("No results found.")
+            return
+
+        # Add each publication to the list
+        for pub in publications:
+            item = PublicationItem(pub)
+            self.publication_list.addItem(item)
+
+        # Update status bar with result count
+        if reranked:
+            self.status_bar.showMessage(f"Found {len(publications)} publications matching semantic search (reranked)")
+        else:
+            self.status_bar.showMessage(f"Found {len(publications)} publications matching semantic search")
+
+        # Store the results for potential fallback
+        self.last_search_results = publications
+
+    def _perform_hybrid_search(self, search_text):
+        """Perform a hybrid search combining keyword and semantic search."""
+        # Check if embedding manager is available
+        if not self.embedding_manager:
+            self.publication_list.clear()
+            self.publication_list.addItem("Hybrid search requires semantic search capabilities. Please install Ollama and required models.")
+            return
+
+        # Create a worker for the hybrid search
+        worker = HybridSearchWorker(
+            db_manager=self.db_manager,
+            embedding_manager=self.embedding_manager,
+            query=search_text,
+            search_settings=self.search_settings
+        )
+
+        # Connect signals
+        worker.signals.result.connect(self._handle_hybrid_search_results)
+        worker.signals.error.connect(self._handle_hybrid_search_error)
+
+        # Execute the worker
+        self.threadpool.start(worker)
+
+    def _handle_hybrid_search_results(self, result):
+        """Handle the results from hybrid search."""
+        self.publication_list.clear()
+
+        combined_results = result.get('combined_results', [])
+        keyword_count = result.get('keyword_count', 0)
+        semantic_count = result.get('semantic_count', 0)
+        reranked = result.get('reranked', False)
+
+        if not combined_results:
+            self.publication_list.addItem("No results found.")
+            return
+
+        # Store the search query for reference
+        self.last_search_query = "hybrid"
+        self.last_search_text = self.search_input.text().strip()
+
+        # Add each publication to the list
+        for pub in combined_results:
+            item = PublicationItem(pub)
+            self.publication_list.addItem(item)
+
+        # Update status bar with result count
+        status_msg = f"Found {len(combined_results)} publications from hybrid search "
+        status_msg += f"(Keyword: {keyword_count}, Semantic: {semantic_count})"
+
+        if reranked:
+            status_msg += " (reranked)"
+
+        self.status_bar.showMessage(status_msg)
+
+        # Store the results for potential fallback
+        self.last_search_results = combined_results
+
+    def _handle_hybrid_search_error(self, error_msg, traceback_str):
+        """Handle errors from the hybrid search worker."""
+        self.publication_list.clear()
+        self.publication_list.addItem(f"Search Error: {error_msg}")
+        print(f"Hybrid search error: {error_msg}\n{traceback_str}")
 
     def _handle_semantic_search_error(self, error_msg, traceback_str):
         """Handle errors from the semantic search worker."""
@@ -553,10 +716,25 @@ class KnowledgeBrowser(QWidget):
         if len(title) > 50:
             title = title[:47] + '...'
 
-        # If this is a semantic search result, show similarity in status bar
-        if hasattr(self, 'last_search_query') and self.last_search_query == 'semantic' and 'similarity' in self.current_publication:
+        # If this is a semantic or hybrid search result, show similarity in status bar
+        if (hasattr(self, 'last_search_query') and
+            self.last_search_query in ['semantic', 'hybrid'] and
+            'similarity' in self.current_publication):
+
             similarity = self.current_publication.get('similarity', '')
-            self.status_bar.showMessage(f"Publication: {title} | Similarity: {similarity}")
+            source = self.current_publication.get('search_source', '')
+            status_msg = f"Publication: {title} | Similarity: {similarity}"
+
+            # Add source information for hybrid search
+            if self.last_search_query == 'hybrid':
+                if source == 'both':
+                    status_msg += " (found by both keyword and semantic search)"
+                elif source == 'keyword':
+                    status_msg += " (found by keyword search)"
+                elif source == 'semantic':
+                    status_msg += " (found by semantic search)"
+
+            self.status_bar.showMessage(status_msg)
         else:
             self.status_bar.showMessage(f"Publication: {title}")
 
@@ -688,8 +866,21 @@ class KnowledgeBrowser(QWidget):
 
     def _display_matched_text(self, text: str):
         """Display the matched text from semantic search with highlighting."""
+        # Determine the source of the match
+        source = "Semantic Search"
+        if hasattr(self, 'last_search_query') and self.last_search_query == 'hybrid':
+            search_source = self.current_publication.get('search_source', '')
+            if search_source == 'both':
+                source = "Hybrid Search (Keyword + Semantic)"
+            elif search_source == 'semantic':
+                source = "Hybrid Search (Semantic Match)"
+            elif search_source == 'keyword':
+                source = "Hybrid Search (Keyword Match)"
+            else:
+                source = "Hybrid Search"
+
         # Create a markdown version with the matched text highlighted
-        markdown_text = f"# Matched Text from Semantic Search\n\n```\n{text}\n```\n\n"
+        markdown_text = f"# Matched Text from {source}\n\n```\n{text}\n```\n\n"
 
         # Display the markdown
         self._display_markdown(markdown_text)
@@ -845,10 +1036,12 @@ class SearchSettingsDialog(QDialog):
     """
     Dialog for configuring search settings.
     """
-    def __init__(self, parent=None, similarity_threshold=0.3, max_results=20):
+    def __init__(self, parent=None, similarity_threshold=0.3, max_results=20,
+                 use_reranker=False, reranker_model="BAAI/bge-reranker-base",
+                 hybrid_weight=0.5):
         super().__init__(parent)
         self.setWindowTitle("Search Settings")
-        self.setMinimumWidth(400)
+        self.setMinimumWidth(500)
 
         # Create layout
         layout = QVBoxLayout(self)
@@ -879,6 +1072,89 @@ class SearchSettingsDialog(QDialog):
         # Add group to main layout
         layout.addWidget(semantic_group)
 
+        # Create reranker settings group
+        reranker_group = QGroupBox("Reranking Settings")
+        reranker_layout = QFormLayout(reranker_group)
+
+        # Enable reranking checkbox
+        self.use_reranker_checkbox = QCheckBox("Enable Reranking")
+        self.use_reranker_checkbox.setChecked(use_reranker)
+        self.use_reranker_checkbox.stateChanged.connect(self._toggle_reranker_options)
+
+        # Reranker model selection
+        self.reranker_model_combo = QComboBox()
+
+        # Get available rerankers
+        self.available_rerankers = get_available_rerankers()
+
+        # Add rerankers to combo box
+        for reranker in self.available_rerankers:
+            self.reranker_model_combo.addItem(reranker['name'], reranker['id'])
+            # Set tooltip to show description
+            self.reranker_model_combo.setItemData(
+                self.reranker_model_combo.count() - 1,
+                reranker['description'],
+                Qt.ToolTipRole
+            )
+
+        # Set current reranker model
+        index = self.reranker_model_combo.findData(reranker_model)
+        if index >= 0:
+            self.reranker_model_combo.setCurrentIndex(index)
+
+        # Add reranker description label
+        self.reranker_description = QLabel()
+        self.reranker_description.setWordWrap(True)
+        self.reranker_description.setStyleSheet("font-size: 10px; color: #666;")
+        self._update_reranker_description(self.reranker_model_combo.currentIndex())
+
+        # Connect signal to update description when model changes
+        self.reranker_model_combo.currentIndexChanged.connect(self._update_reranker_description)
+
+        # Add widgets to form layout
+        reranker_layout.addRow("", self.use_reranker_checkbox)
+        reranker_layout.addRow("Reranker Model:", self.reranker_model_combo)
+        reranker_layout.addRow("", self.reranker_description)
+
+        # Add group to main layout
+        layout.addWidget(reranker_group)
+
+        # Create hybrid search settings group
+        hybrid_group = QGroupBox("Hybrid Search Settings")
+        hybrid_layout = QFormLayout(hybrid_group)
+
+        # Hybrid weight slider (balance between keyword and semantic results)
+        self.hybrid_weight_label = QLabel(f"Semantic Weight: {hybrid_weight:.2f}")
+        self.hybrid_weight_slider = QSlider(Qt.Horizontal)
+        self.hybrid_weight_slider.setRange(0, 100)  # 0.0 to 1.0 mapped to 0-100
+        self.hybrid_weight_slider.setValue(int(hybrid_weight * 100))
+        self.hybrid_weight_slider.setTickPosition(QSlider.TicksBelow)
+        self.hybrid_weight_slider.setTickInterval(10)
+        self.hybrid_weight_slider.valueChanged.connect(self._update_hybrid_weight_label)
+
+        # Add widgets to form layout
+        hybrid_layout.addRow(self.hybrid_weight_label, self.hybrid_weight_slider)
+
+        # Add explanation text
+        hybrid_explanation = QLabel("Adjusts the balance between keyword and semantic results. Higher values give more weight to semantic similarity.")
+        hybrid_explanation.setWordWrap(True)
+        hybrid_explanation.setStyleSheet("font-size: 10px; color: #666;")
+        hybrid_layout.addRow("", hybrid_explanation)
+
+        # Add group to main layout
+        layout.addWidget(hybrid_group)
+
+        # Set initial state of reranker options
+        self._toggle_reranker_options(self.use_reranker_checkbox.isChecked())
+
+        # Disable reranking if not available
+        if not RERANKERS_AVAILABLE:
+            self.use_reranker_checkbox.setChecked(False)
+            self.use_reranker_checkbox.setEnabled(False)
+            self.reranker_model_combo.setEnabled(False)
+            self.reranker_description.setText("Reranking is not available. Please install sentence-transformers.")
+            self.reranker_description.setStyleSheet("font-size: 10px; color: #f00;")
+
         # Add buttons
         button_layout = QHBoxLayout()
         self.ok_button = QPushButton("OK")
@@ -891,16 +1167,36 @@ class SearchSettingsDialog(QDialog):
         button_layout.addWidget(self.cancel_button)
         layout.addLayout(button_layout)
 
+    def _toggle_reranker_options(self, enabled):
+        """Enable or disable reranker options based on checkbox state."""
+        self.reranker_model_combo.setEnabled(enabled)
+
+    def _update_reranker_description(self, index):
+        """Update the reranker description label when the model changes."""
+        if index >= 0 and index < len(self.available_rerankers):
+            description = self.available_rerankers[index]['description']
+            self.reranker_description.setText(description)
+        else:
+            self.reranker_description.setText("")
+
     def _update_similarity_label(self, value):
         """Update the similarity threshold label when the slider changes."""
         threshold = value / 100.0
         self.similarity_label.setText(f"Similarity Threshold: {threshold:.2f}")
 
+    def _update_hybrid_weight_label(self, value):
+        """Update the hybrid weight label when the slider changes."""
+        weight = value / 100.0
+        self.hybrid_weight_label.setText(f"Semantic Weight: {weight:.2f}")
+
     def get_settings(self):
         """Get the current settings from the dialog."""
         return {
             'similarity_threshold': self.similarity_slider.value() / 100.0,
-            'max_results': self.max_results_spinner.value()
+            'max_results': self.max_results_spinner.value(),
+            'use_reranker': self.use_reranker_checkbox.isChecked(),
+            'reranker_model': self.reranker_model_combo.currentData(),
+            'hybrid_weight': self.hybrid_weight_slider.value() / 100.0
         }
 
 
@@ -965,6 +1261,273 @@ class SemanticSearchWorker(QRunnable):
         finally:
             # Always emit finished signal
             self.signals.finished.emit()
+
+
+class RerankerWorker(QRunnable):
+    """
+    Worker thread for reranking search results.
+    """
+
+    def __init__(self, query, documents, reranker_model):
+        """
+        Initialize the worker.
+
+        Args:
+            query: The search query
+            documents: List of document dictionaries to rerank
+            reranker_model: Name of the reranker model to use
+        """
+        super().__init__()
+        self.query = query
+        self.documents = documents
+        self.reranker_model = reranker_model
+        self.signals = WorkerSignals()
+
+    @Slot()
+    def run(self):
+        """
+        Rerank the documents.
+        """
+        try:
+            # Import the reranker module
+            from localknowledge.ai.rerankers import get_reranker
+
+            # Get the reranker
+            reranker = get_reranker(self.reranker_model)
+
+            if not reranker:
+                raise ValueError(f"Reranker model '{self.reranker_model}' not found")
+
+            # Rerank the documents
+            reranked_docs = reranker.rerank(self.query, self.documents)
+
+            # Emit the result
+            self.signals.result.emit(reranked_docs)
+
+        except Exception as e:
+            # Get the traceback
+            import traceback
+            trace = traceback.format_exc()
+
+            # Emit the error
+            self.signals.error.emit(str(e), trace)
+
+        finally:
+            # Always emit finished signal
+            self.signals.finished.emit()
+
+
+class HybridSearchWorker(QRunnable):
+    """
+    Worker thread for performing hybrid search (keyword + semantic).
+    """
+
+    def __init__(self, db_manager, embedding_manager, query, search_settings):
+        """
+        Initialize the worker.
+
+        Args:
+            db_manager: Database manager instance
+            embedding_manager: Embedding manager instance
+            query: Search query text
+            search_settings: Dictionary of search settings
+        """
+        super().__init__()
+        self.db_manager = db_manager
+        self.embedding_manager = embedding_manager
+        self.query = query
+        self.search_settings = search_settings
+        self.signals = WorkerSignals()
+
+    @Slot()
+    def run(self):
+        """
+        Perform hybrid search by combining keyword and semantic search results.
+        """
+        try:
+            # Process search terms for keyword search
+            search_terms = []
+            remaining_text = self.query
+
+            # Extract quoted terms first
+            quoted_terms = []
+            quote_start = remaining_text.find('"')
+            while quote_start != -1:
+                quote_end = remaining_text.find('"', quote_start + 1)
+                if quote_end != -1:
+                    quoted_term = remaining_text[quote_start + 1:quote_end].strip()
+                    if quoted_term:
+                        quoted_terms.append(quoted_term)
+                    remaining_text = remaining_text[:quote_start] + " " + remaining_text[quote_end + 1:]
+                else:
+                    break
+                quote_start = remaining_text.find('"')
+
+            # Add quoted terms
+            search_terms.extend(quoted_terms)
+
+            # Process remaining comma-separated terms
+            comma_terms = [term.strip() for term in remaining_text.split(",") if term.strip()]
+            search_terms.extend(comma_terms)
+
+            # Remove duplicates and empty terms
+            search_terms = [term for term in search_terms if term]
+
+            # Step 1: Perform keyword search
+            keyword_results = []
+            if search_terms:
+                # Convert the search terms into an appropriate query
+                query = " & ".join(search_terms)
+                keyword_results = self.db_manager.search_preprints(query, fields=['abstract'])
+
+                # Add source information to each result
+                for pub in keyword_results:
+                    pub['search_source'] = 'keyword'
+
+            # Step 2: Perform semantic search
+            semantic_results = []
+            if self.embedding_manager:
+                try:
+                    # Get raw semantic search results
+                    raw_results = self.embedding_manager.search(
+                        query=self.query,
+                        limit=self.search_settings.get('max_results', 20),
+                        threshold=self.search_settings.get('similarity_threshold', 0.3),
+                        source_id="medrxiv"
+                    )
+
+                    # Process semantic results
+                    for result in raw_results:
+                        document_id = result.get('document_id')
+                        similarity = result.get('similarity', 0)
+                        chunk_text = result.get('text', '')
+
+                        # Format similarity as percentage
+                        similarity_pct = f"{similarity * 100:.1f}%"
+
+                        try:
+                            # Get the full publication details
+                            publication = self.db_manager.get_preprint_by_doi(document_id)
+
+                            if publication:
+                                # Add semantic search metadata
+                                publication['similarity'] = similarity_pct
+                                publication['similarity_value'] = similarity
+                                publication['matched_text'] = chunk_text
+                                publication['search_source'] = 'semantic'
+                                semantic_results.append(publication)
+                        except Exception as e:
+                            print(f"Error retrieving publication {document_id}: {e}")
+                except Exception as e:
+                    print(f"Semantic search error: {e}")
+
+            # Step 3: Combine and deduplicate results
+            combined_results = self._combine_results(keyword_results, semantic_results)
+
+            # Step 4: Rerank if enabled
+            if (RERANKERS_AVAILABLE and
+                self.search_settings.get('use_reranker', False) and
+                combined_results):
+                try:
+                    # Import the reranker module
+                    from localknowledge.ai.rerankers import get_reranker
+
+                    # Get the reranker
+                    reranker = get_reranker(self.search_settings.get('reranker_model', 'BAAI/bge-reranker-base'))
+
+                    if reranker:
+                        # Rerank the documents
+                        combined_results = reranker.rerank(self.query, combined_results)
+
+                        # Mark as reranked
+                        for result in combined_results:
+                            result['reranked'] = True
+                except Exception as e:
+                    print(f"Reranking error: {e}")
+
+            # Emit the result
+            self.signals.result.emit({
+                'combined_results': combined_results,
+                'keyword_count': len(keyword_results),
+                'semantic_count': len(semantic_results),
+                'reranked': self.search_settings.get('use_reranker', False) and RERANKERS_AVAILABLE
+            })
+
+        except Exception as e:
+            # Get the traceback
+            import traceback
+            trace = traceback.format_exc()
+
+            # Emit the error
+            self.signals.error.emit(str(e), trace)
+
+        finally:
+            # Always emit finished signal
+            self.signals.finished.emit()
+
+    def _combine_results(self, keyword_results, semantic_results):
+        """
+        Combine and deduplicate results from keyword and semantic searches.
+
+        Args:
+            keyword_results: List of publications from keyword search
+            semantic_results: List of publications from semantic search
+
+        Returns:
+            Combined and deduplicated list of publications
+        """
+        # Create a dictionary to track unique DOIs
+        unique_results = {}
+
+        # Process keyword results first
+        for pub in keyword_results:
+            doi = pub.get('doi')
+            if doi:
+                unique_results[doi] = pub
+
+        # Process semantic results, merging with keyword results if they exist
+        for pub in semantic_results:
+            doi = pub.get('doi')
+            if doi:
+                if doi in unique_results:
+                    # Merge the results - keep keyword result but add semantic metadata
+                    existing_pub = unique_results[doi]
+                    existing_pub['similarity'] = pub.get('similarity')
+                    existing_pub['similarity_value'] = pub.get('similarity_value', 0)
+                    existing_pub['matched_text'] = pub.get('matched_text')
+                    existing_pub['search_source'] = 'both'
+                else:
+                    unique_results[doi] = pub
+
+        # Convert back to list
+        combined_results = list(unique_results.values())
+
+        # Get the hybrid weight parameter
+        hybrid_weight = self.search_settings.get('hybrid_weight', 0.5)
+
+        # Sort by a weighted combination of factors
+        def sort_key(pub):
+            # Base score starts at 0
+            score = 0
+
+            # Add semantic similarity score (weighted by hybrid_weight)
+            if 'similarity_value' in pub:
+                score += pub.get('similarity_value', 0) * hybrid_weight
+
+            # Add keyword match score (weighted by 1-hybrid_weight)
+            if pub.get('search_source') in ['keyword', 'both']:
+                # Give keyword matches a boost weighted by (1-hybrid_weight)
+                score += (1 - hybrid_weight)
+
+            # Use date as a secondary sort key
+            date_str = pub.get('date', '')
+
+            return (score, date_str)
+
+        # Sort by the combined score (higher is better)
+        combined_results.sort(key=sort_key, reverse=True)
+
+        return combined_results
 
 
 class PDFExtractionWorker(QRunnable):
