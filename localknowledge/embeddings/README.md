@@ -101,6 +101,22 @@ print(f"Deleted {deleted} embeddings")
 embedding_manager.close()
 ```
 
+## Database Migrations
+
+### Vector Size Migration
+
+If you need to change the vector size in the database (e.g., from 1536 to 1024 dimensions), use the provided migration script:
+
+```bash
+# First, run in dry-run mode to see what would happen
+python -m localknowledge.embeddings.migrations.migrate_vector_size
+
+# If everything looks good, execute the migration
+python -m localknowledge.embeddings.migrations.migrate_vector_size --execute
+```
+
+The migration script is designed to be safe and non-destructive. It will only change the vector size if there are no existing embeddings in the database. If there are existing embeddings, it will provide instructions for a more complex migration strategy.
+
 ## Example Script
 
 See the `examples/embedding_example.py` script for a complete example of how to use the embeddings module.
