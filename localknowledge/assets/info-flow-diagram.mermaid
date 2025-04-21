@@ -1,0 +1,82 @@
+flowchart TD
+    %% Data Sources
+    PubMed["PubMed"]:::blackText
+    MedRxiv["MedRxiv"]:::blackText
+    OtherSources["Other Sources"]:::blackText
+    
+    %% Initial Processing
+    DataFetching["Daily Data Fetching"]:::blackText
+    MarkdownConversion["Convert to Markdown Format"]:::blackText
+    
+    %% Document Processing
+    SemanticChunking["Semantic Chunking & Embedding\nwith Source Metadata"]:::blackText
+    KeywordExtraction["Sophisticated Keyword Extraction"]:::blackText
+    Summarization["LLM Text Summarization"]:::blackText
+    QuestionGeneration["Purpose Fine-tuned LLM\nQuestion/Answer Generation"]:::blackText
+    
+    %% Storage Layer
+    VectorStorage["Vector Database Storage\n(PostgreSQL + pgvector)"]:::blackText
+    KeywordStorage["Keyword Storage\n(Full-text Indexed Tables)"]:::blackText
+    
+    %% Search Processing
+    UserQuery["User Query"]:::blackText
+    QueryRephraser["Query Rephraser\n(Multiple Reformulations)"]:::queryText
+    KeywordExpander["Keyword Expander\n(Synonym Provider)"]:::queryText
+    WebSearch["Optional Agentic Web Search\n(When Online Access Available)"]:::queryText
+    SemanticSearch["Embedding-based Semantic Search"]:::blackText
+    KeywordSearch["BM25 & Keyword Full-text Search"]:::blackText
+    ResultMerging["Search Results Merging"]:::blackText
+    Deduplication["Result Deduplication"]:::blackText
+    Reranking["Result Reranking"]:::blackText
+    ResultCaching["Caching of Reranked Results"]:::blackText
+    
+    %% User Interface
+    ResultPresentation["Present Results to User"]:::blackText
+    AdvancedAnalysis["Advanced Analysis\nusing Results Cache"]:::blackText
+    
+    %% Flow Connections
+    PubMed --> DataFetching
+    MedRxiv --> DataFetching
+    OtherSources --> DataFetching
+    DataFetching --> MarkdownConversion
+    MarkdownConversion --> SemanticChunking
+    MarkdownConversion --> KeywordExtraction
+    MarkdownConversion --> Summarization
+    MarkdownConversion --> QuestionGeneration
+    
+    SemanticChunking --> VectorStorage
+    KeywordExtraction --> KeywordStorage
+    Summarization -.->|"Creates Summary Chunk"| VectorStorage
+    QuestionGeneration -.->|"Creates Q/A Chunks"| VectorStorage
+    
+    UserQuery --> QueryRephraser
+    UserQuery --> KeywordExpander
+    UserQuery --> WebSearch
+    QueryRephraser --> SemanticSearch
+    KeywordExpander --> KeywordSearch
+    WebSearch -.->|"If Online"| ResultMerging
+    VectorStorage --> SemanticSearch
+    KeywordStorage --> KeywordSearch
+    
+    SemanticSearch --> ResultMerging
+    KeywordSearch --> ResultMerging
+    ResultMerging --> Deduplication
+    Deduplication --> Reranking
+    Reranking --> ResultCaching
+    ResultCaching --> ResultPresentation
+    ResultCaching --> AdvancedAnalysis
+    
+    classDef sources fill:#f8d7da,stroke:#721c24,stroke-width:2px
+    classDef processing fill:#d1ecf1,stroke:#0c5460,stroke-width:2px
+    classDef storage fill:#d4edda,stroke:#155724,stroke-width:2px
+    classDef search fill:#e2e3e5,stroke:#383d41,stroke-width:2px
+    classDef presentation fill:#fff3cd,stroke:#856404,stroke-width:2px
+    classDef blackText color:#000000,font-weight:bold
+    classDef queryText color:#000000,font-weight:bold,fill:#f0e6ff,stroke:#5e35b1,stroke-width:2px
+    
+    class PubMed,MedRxiv,OtherSources sources
+    class DataFetching,MarkdownConversion,SemanticChunking,KeywordExtraction,Summarization,QuestionGeneration processing
+    class VectorStorage,KeywordStorage storage
+    class UserQuery,SemanticSearch,KeywordSearch,ResultMerging,Deduplication,Reranking,ResultCaching search
+    class ResultPresentation,AdvancedAnalysis presentation
+    class QueryRephraser,KeywordExpander,WebSearch queryText
