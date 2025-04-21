@@ -29,7 +29,18 @@ for chunk in chunks:
 
 ### MarkdownChunker
 
-A chunker that splits markdown text based on headings and subheadings.
+A sophisticated chunker that understands markdown structure and splits text based on headings and subheadings. This is useful for markdown documents with a clear hierarchical structure.
+
+The MarkdownChunker:
+- Creates chunks based on markdown heading structure
+- Ensures no chunk exceeds max_chunk_size
+- Tries to keep chunks above min_chunk_size unless unavoidable
+- Preserves headings with their content
+- Maintains proper metadata for each chunk
+
+### MarkdownChunker_Basic
+
+A simpler version of the markdown chunker that doesn't use a tree-based approach. This is kept for backward compatibility.
 
 ```python
 from localknowledge.chunking import MarkdownChunker
