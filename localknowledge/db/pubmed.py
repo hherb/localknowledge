@@ -11,12 +11,12 @@ logger = logging.getLogger()
 class PubMedDatabaseManager(DatabaseManager):
     """Database manager for PubMed articles."""
     
-    def __init__(self, create_indices: bool=False):
+    def __init__(self, recreate_indices: bool=False):
         """Initialize the PubMed database manager."""
         super().__init__()
         logger.info("Initializing PubMed database manager")
-        self.create_tables()
-        if create_indices:
+        #self.create_tables()
+        if recreate_indices:
             self.create_indices()
     
     def create_tables(self) -> None:

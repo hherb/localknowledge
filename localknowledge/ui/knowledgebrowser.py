@@ -9,13 +9,15 @@ from typing import Dict, List, Optional, Any
 import sys
 import traceback
 
-from PySide6.QtCore import Qt, Signal, Slot, QUrl, QSize, QPointF, QObject, QRunnable, QThreadPool
-from PySide6.QtGui import QColor
+from PySide6.QtCore import Qt, Signal, Slot, QUrl, QSize, QPointF, QObject, QRunnable, QThreadPool, QRect
+from PySide6.QtGui import QColor, QFont, QPainter, QTextDocument, QAbstractTextDocumentLayout
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLineEdit,
     QPushButton, QSplitter, QListWidget, QListWidgetItem,
     QTabWidget, QLabel, QMessageBox, QApplication,
-    QScrollArea, QStatusBar
+    QScrollArea, QStatusBar, QStyledItemDelegate, QStyle,
+    QCheckBox, QComboBox, QSlider, QSpinBox, QGroupBox,
+    QFormLayout, QToolButton, QDialog
 )
 from PySide6.QtWebEngineWidgets import QWebEngineView
 import pymupdf4llm
@@ -41,6 +43,66 @@ except ImportError:
         return text  # Just return the original text
 
 from localknowledge.db.medrxiv import MedRxivDatabaseManager
+from localknowledge.embeddings.embedding_manager import EmbeddingManager
+
+
+class PublicationItemDelegate(QStyledItemDelegate):
+    """Custom delegate for rendering publication items with bold titles."""
+
+    def paint(self, painter, option, index):
+        """Paint the item with custom formatting."""
+        # Get the item data
+        item_data = index.data()
+        if not item_data:
+            super().paint(painter, option, index)
+            return
+
+        # Split the text into lines
+        lines = item_data.split('\n')
+        if len(lines) < 2:
+            super().paint(painter, option, index)
+            return
+
+        # Extract title, authors, and date
+        title = lines[0]
+        authors = lines[1] if len(lines) > 1 else ''
+        date = lines[2] if len(lines) > 2 else ''
+
+        # Save painter state
+        painter.save()
+
+        # Draw selection background if selected
+        if option.state & QStyle.StateFlag.State_Selected:
+            painter.fillRect(option.rect, option.palette.highlight())
+            painter.setPen(option.palette.highlightedText().color())
+        else:
+            painter.setPen(option.palette.text().color())
+
+        # Calculate text rectangles
+        rect = option.rect.adjusted(5, 5, -5, -5)  # Add some padding
+        title_height = painter.fontMetrics().height() + 2
+        authors_height = painter.fontMetrics().height() + 2
+        date_height = painter.fontMetrics().height()
+
+        title_rect = QRect(rect.left(), rect.top(), rect.width(), title_height)
+        authors_rect = QRect(rect.left(), rect.top() + title_height, rect.width(), authors_height)
+        date_rect = QRect(rect.left(), rect.top() + title_height + authors_height, rect.width(), date_height)
+
+        # Draw title with bold font
+        bold_font = painter.font()
+        bold_font.setBold(True)
+        painter.setFont(bold_font)
+        painter.drawText(title_rect, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, title)
+
+        # Draw authors and date with normal font
+        normal_font = painter.font()
+        normal_font.setBold(False)
+        painter.setFont(normal_font)
+        painter.drawText(authors_rect, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, authors)
+        painter.drawText(date_rect, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, date)
+
+        # Restore painter state
+        painter.restore()
 
 
 class PublicationItem(QListWidgetItem):
@@ -55,17 +117,21 @@ class PublicationItem(QListWidgetItem):
         """
         self.publication = publication
 
-        # Create display text with HTML formatting
+        # Create display text without HTML formatting
         title = publication.get('title', 'No Title')
         authors = publication.get('authors', 'Unknown Authors')
         date = publication.get('date_posted', '')
+        similarity = publication.get('similarity', '')
 
         # Truncate the title if it's too long
         if len(title) > 80:
             title = title[:77] + "..."
 
-        # Format with HTML for bold titles
-        display_text = f"<b>{title}</b>\n{authors[:100]}{'...' if len(authors) > 100 else ''}\n{date}"
+        # Format display text without HTML tags
+        if similarity:
+            display_text = f"{title}\n{authors[:100]}{'...' if len(authors) > 100 else ''}\n{date} | Similarity: {similarity}"
+        else:
+            display_text = f"{title}\n{authors[:100]}{'...' if len(authors) > 100 else ''}\n{date}"
 
         # Initialize the item with display text
         super().__init__(display_text)
@@ -93,6 +159,22 @@ class KnowledgeBrowser(QWidget):
         super().__init__(parent)
 
         self.db_manager = MedRxivDatabaseManager()
+
+        # Try to initialize the embedding manager, but make it optional
+        self.embedding_manager = None
+        try:
+            # Just create the manager but don't test it yet
+            self.embedding_manager = EmbeddingManager()
+            print("Semantic search enabled")
+        except Exception as e:
+            print(f"Semantic search disabled: {e}")
+
+        # Default search settings
+        self.search_settings = {
+            'similarity_threshold': 0.3,
+            'max_results': 20
+        }
+
         self.current_publication = None
         self.pdf_base_dir = self._get_pdf_base_dir()
 
@@ -124,15 +206,47 @@ class KnowledgeBrowser(QWidget):
 
         # Search area at top
         search_layout = QHBoxLayout()
+
+        # Search input field
         self.search_input = QLineEdit()
         self.search_input.setPlaceholderText("Enter research question or keywords (comma separated or use quotes)")
         self.search_input.returnPressed.connect(self._on_search)
 
+        # Search mode selection
+        self.search_mode = QComboBox()
+        self.search_mode.addItem("Keyword Search", "keyword")
+        self.search_mode.addItem("Semantic Search", "semantic")
+        self.search_mode.setToolTip("Keyword search uses exact matching. Semantic search uses AI to find related content.")
+
+        # Disable semantic search if not available
+        if not self.embedding_manager:
+            # Find the index of the semantic search option
+            semantic_index = self.search_mode.findData("semantic")
+            if semantic_index >= 0:
+                # Create a model for the combo box
+                model = self.search_mode.model()
+                # Get the item at the semantic search index
+                item = model.item(semantic_index)
+                # Make it non-selectable
+                item.setEnabled(False)
+
+        # When search mode changes, update the placeholder text
+        self.search_mode.currentIndexChanged.connect(self._update_search_placeholder)
+
+        # Search button
         self.search_button = QPushButton("Search")
         self.search_button.clicked.connect(self._on_search)
 
+        # Settings button
+        self.settings_button = QToolButton()
+        self.settings_button.setText("⚙")
+        self.settings_button.setToolTip("Search Settings")
+        self.settings_button.clicked.connect(self._show_search_settings)
+
+        search_layout.addWidget(self.search_mode)
         search_layout.addWidget(self.search_input)
         search_layout.addWidget(self.search_button)
+        search_layout.addWidget(self.settings_button)
 
         # Splitter for results and document view
         self.splitter = QSplitter(Qt.Horizontal)
@@ -141,6 +255,11 @@ class KnowledgeBrowser(QWidget):
         self.publication_list = QListWidget()
         self.publication_list.currentItemChanged.connect(self._on_publication_selected)
         self.publication_list.setAlternatingRowColors(True)
+
+        # Set custom delegate for rendering items with bold titles
+        self.publication_item_delegate = PublicationItemDelegate()
+        self.publication_list.setItemDelegate(self.publication_item_delegate)
+
         self.publication_list.setStyleSheet("""
             QListWidget {
                 padding: 5px;
@@ -193,6 +312,27 @@ class KnowledgeBrowser(QWidget):
         self.setWindowTitle("Knowledge Browser")
         self.resize(1200, 800)
 
+    @Slot(int)
+    def _update_search_placeholder(self, index):
+        """Update the search input placeholder text based on the selected search mode."""
+        if index == 0:  # Keyword search
+            self.search_input.setPlaceholderText("Enter keywords (comma separated or use quotes)")
+        else:  # Semantic search
+            self.search_input.setPlaceholderText("Enter a question or description of what you're looking for")
+
+    def _show_search_settings(self):
+        """Show the search settings dialog."""
+        dialog = SearchSettingsDialog(
+            self,
+            similarity_threshold=self.search_settings['similarity_threshold'],
+            max_results=self.search_settings['max_results']
+        )
+
+        if dialog.exec() == QDialog.Accepted:
+            # Update settings if the user clicked OK
+            self.search_settings = dialog.get_settings()
+            print(f"Updated search settings: {self.search_settings}")
+
     def _get_pdf_base_dir(self) -> Path:
         """
         Get the base directory for PDF files, ensuring proper path expansion.
@@ -224,77 +364,180 @@ class KnowledgeBrowser(QWidget):
         if not search_text:
             return
 
+        # Get the current search mode
+        search_mode = self.search_mode.currentData()
+
+        # Show a message that we're searching
+        self.publication_list.clear()
+        self.publication_list.addItem("Searching...")
+        QApplication.processEvents()
+
         try:
-            # Process search terms to build the query
-            # If the search text is in quotes, search for the exact phrase
-            # Otherwise, split by commas and search for each term
-            search_terms = []
-
-            # Extract quoted terms first
-            quoted_terms = []
-            remaining_text = search_text
-
-            quote_start = remaining_text.find('"')
-            while quote_start != -1:
-                quote_end = remaining_text.find('"', quote_start + 1)
-                if quote_end != -1:
-                    quoted_term = remaining_text[quote_start + 1:quote_end].strip()
-                    if quoted_term:
-                        quoted_terms.append(quoted_term)
-                    remaining_text = remaining_text[:quote_start] + " " + remaining_text[quote_end + 1:]
-                else:
-                    # Unmatched quote, break
-                    break
-                quote_start = remaining_text.find('"')
-
-            # Add quoted terms
-            search_terms.extend(quoted_terms)
-
-            # Process remaining comma-separated terms
-            comma_terms = [term.strip() for term in remaining_text.split(",") if term.strip()]
-            search_terms.extend(comma_terms)
-
-            # Remove duplicates and empty terms
-            search_terms = [term for term in search_terms if term]
-
-            if not search_terms:
-                QMessageBox.warning(self, "Search Error", "Please enter valid search terms.")
-                return
-
-            # Convert the search terms into an appropriate query based on the database
-            # This assumes your database supports a full-text search with & operator for AND
-            query = " & ".join(search_terms)
-
-            # Show a message that we're searching
-            self.publication_list.clear()
-            self.publication_list.addItem("Searching...")
-            QApplication.processEvents()
-
-            # Perform the search
-            publications = self.db_manager.search_preprints(query, fields=['abstract'])
-
-            self.publication_list.clear()
-
-            if not publications:
-                self.publication_list.addItem("No results found.")
-                return
-
-            # Add search results to the list
-            for pub in publications:
-                item = PublicationItem(pub)
-                self.publication_list.addItem(item)
+            if search_mode == "keyword":
+                # Keyword search - use the existing database search
+                self._perform_keyword_search(search_text)
+            else:
+                # Semantic search - use the embedding manager
+                self._perform_semantic_search(search_text)
 
         except Exception as e:
+            self.publication_list.clear()
+            self.publication_list.addItem(f"Search Error: {str(e)}")
             QMessageBox.critical(self, "Search Error", f"An error occurred during search: {str(e)}")
 
+    def _perform_keyword_search(self, search_text):
+        """Perform a keyword-based search using the database manager."""
+        # Process search terms to build the query
+        # If the search text is in quotes, search for the exact phrase
+        # Otherwise, split by commas and search for each term
+        search_terms = []
+
+        # Extract quoted terms first
+        quoted_terms = []
+        remaining_text = search_text
+
+        quote_start = remaining_text.find('"')
+        while quote_start != -1:
+            quote_end = remaining_text.find('"', quote_start + 1)
+            if quote_end != -1:
+                quoted_term = remaining_text[quote_start + 1:quote_end].strip()
+                if quoted_term:
+                    quoted_terms.append(quoted_term)
+                remaining_text = remaining_text[:quote_start] + " " + remaining_text[quote_end + 1:]
+            else:
+                # Unmatched quote, break
+                break
+            quote_start = remaining_text.find('"')
+
+        # Add quoted terms
+        search_terms.extend(quoted_terms)
+
+        # Process remaining comma-separated terms
+        comma_terms = [term.strip() for term in remaining_text.split(",") if term.strip()]
+        search_terms.extend(comma_terms)
+
+        # Remove duplicates and empty terms
+        search_terms = [term for term in search_terms if term]
+
+        if not search_terms:
+            self.publication_list.clear()
+            self.publication_list.addItem("Please enter valid search terms.")
+            return
+
+        # Convert the search terms into an appropriate query based on the database
+        # This assumes your database supports a full-text search with & operator for AND
+        query = " & ".join(search_terms)
+
+        # Perform the search
+        publications = self.db_manager.search_preprints(query, fields=['abstract'])
+
+        self.publication_list.clear()
+
+        if not publications:
+            self.publication_list.addItem("No results found.")
+            return
+
+        # Add search results to the list
+        for pub in publications:
+            item = PublicationItem(pub)
+            self.publication_list.addItem(item)
+
+        # Update status bar with result count
+        self.status_bar.showMessage(f"Found {len(publications)} publications matching keyword search")
+
+        # Store the search query for reference
+        self.last_search_query = "keyword"
+
+    def _perform_semantic_search(self, search_text):
+        """Perform a semantic search using the embedding manager."""
+        # Check if embedding manager is available
+        if not self.embedding_manager:
+            self.publication_list.clear()
+            self.publication_list.addItem("Semantic search is not available. Please install Ollama and required models.")
+            return
+
+        # Create a worker for the semantic search
+        worker = SemanticSearchWorker(
+            embedding_manager=self.embedding_manager,
+            query=search_text,
+            limit=self.search_settings['max_results'],
+            threshold=self.search_settings['similarity_threshold'],
+            source_id="medrxiv"  # Filter to medrxiv documents
+        )
+
+        # Connect signals
+        worker.signals.result.connect(self._handle_semantic_search_results)
+        worker.signals.error.connect(self._handle_semantic_search_error)
+
+        # Execute the worker
+        self.threadpool.start(worker)
+
+    def _handle_semantic_search_results(self, results):
+        """Handle the results from semantic search."""
+        self.publication_list.clear()
+
+        if not results:
+            self.publication_list.addItem("No semantic search results found.")
+            return
+
+        # Check if there's an error in the results
+        if len(results) == 1 and 'error' in results[0]:
+            error_msg = results[0].get('text', 'Unknown error')
+            self.publication_list.addItem(f"Error: {error_msg}")
+            QMessageBox.warning(self, "Semantic Search Error", error_msg)
+            return
+
+        # For each result, try to find the corresponding publication in the database
+        found_publications = []
+        for result in results:
+            document_id = result.get('document_id')
+            similarity = result.get('similarity', 0)
+            chunk_text = result.get('text', '')
+
+            # Format similarity as percentage
+            similarity_pct = f"{similarity * 100:.1f}%"
+
+            try:
+                # Get the full publication details from the database
+                publication = self.db_manager.get_preprint_by_doi(document_id)
+
+                if publication:
+                    # Create a publication item with the similarity score added
+                    publication['similarity'] = similarity_pct
+                    publication['similarity_value'] = similarity  # Store raw value for sorting
+                    publication['matched_text'] = chunk_text
+                    item = PublicationItem(publication)
+                    self.publication_list.addItem(item)
+                    found_publications.append(publication)
+                else:
+                    # If we can't find the publication, just show the chunk
+                    self.publication_list.addItem(f"Document {document_id} (Similarity: {similarity_pct})")
+                    self.publication_list.addItem(f"Matched text: {chunk_text[:100]}...")
+            except Exception as e:
+                print(f"Error retrieving publication {document_id}: {e}")
+                # Add a simple item with the document ID and similarity
+                self.publication_list.addItem(f"Document {document_id} (Similarity: {similarity_pct})")
+
+        # Update status bar with result count
+        self.status_bar.showMessage(f"Found {len(found_publications)} publications matching semantic search")
+
+        # Store the search query for reference
+        self.last_search_query = "semantic"
+
+    def _handle_semantic_search_error(self, error_msg, traceback_str):
+        """Handle errors from the semantic search worker."""
+        self.publication_list.clear()
+        self.publication_list.addItem(f"Search Error: {error_msg}")
+        print(f"Semantic search error: {error_msg}\n{traceback_str}")
+
     @Slot(QListWidgetItem, QListWidgetItem)
-    def _on_publication_selected(self, current, previous):
+    def _on_publication_selected(self, current, _):
         """
         Handle publication selection in the list.
 
         Args:
             current: Currently selected item
-            previous: Previously selected item
+            _previous: Previously selected item (unused)
         """
         if not current or not isinstance(current, PublicationItem):
             return
@@ -304,6 +547,22 @@ class KnowledgeBrowser(QWidget):
 
         # Emit the signal with the selected publication
         self.publicationSelected.emit(self.current_publication)
+
+        # Update status bar with publication info
+        title = self.current_publication.get('title', 'Unknown Title')
+        if len(title) > 50:
+            title = title[:47] + '...'
+
+        # If this is a semantic search result, show similarity in status bar
+        if hasattr(self, 'last_search_query') and self.last_search_query == 'semantic' and 'similarity' in self.current_publication:
+            similarity = self.current_publication.get('similarity', '')
+            self.status_bar.showMessage(f"Publication: {title} | Similarity: {similarity}")
+        else:
+            self.status_bar.showMessage(f"Publication: {title}")
+
+        # If this is a semantic search result with matched text, show it
+        if 'matched_text' in self.current_publication:
+            self._display_matched_text(self.current_publication['matched_text'])
 
         # Load the PDF if available
         self._load_publication_content()
@@ -426,6 +685,17 @@ class KnowledgeBrowser(QWidget):
             print(f"PDF search completed: {match_count} matches found")
         else:
             print("PDF search completed: No matches found")
+
+    def _display_matched_text(self, text: str):
+        """Display the matched text from semantic search with highlighting."""
+        # Create a markdown version with the matched text highlighted
+        markdown_text = f"# Matched Text from Semantic Search\n\n```\n{text}\n```\n\n"
+
+        # Display the markdown
+        self._display_markdown(markdown_text)
+
+        # Switch to the markdown tab
+        self.tab_widget.setCurrentIndex(1)
 
     def _display_markdown(self, markdown_text: str):
         """
@@ -561,11 +831,77 @@ class KnowledgeBrowser(QWidget):
         self._display_markdown(error_text)
 
     def close_database(self):
-        """Close the database connection."""
+        """Close the database connections."""
         if hasattr(self, 'db_manager'):
             self.db_manager.close()
 
+        if hasattr(self, 'embedding_manager') and self.embedding_manager:
+            self.embedding_manager.close()
+
     # PDF-related methods are now handled by the PDFViewer widget
+
+
+class SearchSettingsDialog(QDialog):
+    """
+    Dialog for configuring search settings.
+    """
+    def __init__(self, parent=None, similarity_threshold=0.3, max_results=20):
+        super().__init__(parent)
+        self.setWindowTitle("Search Settings")
+        self.setMinimumWidth(400)
+
+        # Create layout
+        layout = QVBoxLayout(self)
+
+        # Create semantic search settings group
+        semantic_group = QGroupBox("Semantic Search Settings")
+        semantic_layout = QFormLayout(semantic_group)
+
+        # Similarity threshold slider
+        self.similarity_label = QLabel(f"Similarity Threshold: {similarity_threshold:.2f}")
+        self.similarity_slider = QSlider(Qt.Horizontal)
+        self.similarity_slider.setRange(0, 100)  # 0.0 to 1.0 mapped to 0-100
+        self.similarity_slider.setValue(int(similarity_threshold * 100))
+        self.similarity_slider.setTickPosition(QSlider.TicksBelow)
+        self.similarity_slider.setTickInterval(10)
+        self.similarity_slider.valueChanged.connect(self._update_similarity_label)
+
+        # Max results spinner
+        self.max_results_spinner = QSpinBox()
+        self.max_results_spinner.setRange(5, 100)
+        self.max_results_spinner.setValue(max_results)
+        self.max_results_spinner.setSingleStep(5)
+
+        # Add widgets to form layout
+        semantic_layout.addRow(self.similarity_label, self.similarity_slider)
+        semantic_layout.addRow("Maximum Results:", self.max_results_spinner)
+
+        # Add group to main layout
+        layout.addWidget(semantic_group)
+
+        # Add buttons
+        button_layout = QHBoxLayout()
+        self.ok_button = QPushButton("OK")
+        self.cancel_button = QPushButton("Cancel")
+
+        self.ok_button.clicked.connect(self.accept)
+        self.cancel_button.clicked.connect(self.reject)
+
+        button_layout.addWidget(self.ok_button)
+        button_layout.addWidget(self.cancel_button)
+        layout.addLayout(button_layout)
+
+    def _update_similarity_label(self, value):
+        """Update the similarity threshold label when the slider changes."""
+        threshold = value / 100.0
+        self.similarity_label.setText(f"Similarity Threshold: {threshold:.2f}")
+
+    def get_settings(self):
+        """Get the current settings from the dialog."""
+        return {
+            'similarity_threshold': self.similarity_slider.value() / 100.0,
+            'max_results': self.max_results_spinner.value()
+        }
 
 
 class WorkerSignals(QObject):
@@ -575,6 +911,60 @@ class WorkerSignals(QObject):
     finished = Signal()
     error = Signal(str, str)  # (error message, traceback)
     result = Signal(object)
+
+
+class SemanticSearchWorker(QRunnable):
+    """
+    Worker thread for performing semantic search.
+    """
+
+    def __init__(self, embedding_manager, query, limit=10, threshold=0.7, source_id=None):
+        """
+        Initialize the worker.
+
+        Args:
+            embedding_manager: EmbeddingManager instance
+            query: Search query text
+            limit: Maximum number of results to return
+            threshold: Similarity threshold (0-1)
+            source_id: Filter by source ID (optional)
+        """
+        super().__init__()
+        self.embedding_manager = embedding_manager
+        self.query = query
+        self.limit = limit
+        self.threshold = threshold
+        self.source_id = source_id
+        self.signals = WorkerSignals()
+
+    @Slot()
+    def run(self):
+        """
+        Perform semantic search.
+        """
+        try:
+            # Perform the search
+            results = self.embedding_manager.search(
+                query=self.query,
+                limit=self.limit,
+                threshold=self.threshold,
+                source_id=self.source_id
+            )
+
+            # Emit the result
+            self.signals.result.emit(results)
+
+        except Exception as e:
+            # Get the traceback
+            import traceback
+            trace = traceback.format_exc()
+
+            # Emit the error
+            self.signals.error.emit(str(e), trace)
+
+        finally:
+            # Always emit finished signal
+            self.signals.finished.emit()
 
 
 class PDFExtractionWorker(QRunnable):

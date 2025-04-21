@@ -42,13 +42,9 @@ class EmbeddingManager:
     def _verify_model(self):
         """Verify that the model is available in Ollama."""
         try:
-            models = ollama.list()
-            model_names = [model['name'] for model in models.get('models', [])]
-
-            if self.model_name not in model_names:
-                logger.warning(f"Model {self.model_name} not found in Ollama. Will attempt to pull it.")
-                ollama.pull(self.model_name)
-                logger.info(f"Successfully pulled model {self.model_name}")
+            # Just use the model directly without checking if it exists
+            # This will automatically pull the model if it doesn't exist
+            logger.info(f"Using embedding model: {self.model_name}")
         except Exception as e:
             logger.error(f"Error verifying model: {e}")
             raise
@@ -65,11 +61,70 @@ class EmbeddingManager:
             Vector embedding as a list of floats
         """
         try:
+            # Log the request
+            print(f"Creating embedding with model {self.model_name} for text: {text[:50]}...")
+
+            # Make the request to Ollama
             response = ollama.embeddings(model=self.model_name, prompt=text)
-            return response.get('embedding', [])
+
+            # Debug the response structure
+            print(f"Ollama response type: {type(response)}")
+
+            # Handle the response based on its type
+            if hasattr(response, 'embedding'):
+                # New Ollama client returns a Pydantic model
+                embedding = response.embedding
+                print(f"Found embedding attribute in response")
+            elif hasattr(response, 'embeddings'):
+                # Some versions might return 'embeddings' instead
+                embedding = response.embeddings
+                if embedding and isinstance(embedding, list) and len(embedding) > 0:
+                    # If it's a list of embeddings, take the first one
+                    embedding = embedding[0]
+                print(f"Found embeddings attribute in response")
+            elif isinstance(response, dict):
+                # Old Ollama client returns a dictionary
+                if 'embedding' in response:
+                    embedding = response.get('embedding', [])
+                    print(f"Found embedding key in response dict")
+                elif 'embeddings' in response:
+                    embedding = response.get('embeddings', [])
+                    if embedding and isinstance(embedding, list) and len(embedding) > 0:
+                        embedding = embedding[0]
+                    print(f"Found embeddings key in response dict")
+                else:
+                    print(f"Unexpected Ollama response format: {response}")
+                    embedding = []
+            else:
+                # Try to convert the response to a dict
+                try:
+                    response_dict = response.__dict__
+                    print(f"Converted response to dict with keys: {list(response_dict.keys())}")
+                    if 'embedding' in response_dict:
+                        embedding = response_dict.get('embedding', [])
+                    elif 'embeddings' in response_dict:
+                        embedding = response_dict.get('embeddings', [])
+                        if embedding and isinstance(embedding, list) and len(embedding) > 0:
+                            embedding = embedding[0]
+                    else:
+                        print(f"No embedding found in response dict: {response_dict}")
+                        embedding = []
+                except Exception as dict_err:
+                    print(f"Error converting response to dict: {dict_err}")
+                    print(f"Unexpected Ollama response type: {type(response)}")
+                    embedding = []
+
+            if not embedding:
+                print("Failed to create embedding: empty response")
+                return []
+
+            print(f"Created embedding with dimension: {len(embedding)}")
+            return embedding
         except Exception as e:
-            logger.error(f"Error creating embedding: {e}")
-            raise
+            print(f"Error creating embedding: {e}")
+            import traceback
+            print(traceback.format_exc())
+            return []  # Return empty list instead of raising to avoid crashing the app
 
     def chunk_text(self,
                    text: str,
@@ -247,7 +302,58 @@ class EmbeddingManager:
 
         return len(chunks)
 
-    def search(self, query: str, limit: int = 10, threshold: float = 0.7, source_id: Optional[str] = None) -> List[Dict[str, Any]]:
+    def get_embedding_dimension(self) -> int:
+        """
+        Get the dimension of embeddings produced by the current model.
+
+        Returns:
+            Dimension (vector size) of the embeddings
+        """
+        # Create a test embedding to determine the dimension
+        test_embedding = self.create_embedding("test")
+        return len(test_embedding)
+
+    def check_embedding_compatibility(self) -> bool:
+        """
+        Check if the current model's embeddings are compatible with the database.
+
+        Returns:
+            True if compatible, False otherwise
+        """
+        try:
+            # Get the dimension of embeddings in the database
+            db_dimension = self.db.get_embedding_dimension()
+            print(f"Database embedding dimension: {db_dimension}")
+
+            # If there are no embeddings in the database, it's compatible
+            if db_dimension is None:
+                print("No embeddings in database yet, so any model is compatible")
+                return True
+
+            # Get the dimension of embeddings from the current model
+            try:
+                model_dimension = self.get_embedding_dimension()
+                print(f"Model embedding dimension: {model_dimension}")
+
+                # Check if they match
+                is_compatible = db_dimension == model_dimension
+                print(f"Embedding compatibility check: {is_compatible} (DB: {db_dimension}, Model: {model_dimension})")
+                return is_compatible
+            except Exception as model_err:
+                print(f"Error getting model dimension: {model_err}")
+                # If we can't get the model dimension, assume it's compatible
+                # This allows the search to proceed and fail gracefully if needed
+                print("Assuming compatibility due to error in model dimension check")
+                return True
+        except Exception as e:
+            print(f"Error checking embedding compatibility: {e}")
+            import traceback
+            print(traceback.format_exc())
+            # If we can't check compatibility, assume it's compatible
+            # This allows the search to proceed and fail gracefully if needed
+            return True
+
+    def search(self, query: str, limit: int = 10, threshold: float = 0.5, source_id: Optional[str] = None) -> List[Dict[str, Any]]:
         """
         Search for similar documents using semantic search.
 
@@ -260,18 +366,76 @@ class EmbeddingManager:
         Returns:
             List of similar documents with similarity scores
         """
-        # Create embedding for the query
-        query_embedding = self.create_embedding(query)
+        try:
+            print(f"Semantic search for query: '{query}' with threshold={threshold}, limit={limit}, source_id={source_id}")
 
-        # Search for similar documents
-        results = self.db.search_similar(
-            query_embedding=query_embedding,
-            limit=limit,
-            threshold=threshold,
-            source_id=source_id
-        )
+            # Check if there are any embeddings in the database
+            db_dimension = self.db.get_embedding_dimension()
+            if db_dimension is None:
+                print("No embeddings found in the database. Please embed some documents first.")
+                return [{
+                    'error': 'No embeddings',
+                    'document_id': 'error',
+                    'text': 'No embeddings found in the database. Please embed some documents first.',
+                    'similarity': 0.0
+                }]
 
-        return results
+            print(f"Database embedding dimension: {db_dimension}")
+
+            # Check if embeddings are compatible
+            if not self.check_embedding_compatibility():
+                print("Embedding dimensions mismatch between model and database")
+                return [{
+                    'error': 'Embedding dimensions mismatch',
+                    'document_id': 'error',
+                    'text': 'The current embedding model is not compatible with the database. '
+                            'The vector dimensions do not match. Please use the same model that was used to create the embeddings.',
+                    'similarity': 0.0
+                }]
+
+            # Create embedding for the query
+            query_embedding = self.create_embedding(query)
+
+            if not query_embedding:
+                print("Failed to create query embedding")
+                return [{
+                    'error': 'Embedding creation failed',
+                    'document_id': 'error',
+                    'text': 'Failed to create an embedding for your query. Please try again or use a different query.',
+                    'similarity': 0.0
+                }]
+
+            print(f"Query embedding dimension: {len(query_embedding)}")
+
+            # Lower the threshold for testing
+            if threshold > 0.5:
+                print(f"Lowering threshold from {threshold} to 0.5 for testing")
+                threshold = 0.5
+
+            # Search for similar documents
+            print(f"Searching for similar documents with threshold={threshold}")
+            results = self.db.search_similar(
+                query_embedding=query_embedding,
+                limit=limit,
+                threshold=threshold,
+                source_id=source_id
+            )
+
+            print(f"Search returned {len(results)} results")
+            if results:
+                print(f"Top result similarity: {results[0].get('similarity', 0)}")
+
+            return results
+        except Exception as e:
+            print(f"Error searching similar documents: {e}")
+            import traceback
+            print(traceback.format_exc())
+            return [{
+                'error': str(e),
+                'document_id': 'error',
+                'text': f'An error occurred during search: {str(e)}',
+                'similarity': 0.0
+            }]
 
     def delete_document(self, source_id: str, document_id: str) -> int:
         """

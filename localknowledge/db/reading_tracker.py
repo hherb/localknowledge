@@ -18,7 +18,8 @@ class ReadingTrackerManager(DatabaseManager):
     def __init__(self):
         """Initialize the reading tracker manager."""
         super().__init__()
-        self.create_tables()
+        #Database creating is done centrally in db.createdb.py by calling create_tables()
+        #self.create_tables()
     
     def create_tables(self) -> None:
         """Create reading tracker tables if they don't exist."""

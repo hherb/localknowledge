@@ -17,7 +17,7 @@ class MedRxivDatabaseManager(DatabaseManager):
     def __init__(self, create_indices: bool = False):
         """Initialize the medRxiv database manager."""
         super().__init__()
-        self.create_tables()
+        #self.create_tables()
         if create_indices:
             self.create_indices()
     

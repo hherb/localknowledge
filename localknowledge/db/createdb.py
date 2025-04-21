@@ -43,6 +43,7 @@ def create_all_tables() -> None:
         logger.info("Initializing MedRxiv tables...")
         medrxiv_db = MedRxivDatabaseManager()
         medrxiv_db.create_tables()
+        medrxiv_db.create_indices()
         managers.append(medrxiv_db)
         logger.info("MedRxiv tables initialized successfully")
     except Exception as e:
@@ -61,6 +62,7 @@ def create_all_tables() -> None:
         logger.info("Initializing PubMed tables...")
         pubmed_db = PubMedDatabaseManager()
         pubmed_db.create_tables()
+        pubmed_db.create_indices()
         managers.append(pubmed_db)
         logger.info("PubMed tables initialized successfully")
     except Exception as e:
@@ -81,6 +83,7 @@ def create_all_tables() -> None:
             logger.info("Initializing Embedding tables...")
             embedding_db = EmbeddingDatabaseManager()
             embedding_db.create_tables()
+            embedding_db.create_indices()
             managers.append(embedding_db)
             logger.info("Embedding tables initialized successfully")
         except Exception as e:
