@@ -9,6 +9,8 @@ import logging
 import time
 from typing import List, Dict, Any, Optional, Tuple, Union
 import numpy as np
+import re
+from functools import lru_cache
 
 from localknowledge.db.base import DatabaseManager
 
@@ -528,3 +530,41 @@ class EmbeddingDatabaseManager(DatabaseManager):
             logger.error(f"Error deleting document embeddings for {source_id}/{document_id}: {e}")
             self.rollback_transaction()  # Ensure we're not left in a bad state
             return 0
+
+    @staticmethod
+    @lru_cache(maxsize=100)
+    def model_to_tablename(model_name: str) -> str:
+        """
+        Convert model name to valid SQL table name, ensuring it's under 63 bytes.
+        
+        Args:
+            model_name: Name of the embedding model
+        
+        Returns:
+            Valid PostgreSQL table name under 63 bytes
+        """
+        # Remove version tags and convert to lowercase
+        base_name = model_name.split(':')[0].lower()
+        
+        # Replace non-alphanumeric chars with underscore
+        clean_name = re.sub(r'[^a-z0-9]+', '_', base_name)
+        
+        # Remove consecutive underscores
+        clean_name = re.sub(r'_+', '_', clean_name)
+        
+        # Trim underscores from ends
+        clean_name = clean_name.strip('_')
+        
+        # Prefix for embedding tables
+        prefix = "emb_"
+        
+        # Calculate maximum length for the name part (63 bytes - prefix length)
+        max_name_length = 63 - len(prefix)
+        
+        # Truncate if necessary
+        if len(clean_name) > max_name_length:
+            # Keep the start and end, remove from middle
+            half_length = (max_name_length - 1) // 2  # -1 for the joining underscore
+            clean_name = f"{clean_name[:half_length]}_{clean_name[-half_length:]}"
+        
+        return f"{prefix}{clean_name}"

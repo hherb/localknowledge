@@ -24,6 +24,15 @@ The `EmbeddingDatabaseManager` class in `localknowledge.embeddings.database` han
 - Performing similarity searches
 - Managing indices for efficient search
 
+### Multi-Embeddings Support
+
+The system also includes support for multiple embedding models through:
+
+- `EmbeddingTableManager` in `localknowledge.db.multiembeddings`: Creates and manages model-specific tables
+- `EmbeddingManager` in `localknowledge.embeddings.multiembeddings`: Provides an interface for working with multiple models
+
+See the [Multi-Embeddings Module](multiembeddings.md) documentation for details on this functionality.
+
 ## Database Schema
 
 The `embeddings` table stores vector embeddings:
@@ -161,8 +170,14 @@ The Embeddings module uses Ollama models for creating embeddings:
 |-------|-----------|---------|
 | snowflake-arctic-embed2:latest | 1024 | Yes |
 | nomic-embed-text:latest | 768 | No |
+| jina-embeddings-v2-base-en:latest | 768 | No |
+| bge-m3:latest | 1024 | No |
+| granite-embedding:278m | 768 | No |
+| mxbai-embed-large:latest | 1024 | No |
 
 Models can be configured through environment variables or application settings.
+
+The multi-embeddings system allows using different models simultaneously and comparing their performance. See the [Multi-Embeddings Module](multiembeddings.md) documentation for details.
 
 ## Configuration
 
@@ -288,16 +303,16 @@ For detailed debugging:
 2. Test embedding generation directly:
    ```python
    from localknowledge.embeddings import create_embedding
-   
+
    embedding = create_embedding("Test text")
    print(f"Embedding dimension: {len(embedding)}")
    ```
 
 3. Check database queries:
    ```sql
-   EXPLAIN ANALYZE SELECT * FROM embeddings 
-   WHERE 1 - (embedding <=> '[0.1,0.2,...]'::vector) > 0.7 
-   ORDER BY 1 - (embedding <=> '[0.1,0.2,...]'::vector) DESC 
+   EXPLAIN ANALYZE SELECT * FROM embeddings
+   WHERE 1 - (embedding <=> '[0.1,0.2,...]'::vector) > 0.7
+   ORDER BY 1 - (embedding <=> '[0.1,0.2,...]'::vector) DESC
    LIMIT 10;
    ```
 
@@ -389,6 +404,45 @@ manager = EmbeddingManager(embedding_function=custom_embedding_function)
 
 # Use the manager as usual
 results = manager.search("Query text")
+
+# Close the manager
+manager.close()
+```
+
+### Comparing Multiple Models
+
+Compare search results across different embedding models:
+
+```python
+from localknowledge.embeddings.multiembeddings import EmbeddingManager
+
+# Create a multi-embedding manager
+manager = EmbeddingManager()
+
+# Compare search results across different models
+comparison = manager.compare_models(
+    query='Treatment options for COVID-19',
+    models=[
+        "snowflake-arctic-embed2:latest",
+        "nomic-embed-text:latest",
+        "jina-embeddings-v2-base-en:latest"
+    ],
+    limit=5,
+    threshold=0.7
+)
+
+# Process comparison results
+for model_name, model_data in comparison.items():
+    print(f"Model: {model_name}")
+    print(f"Results: {model_data['result_count']}")
+    print(f"Vector dimension: {model_data['stats']['vector_dim']}")
+
+    # Print top result for each model
+    if model_data['results']:
+        top_result = model_data['results'][0]
+        print(f"Top similarity: {top_result['similarity']:.4f}")
+        print(f"Top document: {top_result['document_id']}")
+    print()
 
 # Close the manager
 manager.close()

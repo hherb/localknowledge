@@ -21,9 +21,10 @@ This manual provides comprehensive documentation for developers working with the
 ### Advanced Features
 
 1. [Embeddings](embeddings.md)
-2. [QA Embeddings](qaembeddings.md)
-3. [Keywords Extraction](keywords.md)
-4. [Chunking](chunking.md)
+2. [Multi-Embeddings](multiembeddings.md)
+3. [QA Embeddings](qaembeddings.md)
+4. [Keywords Extraction](keywords.md)
+5. [Chunking](chunking.md)
 
 ### Development
 
