@@ -1,0 +1,85 @@
+{
+  "question": "What is the effectiveness of mRNA vaccines against COVID-19 variants?",
+  "direct_search": {
+    "titles": [
+      {
+        "title": "Effectiveness of COVID-19 vaccines against SARS-CoV-2 variants of concern: a systematic review and meta-analysis",
+        "doi": "10.1101/2021.09.23.21264048",
+        "similarity": 0.6933334552165065
+      },
+      {
+        "title": "Prediction of vaccine efficacy of the Delta variant",
+        "doi": "10.1101/2021.08.26.21262699",
+        "similarity": 0.6746266513476844
+      },
+      {
+        "title": "mRNA COVID-19 vaccine effectiveness against SARS-CoV-2 infection in a prospective community cohort, rural Wisconsin, November 2020-December 2021",
+        "doi": "10.1101/2021.12.14.21267809",
+        "similarity": 0.6262393185576397
+      },
+      {
+        "title": "Covid-19 vaccine effectiveness against general SARS-CoV-2 infection from the omicron variant: A retrospective cohort study",
+        "doi": "10.1101/2022.05.06.22274771",
+        "similarity": 0.6188685384282991
+      },
+      {
+        "title": "Effectiveness of SARS-CoV-2 mRNA Vaccines for Preventing Covid-19 Hospitalizations in the United States",
+        "doi": "10.1101/2021.07.08.21259776",
+        "similarity": 0.6104608804350714
+      }
+    ],
+    "time_taken": 0.4064750671386719
+  },
+  "hyde_search": {
+    "model": "gemma3:4b",
+    "hypothetical_abstract": "Question: What is the effectiveness of mRNA vaccines against COVID-19 variants?\n\nHypothetical Abstract:\n\nObjective: To evaluate the effectiveness of currently authorized mRNA vaccines (BNT162b2 and mRNA-2020/414) against infection and severe disease caused by emerging SARS-CoV-2 variants.\nMethods: This retrospective analysis utilized data from a large healthcare system representing diverse demographics. We examined patient records of individuals vaccinated with BNT162b2 and mRNA-2020/414 and subsequently diagnosed with confirmed COVID-19 infection, categorizing infections by circulating variant.\nResults: Preliminary findings demonstrate a significant reduction in risk of symptomatic infection across all variants compared to unvaccinated individuals. Specifically, BNT162b2 exhibited approximately 75% effectiveness against the original wild-type strain, 60% against the Delta variant, and 50% against the Omicron variant. mRNA-2020/414 showed similar, albeit slightly lower, efficacy rates. Booster doses of both vaccines provided substantial protection against severe disease, particularly against the Omicron subvariants.\nConclusion: mRNA vaccines maintain a demonstrable level of effectiveness against COVID-19 variants, though waning immunity necessitates ongoing booster vaccination to mitigate risk of severe outcomes, particularly with the emergence of newer subvariants.",
+    "titles": [
+      {
+        "title": "Prediction of vaccine efficacy of the Delta variant",
+        "doi": "10.1101/2021.08.26.21262699",
+        "similarity": 0.8048883696034171
+      },
+      {
+        "title": "Effectiveness of COVID-19 vaccines against SARS-CoV-2 variants of concern: a systematic review and meta-analysis",
+        "doi": "10.1101/2021.09.23.21264048",
+        "similarity": 0.7880572532973606
+      },
+      {
+        "title": "Covid-19 vaccine effectiveness against general SARS-CoV-2 infection from the omicron variant: A retrospective cohort study",
+        "doi": "10.1101/2022.05.06.22274771",
+        "similarity": 0.7626308669799109
+      },
+      {
+        "title": "Effectiveness of mRNA COVID-19 vaccines against symptomatic SARS-CoV-2 infections during the Delta variant epidemic in Japan: Vaccine Effectiveness Real-time Surveillance for SARS-CoV-2 (VERSUS)",
+        "doi": "10.1101/2022.01.17.22269394",
+        "similarity": 0.7256765447146503
+      },
+      {
+        "title": "Impact of Delta on viral burden and vaccine effectiveness against new SARS-CoV-2 infections in the UK",
+        "doi": "10.1101/2021.08.18.21262237",
+        "similarity": 0.720898259971584
+      }
+    ],
+    "time_taken": 4.052656888961792
+  },
+  "common_titles": [
+    {
+      "title": "Effectiveness of COVID-19 vaccines against SARS-CoV-2 variants of concern: a systematic review and meta-analysis",
+      "doi": "10.1101/2021.09.23.21264048",
+      "direct_similarity": 0.6933334552165065,
+      "hyde_similarity": 0.7880572532973606
+    },
+    {
+      "title": "Prediction of vaccine efficacy of the Delta variant",
+      "doi": "10.1101/2021.08.26.21262699",
+      "direct_similarity": 0.6746266513476844,
+      "hyde_similarity": 0.8048883696034171
+    },
+    {
+      "title": "Covid-19 vaccine effectiveness against general SARS-CoV-2 infection from the omicron variant: A retrospective cohort study",
+      "doi": "10.1101/2022.05.06.22274771",
+      "direct_similarity": 0.6188685384282991,
+      "hyde_similarity": 0.7626308669799109
+    }
+  ]
+}

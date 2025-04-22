@@ -6,6 +6,7 @@ A Python library for local PubMed and medRxiv database access. This library enab
 - Perform efficient searches on the local database
 - Retrieve specific articles by ID
 - Keep the local database updated with new publications
+- Generate and use embeddings for semantic search
 
 ## Installation
 
@@ -68,6 +69,31 @@ preprint = medrxiv.get_article("10.1101/2023.01.01.12345")
 # Download updates
 new_preprints = medrxiv.download_updates(from_date="2023-01-01")
 print(f"Added {new_preprints} new preprints to the database")
+```
+
+### Unified Document Access
+
+The library provides a unified document structure for accessing both PubMed articles and medRxiv preprints:
+
+```python
+from localknowledge.document import DocumentClient
+
+# Initialize the client
+doc_client = DocumentClient()
+
+# Search across all document sources
+results = doc_client.search("covid vaccine", max_results=100)
+for doc in results:
+    print(f"{doc.title} - {doc.source} ({doc.publication_date})")
+
+# Get a specific document by source and ID
+pubmed_doc = doc_client.get_document("pubmed", "12345678")
+medrxiv_doc = doc_client.get_document("medrxiv", "10.1101/2023.01.01.12345")
+
+# Perform semantic search
+semantic_results = doc_client.semantic_search("How do mRNA vaccines work?", max_results=20)
+for doc in semantic_results:
+    print(f"{doc.title} - Similarity: {doc.similarity:.2f}")
 ```
 
 ## Development

@@ -31,6 +31,15 @@ The rerankers functionality is implemented in `localknowledge.ai.rerankers`:
 - Support for multiple reranker models
 - Integration with search functionality
 
+### HyDE (Hypothetical Document Embeddings)
+
+The HyDE functionality is implemented in `localknowledge.ai.HyDE`:
+
+- Improved semantic search using hypothetical document generation
+- Generation of hypothetical abstracts that answer queries
+- Creation of embeddings from hypothetical abstracts
+- Benchmarking tools for comparing different models
+
 ## Models
 
 The AI module uses several models through Ollama:
@@ -38,7 +47,9 @@ The AI module uses several models through Ollama:
 | Model | Purpose | Default |
 |-------|---------|---------|
 | snowflake-arctic-embed2:latest | Text embeddings | Yes |
-| gemma3:4b | Question-answer generation | Yes |
+| gemma3:4b | Question-answer generation, HyDE | Yes |
+| llama3.2:3b-instruct-q8_0 | Alternative for HyDE | No |
+| qwen2.5:3b-instruct-q8_0 | Alternative for HyDE | No |
 | BAAI/bge-reranker-base | Search result reranking | No |
 | cross-encoder/ms-marco-MiniLM-L-6-v2 | Search result reranking | No |
 
@@ -130,6 +141,64 @@ reranked_documents = reranker.rerank(query, documents)
 # Print the reranked documents
 for doc in reranked_documents:
     print(f"Score: {doc['score']}, Text: {doc['text']}")
+```
+
+### Using HyDE for Semantic Search
+
+```python
+from localknowledge.ai.HyDE import generate_hypothetical_abstract, generate_hyde_embedding
+from localknowledge.embeddings.database import EmbeddingDatabaseManager
+
+# Initialize the embedding database manager
+embedding_db = EmbeddingDatabaseManager()
+
+# 1. Direct semantic search with a query
+query = "What is the cut-off for ultrasound optic nerve sheath diameter for diagnosing raised intracranial pressure?"
+
+# Get embedding for the query directly
+from localknowledge.ai.embeddings import create_embedding
+direct_embedding = create_embedding(query)
+
+# Search for similar documents
+direct_results = embedding_db.search_similar(
+    query_embedding=direct_embedding,
+    limit=5,
+    threshold=0.5
+)
+
+print(f"Direct search found {len(direct_results)} results")
+
+# 2. HyDE semantic search
+# Generate a hypothetical abstract that answers the query
+hypothetical_abstract = generate_hypothetical_abstract(
+    question=query,
+    model="gemma3:4b"  # You can also try other models
+)
+
+print(f"Generated abstract:\n{hypothetical_abstract[:300]}...")
+
+# Get embedding for the hypothetical abstract
+hyde_embedding = generate_hyde_embedding(
+    question=query,
+    generation_model="gemma3:4b",
+    embedding_model="snowflake-arctic-embed2:latest"
+)
+
+# Search for similar documents using the HyDE embedding
+hyde_results = embedding_db.search_similar(
+    query_embedding=hyde_embedding,
+    limit=5,
+    threshold=0.5
+)
+
+print(f"HyDE search found {len(hyde_results)} results")
+
+# Compare the results
+for i, result in enumerate(hyde_results[:3]):
+    print(f"{i+1}. {result.get('text', '')[:100]}... (similarity: {result.get('similarity', 0):.4f})")
+
+# Close the database connection when done
+embedding_db.close()
 ```
 
 ## Configuration
@@ -270,6 +339,12 @@ Monitor AI performance using:
    - Setting a random seed for reproducibility
    - Using a specific model version instead of 'latest'
    - Implementing post-processing to standardize outputs
+
+4. **HyDE Not Finding Relevant Results**: If HyDE isn't finding relevant documents:
+   - Try different generation models (gemma3:4b, llama3.2:3b-instruct-q8_0, etc.)
+   - Adjust the similarity threshold (try lower values like 0.3-0.4)
+   - Ensure the hypothetical abstract is relevant to the query
+   - Compare with direct semantic search to see the difference
 
 ### Debugging
 

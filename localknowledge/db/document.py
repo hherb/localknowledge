@@ -29,7 +29,7 @@ class DocumentDatabaseManager(DatabaseManager):
         logger.info("Creating document database tables")
 
         # Begin a transaction for all table creation operations
-        self.begin_transaction()
+        # No explicit transaction needed, will be handled by execute()
 
         try:
             # Create sources table
@@ -128,12 +128,12 @@ class DocumentDatabaseManager(DatabaseManager):
             """, commit=False)
 
             # Commit all table creation operations
-            self.commit_transaction()
+            self.connection.commit()
             logger.info("Document tables created successfully")
 
         except Exception as e:
             # Roll back on error
-            self.rollback_transaction()
+            self.connection.rollback()
             logger.error(f"Error creating document tables: {e}")
             raise
 
@@ -142,7 +142,7 @@ class DocumentDatabaseManager(DatabaseManager):
         logger.info("Creating document table indices")
 
         # Begin a transaction for all index creation operations
-        self.begin_transaction()
+        # No explicit transaction needed, will be handled by execute()
 
         try:
             # Create index for external_id
@@ -182,12 +182,12 @@ class DocumentDatabaseManager(DatabaseManager):
             """, commit=False)
 
             # Commit all index creation operations
-            self.commit_transaction()
+            self.connection.commit()
             logger.info("Document indices created successfully")
 
         except Exception as e:
             # Roll back on error
-            self.rollback_transaction()
+            self.connection.rollback()
             logger.error(f"Error creating document indices: {e}")
             raise
 
@@ -310,12 +310,12 @@ class DocumentDatabaseManager(DatabaseManager):
             result = self.execute(query, params, commit=True)
             if result:
                 document_id = result[0]['id']
-                
+
                 # Process keywords if provided
                 keywords = document_data.get('keywords', [])
                 if keywords:
                     self._process_keywords(document_id, keywords)
-                
+
                 return document_id
             return None
         except Exception as e:
@@ -412,10 +412,10 @@ class DocumentDatabaseManager(DatabaseManager):
         result = self.execute(query, (doi,))
         return result[0] if result else None
 
-    def search_documents(self, 
-                        search_text: str, 
+    def search_documents(self,
+                        search_text: str,
                         source_name: Optional[str] = None,
-                        limit: int = 100, 
+                        limit: int = 100,
                         offset: int = 0) -> List[Dict[str, Any]]:
         """
         Search for documents using full-text search.
@@ -431,33 +431,33 @@ class DocumentDatabaseManager(DatabaseManager):
         """
         # Convert search text to tsquery format
         search_terms = ' & '.join(search_text.split())
-        
+
         query = """
         SELECT d.*, s.name as source_name, c.name as category_name,
-               ts_rank_cd(to_tsvector('english', d.title || ' ' || COALESCE(d.abstract, '')), 
+               ts_rank_cd(to_tsvector('english', d.title || ' ' || COALESCE(d.abstract, '')),
                          to_tsquery('english', %s)) as rank
         FROM document d
         JOIN sources s ON d.source_id = s.id
         LEFT JOIN categories c ON d.category_id = c.id
         WHERE to_tsvector('english', d.title || ' ' || COALESCE(d.abstract, '')) @@ to_tsquery('english', %s)
         """
-        
+
         params = [search_terms, search_terms]
-        
+
         # Add source filter if provided
         if source_name:
             source_id = self.get_source_id(source_name)
             if source_id:
                 query += " AND d.source_id = %s"
                 params.append(source_id)
-        
+
         query += " ORDER BY rank DESC LIMIT %s OFFSET %s"
         params.extend([limit, offset])
-        
+
         return self.execute(query, tuple(params)) or []
 
-    def get_recent_documents(self, 
-                           limit: int = 100, 
+    def get_recent_documents(self,
+                           limit: int = 100,
                            offset: int = 0,
                            source_name: Optional[str] = None) -> List[Dict[str, Any]]:
         """
@@ -477,24 +477,24 @@ class DocumentDatabaseManager(DatabaseManager):
         JOIN sources s ON d.source_id = s.id
         LEFT JOIN categories c ON d.category_id = c.id
         """
-        
+
         params = []
-        
+
         # Add source filter if provided
         if source_name:
             source_id = self.get_source_id(source_name)
             if source_id:
                 query += " WHERE d.source_id = %s"
                 params.append(source_id)
-        
+
         query += " ORDER BY d.publication_date DESC NULLS LAST, d.added_date DESC LIMIT %s OFFSET %s"
         params.extend([limit, offset])
-        
+
         return self.execute(query, tuple(params)) or []
 
-    def mark_document_withdrawn(self, 
-                              source_name: str, 
-                              external_id: str, 
+    def mark_document_withdrawn(self,
+                              source_name: str,
+                              external_id: str,
                               reason: str) -> bool:
         """
         Mark a document as withdrawn.
@@ -525,10 +525,10 @@ class DocumentDatabaseManager(DatabaseManager):
             logger.error(f"Error marking document as withdrawn: {e}")
             return False
 
-    def add_tag(self, 
-               source_name: str, 
-               external_id: str, 
-               user_id: int, 
+    def add_tag(self,
+               source_name: str,
+               external_id: str,
+               user_id: int,
                tag: str) -> bool:
         """
         Add a tag to a document.
@@ -564,9 +564,9 @@ class DocumentDatabaseManager(DatabaseManager):
             logger.error(f"Error adding tag: {e}")
             return False
 
-    def get_document_tags(self, 
-                         source_name: str, 
-                         external_id: str, 
+    def get_document_tags(self,
+                         source_name: str,
+                         external_id: str,
                          user_id: Optional[int] = None) -> List[Dict[str, Any]]:
         """
         Get tags for a document.
@@ -593,13 +593,13 @@ class DocumentDatabaseManager(DatabaseManager):
         FROM tags
         WHERE document_id = %s
         """
-        
+
         params = [document_id]
-        
+
         if user_id is not None:
             query += " AND user_id = %s"
             params.append(user_id)
-        
+
         return self.execute(query, tuple(params)) or []
 
     def remove_tag(self, tag_id: int) -> bool:
@@ -633,12 +633,12 @@ class DocumentDatabaseManager(DatabaseManager):
         """
         query = "SELECT COUNT(*) as count FROM document"
         params = []
-        
+
         if source_name:
             source_id = self.get_source_id(source_name)
             if source_id:
                 query += " WHERE source_id = %s"
                 params.append(source_id)
-        
+
         result = self.execute(query, tuple(params) if params else None)
         return result[0]['count'] if result else 0

@@ -288,6 +288,7 @@ Monitor embedding performance using:
    - Adjusting the similarity threshold
    - Using a different embedding model
    - Implementing reranking
+   - Using HyDE (Hypothetical Document Embeddings) instead of direct query embedding
 
 ### Debugging
 
@@ -317,6 +318,57 @@ For detailed debugging:
    ```
 
 ## Advanced Usage
+
+### HyDE (Hypothetical Document Embeddings)
+
+HyDE is a technique that improves semantic search by generating a hypothetical document that answers a query, then using that document's embedding for search instead of directly embedding the query:
+
+```python
+from localknowledge.ai.HyDE import generate_hypothetical_abstract, generate_hyde_embedding
+from localknowledge.embeddings import EmbeddingManager
+
+# Create an embedding manager
+manager = EmbeddingManager()
+
+# Define a query
+query = "What is the effectiveness of mRNA vaccines against COVID-19 variants?"
+
+# Method 1: Direct semantic search
+direct_results = manager.search(
+    query=query,
+    limit=5,
+    threshold=0.6
+)
+
+print(f"Direct search found {len(direct_results)} results")
+
+# Method 2: HyDE semantic search
+# Generate a hypothetical abstract that answers the query
+hyde_embedding = generate_hyde_embedding(
+    question=query,
+    generation_model="gemma3:4b",
+    embedding_model="snowflake-arctic-embed2:latest"
+)
+
+# Search using the HyDE embedding
+hyde_results = manager.search_with_embedding(
+    embedding=hyde_embedding,
+    limit=5,
+    threshold=0.6
+)
+
+print(f"HyDE search found {len(hyde_results)} results")
+
+# Compare top results
+if direct_results and hyde_results:
+    print(f"Direct search top result: {direct_results[0]['similarity']:.4f}")
+    print(f"HyDE search top result: {hyde_results[0]['similarity']:.4f}")
+
+# Close the manager
+manager.close()
+```
+
+HyDE typically produces higher similarity scores and more relevant results, especially for specialized queries.
 
 ### Hybrid Search
 

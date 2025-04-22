@@ -1,0 +1,65 @@
+[
+    {
+        "generated_text": "Objective: To determine the optimal cut-off value for optic nerve sheath diameter (ONSD) measured by ultrasound in identifying elevated intracranial pressure (ICP) among adult patients.\nMethods: This retrospective analysis examined data from 180 adult patients with suspected increased ICP, including those undergoing both bedside ultrasound to measure ONSD and invasive ICP monitoring. ONSD measurements were obtained using a standardized protocol.\nResults: A median ONSD of 6.2 mm was associated with a positive ICP reading of \u22658 mmHg.  The area under the receiver operating characteristic curve (AUC) for ONSD as a predictor of ICP \u22658 mmHg was 0.82.  Sensitivity for ONSD \u22656.2 mm in detecting ICP \u22658 mmHg was 78%, while specificity was 89%.\nConclusion: Ultrasound-measured ONSD, specifically a threshold of \u22656.2 mm, demonstrates moderate sensitivity and good specificity for identifying raised ICP in adults. Further prospective validation is warranted.",
+        "model": "gemma3:4b",
+        "embedding_model": "snowflake-arctic-embed2:latest",
+        "time": 5.387405157089233,
+        "embedding_length": 1024
+    },
+    {
+        "generated_text": "Objective: To ascertain the optimal ultrasound optic nerve sheath diameter (ONSD) threshold for diagnosing elevated intracranial pressure (ICP) in adult patients.\nMethods: This retrospective analysis reviewed the records of 120 adult patients presenting with suspected increased ICP. Bedside ultrasound measurements of ONSD were obtained alongside concurrent invasive ICP monitoring.\nResults: A statistically significant correlation was observed between ONSD and ICP. An ONSD value of 6.2 mm demonstrated the highest sensitivity (88%) and specificity (92%) for identifying ICP levels exceeding 20 mmHg.\nConclusion: Ultrasound-measured ONSD, specifically a cut-off of 6.2 mm, provides a valuable adjunct in the diagnosis of raised ICP in adults, warranting further investigation in prospective studies.",
+        "model": "gemma3:4b",
+        "embedding_model": "snowflake-arctic-embed2:latest",
+        "time": 2.1468780040740967,
+        "embedding_length": 1024
+    },
+    {
+        "generated_text": "Objective: To determine the optimal cut-off value for optic nerve sheath diameter (ONSD) measured by ultrasound in identifying elevated intracranial pressure (ICP) among adult patients.\nMethods: This retrospective analysis of electronic medical records included adult patients (n=250) with suspected increased ICP who underwent initial bedside ultrasound assessment of ONSD. ICP was subsequently confirmed via invasive monitoring in a subset of patients (n=100).\nResults: A statistically significant correlation was observed between ONSD and ICP.  An ONSD threshold of 6.2 mm demonstrated the highest sensitivity (88%) and specificity (92%) for detecting ICP levels \u2265 15 mmHg.\nConclusion: Ultrasound-measured ONSD, with a cut-off of 6.2 mm, is a useful screening tool for raised ICP in adults, offering a practical non-invasive approach to identify patients requiring further invasive monitoring.",
+        "model": "gemma3:4b",
+        "embedding_model": "snowflake-arctic-embed2:latest",
+        "time": 2.500091075897217,
+        "embedding_length": 1024
+    },
+    {
+        "generated_text": "Objective: To determine the optimal cut-off value for optic nerve sheath diameter (ONSD) measured by ultrasound in identifying elevated intracranial pressure (ICP) among adult patients.\nMethods: In this prospective study, adult patients with suspected increased ICP underwent bedside ultrasound to measure ONSD, which was then compared to invasive ICP measurements using lumbar puncture and transcranial Doppler ultrasonography.\nResults: The study identified an ONSD threshold of 5.3 mm as the most accurate cut-off for detecting ICP levels exceeding 30 mmHg in adult patients with traumatic brain injury, yielding a sensitivity of 83% and specificity of 92%.\nConclusion: Ultrasound-measured ONSD is a reliable, non-invasive tool for screening raised ICP in adults, particularly those with head trauma, with 5.3 mm as the recommended diagnostic cut-off.",
+        "model": "llama3.2:3b-instruct-q8_0",
+        "embedding_model": "snowflake-arctic-embed2:latest",
+        "time": 4.926254034042358,
+        "embedding_length": 1024
+    },
+    {
+        "generated_text": "Objective: To determine the optimal cut-off value for optic nerve sheath diameter (ONSD) measured by ultrasound in identifying elevated intracranial pressure (ICP) among adult patients.\nMethods: In this prospective study, adult patients with suspected increased ICP underwent bedside ultrasound to measure ONSD, which was then compared to invasive ICP measurements using a 5.0 MHz transducer and 2-3 mm depth settings. A total of 150 patients were enrolled, with 75 experiencing elevated ICP (ICP >20 mmHg) and 75 without.\nResults: The study identified an ONSD threshold of 4.9 \u00b1 0.5 mm for detecting elevated ICP levels in 90% of patients (sensitivity = 90%), with a specificity of 85% among those without increased ICP. Notably, ONSD measurements showed excellent agreement with invasive ICP measurements, demonstrating strong correlation coefficients (r = 0.92).\nConclusion: Ultrasound-measured ONSD is a reliable, non-invasive tool for screening raised ICP in adults, with an optimal cut-off value of 4.9 mm.",
+        "model": "llama3.2:3b-instruct-q8_0",
+        "embedding_model": "snowflake-arctic-embed2:latest",
+        "time": 3.384661912918091,
+        "embedding_length": 1024
+    },
+    {
+        "generated_text": "Objective: To determine the optimal cut-off value for optic nerve sheath diameter (ONSD) measured by ultrasound in identifying elevated intracranial pressure (ICP) among adult patients.\n\nMethods: In this prospective study, adult patients with suspected increased ICP underwent bedside ultrasound to measure ONSD, which was then compared to invasive ICP measurements using a combination of transcranial Doppler and lumbar puncture. \n\nResults: A total of 250 adult patients (mean age 62 years) were enrolled in the study, with a median ICP level of 25 mmHg. The ONSD measurements showed significant correlation with invasive ICP levels (r = 0.75, p < 0.001). Receiver operating characteristic analysis revealed an optimal cut-off value for ONSD at 5.7 mm, yielding a sensitivity of 90% and specificity of 85% for detecting ICP levels exceeding 20 mmHg.\n\nConclusion: Ultrasound-measured ONSD is a reliable, non-invasive tool for screening raised ICP in adults, with 5.7 mm as the recommended diagnostic cut-off.",
+        "model": "llama3.2:3b-instruct-q8_0",
+        "embedding_model": "snowflake-arctic-embed2:latest",
+        "time": 3.3527207374572754,
+        "embedding_length": 1024
+    },
+    {
+        "generated_text": "<answer>\n\nObjective: To determine the optimal cut-off value for optic nerve sheath diameter (ONSD) measured by ultrasound in identifying elevated intracranial pressure (ICP) among adult patients.\n\nMethods: In this prospective study, adult patients with suspected increased ICP underwent bedside ultrasound to measure ONSD, which was then compared to invasive ICP measurements.\n\nResults: The study identified an ONSD threshold of 5.9 mm as the most accurate cut-off for detecting ICP levels exceeding 20 mmHg, yielding a sensitivity of 88% and specificity of 92%.\n\nConclusion: Ultrasound-measured ONSD is a reliable, non-invasive tool for screening raised ICP in adults, with 5.9 mm as the recommended diagnostic cut-off.\n\n</answer>",
+        "model": "qwen2.5:3b-instruct-q8_0",
+        "embedding_model": "snowflake-arctic-embed2:latest",
+        "time": 4.442726135253906,
+        "embedding_length": 1024
+    },
+    {
+        "generated_text": "<Hypothetical Abstract>\n\nObjective: To determine the optimal cut-off value for optic nerve sheath diameter (ONSD) measured by ultrasound in identifying elevated intracranial pressure (ICP) among adult patients.\n\nMethods: In this prospective study, adult patients with suspected increased ICP underwent bedside ultrasound to measure ONSD, which was then compared to invasive ICP measurements.\n\nResults: The study identified an ONSD threshold of 5.2 mm as the most accurate cut-off for detecting ICP levels exceeding 15 mmHg, yielding a sensitivity of 87% and specificity of 83%.\n\nConclusion: Ultrasound-measured ONSD is a reliable, non-invasive tool for screening raised ICP in adults, with 5.2 mm as the recommended diagnostic cut-off.\n\n</Hypothetical Abstract>",
+        "model": "qwen2.5:3b-instruct-q8_0",
+        "embedding_model": "snowflake-arctic-embed2:latest",
+        "time": 2.5125203132629395,
+        "embedding_length": 1024
+    },
+    {
+        "generated_text": "<Hypothetical Abstract>\n\nObjective: To determine the optimal cut-off value for optic nerve sheath diameter (ONSD) measured by ultrasound in identifying elevated intracranial pressure (ICP) among adult patients.\n\nMethods: In a prospective study involving 200 adult participants with clinical suspicion of increased ICP, ONSD was measured using ultrasonography at the orbital level. Participants underwent both bedside ultrasound and subsequent measurement of invasive ICP if clinically indicated. The diagnostic accuracy of ONSD for detecting ICP levels exceeding 20 mmHg was assessed.\n\nResults: Analysis revealed that an ONSD threshold of 5.5 mm had a sensitivity of 87% and specificity of 91%, providing the highest positive predictive value (PPV) at 93%.\n\nConclusion: Ultrasound-measured optic nerve sheath diameter (ONSD) is a reliable non-invasive tool for screening raised ICP in adults, with an optimal diagnostic cut-off of 5.5 mm. This threshold can help identify patients who may benefit from further invasive monitoring or intervention.\n\n</Hypothetical Abstract>",
+        "model": "qwen2.5:3b-instruct-q8_0",
+        "embedding_model": "snowflake-arctic-embed2:latest",
+        "time": 3.3457577228546143,
+        "embedding_length": 1024
+    }
+]

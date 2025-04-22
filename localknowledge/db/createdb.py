@@ -21,6 +21,7 @@ from localknowledge.db.medrxiv import MedRxivDatabaseManager
 from localknowledge.db.user import UserDatabaseManager
 from localknowledge.db.pubmed import PubMedDatabaseManager
 from localknowledge.db.reading_tracker import ReadingTrackerManager
+from localknowledge.db.document import DocumentDatabaseManager
 
 # Import embedding database manager
 try:
@@ -108,6 +109,17 @@ def create_all_tables() -> None:
             logger.info("QA Embedding tables initialized successfully")
         except Exception as e:
             logger.error(f"Error initializing QA Embedding tables: {e}")
+
+    # Initialize Document tables
+    try:
+        logger.info("Initializing Document tables...")
+        document_db = DocumentDatabaseManager()
+        document_db.create_tables()
+        document_db.create_indices()
+        managers.append(document_db)
+        logger.info("Document tables initialized successfully")
+    except Exception as e:
+        logger.error(f"Error initializing Document tables: {e}")
 
     # Add calls to additional database modules' create_tables methods here
 

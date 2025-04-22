@@ -1,0 +1,65 @@
+{
+  "gemma3:4b": {
+    "hypothetical_abstract": "Objective: To investigate the prevalence and nature of persistent symptoms and long-term health complications following SARS-CoV-2 infection.\n\nMethods: This retrospective cohort study analyzed data from 1,250 individuals aged 18-65 who tested positive for SARS-CoV-2 infection between January 2020 and December 2022. Follow-up assessments were conducted at 6, 12, and 24 months post-infection, evaluating symptoms, cardiac function, pulmonary function, and neurological outcomes.\n\nResults: At 24 months, a significant proportion of participants (42%) reported experiencing at least one persistent symptom, categorized as \u201cLong COVID.\u201d Common symptoms included fatigue (78%), shortness of breath (65%), cognitive dysfunction (\u201cbrain fog\u201d \u2013 52%), and post-exertional malaise (48%). Cardiac abnormalities, including persistent myocarditis and arrhythmias, were identified in 18% of patients. Pulmonary fibrosis was reported in 8% of participants. Neurological complications, including peripheral neuropathy, were observed in 12%.\n\nConclusion: Long COVID represents a substantial and complex clinical challenge, with widespread persistent symptoms and a spectrum of long-term complications affecting multiple organ systems. Further research is needed to fully understand the underlying mechanisms and develop targeted therapeutic interventions.",
+    "titles": [
+      {
+        "title": "Prevalence and determinants of persistent symptoms after infection with SARS-CoV-2: Protocol for an observational cohort study (LongCOVID-study)",
+        "doi": "10.1101/2022.01.10.22269009",
+        "similarity": 0.812051556717664
+      },
+      {
+        "title": "Long-term COVID-19 symptoms in a large unselected population",
+        "doi": "10.1101/2020.10.07.20208702",
+        "similarity": 0.8027388908558928
+      },
+      {
+        "title": "Long COVID in hospitalized and non-hospitalized patients in a large cohort in Northwest Spain, a prospective cohort study",
+        "doi": "10.1101/2021.08.05.21261634",
+        "similarity": 0.7843910245986147
+      }
+    ],
+    "time_taken": 7.594326972961426
+  },
+  "llama3.2:3b-instruct-q8_0": {
+    "hypothetical_abstract": "<Abstract>\n\nObjective: To investigate the long-term sequelae and complications associated with COVID-19 infection in adults.\n\nMethods: This retrospective cohort study enrolled adult patients who had contracted COVID-19 at least six months prior to enrollment. Participants underwent comprehensive medical evaluations, including laboratory tests, imaging studies, and symptom assessments, to identify potential long-term effects of the disease.\n\nResults: The study revealed a range of long-term complications, including cardiovascular (43%), pulmonary (35%), and neurological (28%) sequelae, with 21% of patients experiencing persistent symptoms. Notably, severe acute respiratory distress syndrome (ARDS) was associated with a higher risk of long-term lung function impairment. Multivariate analysis identified age \u226560 years, history of comorbidities, and requirement for intensive care unit admission as independent predictors of adverse outcomes.\n\nConclusion: COVID-19 infection is associated with significant long-term morbidity, including cardiovascular and pulmonary complications, highlighting the need for extended monitoring and follow-up care for survivors.",
+    "titles": [
+      {
+        "title": "Long-term COVID-19 symptoms in a large unselected population",
+        "doi": "10.1101/2020.10.07.20208702",
+        "similarity": 0.7593136575528537
+      },
+      {
+        "title": "More than 50 Long-term effects of COVID-19: a systematic review and meta-analysis",
+        "doi": "10.1101/2021.01.27.21250617",
+        "similarity": 0.7243493539931374
+      },
+      {
+        "title": "The impact of long-term conditions and comorbidity patterns on COVID-19 infection and hospitalisation: a cohort study",
+        "doi": "10.1101/2023.04.25.23289035",
+        "similarity": 0.7062276642037216
+      }
+    ],
+    "time_taken": 5.53344202041626
+  },
+  "qwen2.5:3b-instruct-q8_0": {
+    "hypothetical_abstract": "<hypothetical_abstract>\n\nObjective: To elucidate the long-term effects of severe coronavirus disease 2019 (COVID-19) infection on various organ systems in adult survivors.\n\nMethods: This retrospective cohort study analyzed data from patients who recovered from severe COVID-19, with follow-up periods ranging from one year to three years. The outcomes evaluated included pulmonary function tests, cardiac biomarkers, neurological assessments, musculoskeletal changes, and psychiatric symptoms.\n\nResults: Over a period of one to three years post-infection, survivors exhibited persistent pulmonary hypertension in 34%, significant left ventricular dysfunction in 28%, cognitive impairments in 21%, joint stiffness in 37%, and depressive symptoms in 15%. These findings were robustly associated with the severity of initial infection.\n\nConclusion: Severe COVID-19 infection is associated with substantial long-term effects on multiple organ systems, including pulmonary, cardiac, neurological, musculoskeletal, and psychiatric domains. Early intervention strategies focusing on pulmonary rehabilitation, cardiac support, cognitive behavioral therapy, physical therapy, and mental health care are essential for improving the quality of life in survivors.\n\n</hypothetical_abstract>",
+    "titles": [
+      {
+        "title": "Post-discharge health status and symptoms in patients with severe COVID-19",
+        "doi": "10.1101/2020.08.11.20172742",
+        "similarity": 0.6920402817588991
+      },
+      {
+        "title": "Limited recovery from post-acute sequelae of SARS-CoV-2 (PASC) at eight months of a prospective cohort",
+        "doi": "10.1101/2021.03.29.21254211",
+        "similarity": 0.6909678739204448
+      },
+      {
+        "title": "More than 50 Long-term effects of COVID-19: a systematic review and meta-analysis",
+        "doi": "10.1101/2021.01.27.21250617",
+        "similarity": 0.6633026633560245
+      }
+    ],
+    "time_taken": 5.894019842147827
+  }
+}
