@@ -40,6 +40,7 @@ dependencies = [
     "pytextrank>=3.3.0",
     "spacy>=3.8.5",
     "sentence-transformers>=4.1.0",
+    "pymedtermino>=0.3.3",
 ]
 
 [project.optional-dependencies]

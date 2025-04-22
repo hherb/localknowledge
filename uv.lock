@@ -720,6 +720,7 @@ dependencies = [
     { name = "pgvector" },
     { name = "psycopg2" },
     { name = "pycocoa" },
+    { name = "pymedtermino" },
     { name = "pymupdf" },
     { name = "pymupdf4llm" },
     { name = "pyside6" },
@@ -758,6 +759,7 @@ requires-dist = [
     { name = "pgvector", specifier = ">=0.2.5" },
     { name = "psycopg2", specifier = ">=2.9.10" },
     { name = "pycocoa", specifier = ">=25.4.8" },
+    { name = "pymedtermino", specifier = ">=0.3.3" },
     { name = "pymupdf", specifier = ">=1.25.5" },
     { name = "pymupdf4llm", specifier = ">=0.0.21" },
     { name = "pyside6", specifier = ">=6.9.0" },
@@ -1417,6 +1419,12 @@ sdist = { url = "https://files.pythonhosted.org/packages/7c/2d/c3338d48ea6cc0feb
 wheels = [
     { url = "https://files.pythonhosted.org/packages/8a/0b/9fcc47d19c48b59121088dd6da2488a49d5f72dacf8262e2790a1d2c7d15/pygments-2.19.1-py3-none-any.whl", hash = "sha256:9ea1544ad55cecf4b8242fab6dd35a93bbce657034b0611ee383099054ab6d8c", size = 1225293 },
 ]
+
+[[package]]
+name = "pymedtermino"
+version = "0.3.3"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/a5/7e/ac9a622ccff56c03f7dd12f0605a782a26343f9dad0d057594432f27db9a/PyMedTermino-0.3.3.tar.gz", hash = "sha256:0f07c6382c5ee91670cf5e3ce3a1648342325c7a4821315c4aa82b19b6b1353b", size = 33982262 }
 
 [[package]]
 name = "pymupdf"

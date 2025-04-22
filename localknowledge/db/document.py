@@ -137,6 +137,40 @@ class DocumentDatabaseManager(DatabaseManager):
             logger.error(f"Error creating document tables: {e}")
             raise
 
+    def drop_indices(self) -> None:
+        """Drop indices to speed up data loading."""
+        logger.info("Dropping document table indices for faster data loading")
+
+        try:
+            # Drop the most expensive indices
+            logger.debug("Dropping title index")
+            self.execute("DROP INDEX IF EXISTS idx_document_title", commit=False)
+
+            logger.debug("Dropping abstract index")
+            self.execute("DROP INDEX IF EXISTS idx_document_abstract", commit=False)
+
+            logger.debug("Dropping keywords index")
+            self.execute("DROP INDEX IF EXISTS idx_document_keywords", commit=False)
+
+            logger.debug("Dropping publication_date index")
+            self.execute("DROP INDEX IF EXISTS idx_document_publication_date", commit=False)
+
+            logger.debug("Dropping doi index")
+            self.execute("DROP INDEX IF EXISTS idx_document_doi", commit=False)
+
+            logger.debug("Dropping external_id index")
+            self.execute("DROP INDEX IF EXISTS idx_document_external_id", commit=False)
+
+            # Commit all index drops
+            self.connection.commit()
+            logger.info("Document indices dropped successfully")
+
+        except Exception as e:
+            # Roll back on error
+            self.connection.rollback()
+            logger.error(f"Error dropping document indices: {e}")
+            raise
+
     def create_indices(self) -> None:
         """Create indices for document-related tables."""
         logger.info("Creating document table indices")
