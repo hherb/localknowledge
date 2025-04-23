@@ -111,7 +111,29 @@ class PostgresOptimizer(DatabaseManager):
         self.execute_alter_system("ALTER SYSTEM SET max_parallel_maintenance_workers = 4")
 
         # Transaction and logging settings
-        self.execute_alter_system("ALTER SYSTEM SET wal_level = 'minimal'")
+        # Check if max_wal_senders is greater than 0
+        conn = psycopg2.connect(
+            dbname=os.environ.get('POSTGRES_DB'),
+            user=os.environ.get('POSTGRES_USER', 'postgres'),
+            password=os.environ.get('POSTGRES_PASSWORD', ''),
+            host=os.environ.get('POSTGRES_HOST', 'localhost'),
+            port=os.environ.get('POSTGRES_PORT', '5432')
+        )
+        conn.autocommit = True
+        cursor = conn.cursor()
+        cursor.execute("SHOW max_wal_senders")
+        max_wal_senders = int(cursor.fetchone()[0])
+        cursor.close()
+        conn.close()
+
+        # Set wal_level based on max_wal_senders
+        if max_wal_senders > 0:
+            logger.info("Setting wal_level to 'replica' because max_wal_senders > 0")
+            self.execute_alter_system("ALTER SYSTEM SET wal_level = 'replica'")
+        else:
+            logger.info("Setting wal_level to 'minimal'")
+            self.execute_alter_system("ALTER SYSTEM SET wal_level = 'minimal'")
+
         self.execute_alter_system("ALTER SYSTEM SET archive_mode = off")
         self.execute_alter_system("ALTER SYSTEM SET synchronous_commit = off")
         self.execute_alter_system("ALTER SYSTEM SET commit_delay = 1000")
@@ -121,6 +143,44 @@ class PostgresOptimizer(DatabaseManager):
         self.execute_alter_system("SELECT pg_reload_conf()")
 
         logger.info("PostgreSQL optimized for migration")
+
+    def optimize_wal_settings(self):
+        """Optimize WAL settings for very large migrations."""
+        logger.info("Optimizing WAL settings for large migration")
+
+        # Check if max_wal_senders is greater than 0
+        conn = psycopg2.connect(
+            dbname=os.environ.get('POSTGRES_DB'),
+            user=os.environ.get('POSTGRES_USER', 'postgres'),
+            password=os.environ.get('POSTGRES_PASSWORD', ''),
+            host=os.environ.get('POSTGRES_HOST', 'localhost'),
+            port=os.environ.get('POSTGRES_PORT', '5432')
+        )
+        conn.autocommit = True
+        cursor = conn.cursor()
+        cursor.execute("SHOW max_wal_senders")
+        max_wal_senders = int(cursor.fetchone()[0])
+        cursor.close()
+        conn.close()
+
+        # Set wal_level based on max_wal_senders
+        if max_wal_senders > 0:
+            logger.info("Setting wal_level to 'replica' because max_wal_senders > 0")
+            self.execute_alter_system("ALTER SYSTEM SET wal_level = 'replica'")
+        else:
+            logger.info("Setting wal_level to 'minimal'")
+            self.execute_alter_system("ALTER SYSTEM SET wal_level = 'minimal'")
+
+        # More aggressive WAL settings
+        self.execute_alter_system("ALTER SYSTEM SET wal_buffers = '128MB'")
+        self.execute_alter_system("ALTER SYSTEM SET max_wal_size = '64GB'")
+        self.execute_alter_system("ALTER SYSTEM SET checkpoint_timeout = '2h'")
+        self.execute_alter_system("ALTER SYSTEM SET checkpoint_completion_target = 0.95")
+
+        # Apply changes
+        self.execute_alter_system("SELECT pg_reload_conf()")
+
+        logger.info("WAL settings optimized for large migration")
 
     def restore_normal_settings(self):
         """Restore normal PostgreSQL settings after migration."""
@@ -202,6 +262,7 @@ def main():
     parser.add_argument('--disable-fk', action='store_true', help='Disable foreign key constraints')
     parser.add_argument('--enable-fk', action='store_true', help='Enable foreign key constraints')
     parser.add_argument('--analyze', action='store_true', help='Run ANALYZE on document table')
+    parser.add_argument('--wal-settings', action='store_true', help='Optimize WAL settings for large migrations')
     args = parser.parse_args()
 
     optimizer = PostgresOptimizer()
@@ -228,8 +289,11 @@ def main():
         if args.analyze:
             optimizer.analyze_tables()
 
+        if args.wal_settings:
+            optimizer.optimize_wal_settings()
+
         if not any([args.execute, args.restore, args.drop_indices, args.create_indices,
-                   args.disable_fk, args.enable_fk, args.analyze]):
+                   args.disable_fk, args.enable_fk, args.analyze, args.wal_settings]):
             logger.info("No action specified. Use --help for usage information.")
 
     except Exception as e:

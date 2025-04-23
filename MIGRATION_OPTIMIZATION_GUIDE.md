@@ -11,6 +11,8 @@ The migration process can be significantly accelerated by:
 3. Using larger batch sizes
 4. Disabling foreign key constraints (optional)
 5. Monitoring progress
+6. Periodically restarting PostgreSQL to prevent slowdowns
+7. Using checkpoints to resume from where you left off
 
 ## Step 1: Stop the Current Migration
 
@@ -57,7 +59,42 @@ In a separate terminal, monitor the progress:
 python scripts/monitor_migration_progress.py --interval 60 --total 38000000
 ```
 
-## Step 5: After Migration Completes
+## Step 5: Handling Slowdowns During Migration
+
+If the migration slows down significantly (usually after 60-70% completion):
+
+```bash
+# Stop the current migration process
+# Then restart PostgreSQL
+sudo systemctl restart postgresql
+
+# Optimize WAL settings for large migrations
+python scripts/optimize_postgres_for_migration.py --wal-settings
+
+# Restart the migration with checkpoint support and larger batch size
+python -m localknowledge.db.migrations.migrate_with_checkpoint --execute --batch-size 20000
+```
+
+You may need to repeat this process multiple times during a very large migration.
+
+## Step 6: Using Segmented Migration for Very Large Datasets
+
+For extremely large datasets, you can split the migration into segments:
+
+```bash
+# Migrate first segment (records 0-10M)
+python -m localknowledge.db.migrations.migrate_with_checkpoint --execute --batch-size 10000 --start-id 0 --end-id 10000000
+
+# Restart PostgreSQL
+sudo systemctl restart postgresql
+
+# Migrate second segment (records 10M-20M)
+python -m localknowledge.db.migrations.migrate_with_checkpoint --execute --batch-size 10000 --start-id 10000000 --end-id 20000000
+
+# And so on...
+```
+
+## Step 7: After Migration Completes
 
 After the migration completes successfully:
 
@@ -86,7 +123,13 @@ With these optimizations:
 
 ### If Migration Fails
 
-If the migration fails, you can safely restart it with the same commands. The migration uses idempotent operations that prevent duplicates.
+If the migration fails, you can safely restart it with the checkpoint-enabled script:
+
+```bash
+python -m localknowledge.db.migrations.migrate_with_checkpoint --execute --batch-size 10000
+```
+
+The checkpoint system will resume from where it left off.
 
 ### If PostgreSQL Performance Degrades
 
@@ -98,6 +141,31 @@ psql -c "SELECT * FROM pg_stat_activity WHERE state = 'active';"
 
 # Check for locks
 psql -c "SELECT * FROM pg_locks l JOIN pg_stat_activity a ON l.pid = a.pid WHERE a.state = 'active';"
+
+# Check WAL status
+psql -c "SELECT pg_current_wal_lsn(), pg_walfile_name(pg_current_wal_lsn());"
+```
+
+### If You Get WAL Streaming Error
+
+If you see an error like "WAL streaming requires wal_level 'replica' or 'logical'":
+
+```bash
+# Fix WAL level setting by directly editing configuration files
+python scripts/fix_postgres_wal.py --fix
+
+# Then restart PostgreSQL
+sudo systemctl start postgresql
+```
+
+If you need to optimize WAL settings after fixing the issue:
+
+```bash
+# Optimize WAL settings
+python scripts/fix_postgres_wal.py --optimize
+
+# Then restart PostgreSQL
+sudo systemctl start postgresql
 ```
 
 ### Monitoring System Resources
@@ -113,6 +181,9 @@ iostat -xm 5
 
 # Monitor PostgreSQL
 psql -c "SELECT pg_size_pretty(pg_database_size('localknowledge'));"
+
+# Monitor WAL size
+psql -c "SELECT pg_size_pretty(pg_wal_lsn_diff(pg_current_wal_lsn(), '0/0'));"
 ```
 
 ## Additional Notes
@@ -128,13 +199,24 @@ psql -c "SELECT pg_size_pretty(pg_database_size('localknowledge'));"
 
 ```
 Usage:
-  python optimize_postgres_for_migration.py --execute    # Optimize for migration
-  python optimize_postgres_for_migration.py --restore    # Restore normal settings
-  python optimize_postgres_for_migration.py --drop-indices    # Drop indices
-  python optimize_postgres_for_migration.py --create-indices  # Create indices
-  python optimize_postgres_for_migration.py --disable-fk      # Disable foreign keys
-  python optimize_postgres_for_migration.py --enable-fk       # Enable foreign keys
-  python optimize_postgres_for_migration.py --analyze         # Update statistics
+  python optimize_postgres_for_migration.py --execute       # Optimize for migration
+  python optimize_postgres_for_migration.py --restore       # Restore normal settings
+  python optimize_postgres_for_migration.py --drop-indices  # Drop indices
+  python optimize_postgres_for_migration.py --create-indices # Create indices
+  python optimize_postgres_for_migration.py --disable-fk    # Disable foreign keys
+  python optimize_postgres_for_migration.py --enable-fk     # Enable foreign keys
+  python optimize_postgres_for_migration.py --analyze       # Update statistics
+  python optimize_postgres_for_migration.py --wal-settings  # Optimize WAL settings
+```
+
+### fix_postgres_wal.py
+
+```
+Usage:
+  python scripts/fix_postgres_wal.py --fix        # Fix WAL level setting
+  python scripts/fix_postgres_wal.py --optimize   # Optimize WAL settings
+  python scripts/fix_postgres_wal.py --restore    # Restore settings from backup
+  python scripts/fix_postgres_wal.py --data-dir /path/to/postgres/data  # Specify data directory
 ```
 
 ### monitor_migration_progress.py
@@ -150,4 +232,18 @@ Usage:
 Usage:
   python -m localknowledge.db.migrations.migrate_to_unified_document_no_indices --execute --batch-size 10000
   python -m localknowledge.db.migrations.migrate_to_unified_document_no_indices --execute --batch-size 10000 --create-indices
+```
+
+### migrate_with_checkpoint.py
+
+```
+Usage:
+  # Resume migration from checkpoint
+  python -m localknowledge.db.migrations.migrate_with_checkpoint --execute --batch-size 10000
+
+  # Start fresh migration (ignore checkpoint)
+  python -m localknowledge.db.migrations.migrate_with_checkpoint --execute --batch-size 10000 --reset-checkpoint
+
+  # Migrate specific segment
+  python -m localknowledge.db.migrations.migrate_with_checkpoint --execute --batch-size 10000 --start-id 1000000 --end-id 2000000
 ```
