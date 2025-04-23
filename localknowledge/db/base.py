@@ -23,7 +23,6 @@ try:
     from localknowledge.db.basic_infrastructure import (
         check_database_infrastructure,
         DatabaseInfrastructureError,
-        load_environment,
         get_db_connection_params
     )
     INFRASTRUCTURE_CHECK_AVAILABLE = True
