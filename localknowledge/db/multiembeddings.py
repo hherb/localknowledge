@@ -58,7 +58,7 @@ def model_to_tablename(model_name: str) -> str:
 
 
 
-class EmbeddingTableManager:
+class EmbeddingTableManager(DatabaseManager):
     """Manages dynamic embedding tables for different models.
 
     This class creates and manages separate database tables for each embedding model,

@@ -364,7 +364,6 @@ class EmbeddingsDatabaseManager(DatabaseManager):
             ORDER BY similarity DESC
             LIMIT %s;
             """
-
             result = self.execute(
                 query,
                 (embedding_str, embedding_str, embed_source_id, model_name, embedding_str, threshold, limit)

@@ -63,21 +63,8 @@ class EmbeddingManager:
         """
         try:
             # Make the request to Ollama
-            response = ollama.embeddings(model=self.model_name, prompt=text)
-
-            # Handle the response based on its type
-            if isinstance(response, dict):
-                if 'embedding' in response:
-                    return response['embedding']
-                elif 'embeddings' in response:
-                    embeddings = response['embeddings']
-                    if embeddings and isinstance(embeddings, list):
-                        return embeddings[0] if isinstance(embeddings[0], list) else embeddings
-
-            # If we get here, something unexpected happened
-            logger.error(f"Unexpected response format from Ollama: {response}")
-            return [0.0] * 1024  # Return a zero vector as fallback
-
+            response = ollama.embed(model=self.model_name, input=text).embeddings[0]
+            return response
         except Exception as e:
             logger.error(f"Error creating embedding: {e}")
             raise
