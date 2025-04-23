@@ -1,13 +1,18 @@
 """
 Database initialization module for the LocalKnowledge library.
 
-This module coordinates the creation of all database tables and indexes across different
-database modules. When a new database module is added, its create_tables function
-should be called here.
+This module is deprecated and will be removed in a future version.
+Use create_baseline_db.py for initial database setup and migrations for schema updates.
+
+This module now serves as a compatibility layer that redirects to the new approach.
 """
 
 import logging
-from typing import List, Optional
+import os
+import sys
+import shutil
+from pathlib import Path
+from typing import List, Optional, Tuple
 
 # Configure logging
 logging.basicConfig(
@@ -16,125 +21,141 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Import database managers
-from localknowledge.db.medrxiv import MedRxivDatabaseManager
-from localknowledge.db.user import UserDatabaseManager
-from localknowledge.db.pubmed import PubMedDatabaseManager
-from localknowledge.db.reading_tracker import ReadingTrackerManager
-from localknowledge.db.document import DocumentDatabaseManager
-
-# Import embedding database manager
+# Import basic infrastructure module
 try:
-    from localknowledge.embeddings.database import EmbeddingDatabaseManager
-    EMBEDDINGS_AVAILABLE = True
+    from localknowledge.db.basic_infrastructure import (
+        check_database_infrastructure,
+        DatabaseInfrastructureError
+    )
+    INFRASTRUCTURE_CHECK_AVAILABLE = True
 except ImportError:
-    logger.warning("Embeddings module not available. Skipping embedding tables.")
-    EMBEDDINGS_AVAILABLE = False
+    logger.warning("Basic infrastructure module not available. Skipping infrastructure checks.")
+    INFRASTRUCTURE_CHECK_AVAILABLE = False
 
-# Import QA embedding database manager
+# Import migrations system
 try:
-    from localknowledge.db.qafinder import QAEmbeddingDatabaseManager
-    QA_EMBEDDINGS_AVAILABLE = True
+    from localknowledge.db.migrations_system import MigrationsManager
+    from localknowledge.db.migrations_system.check_migrations import check_migrations
+    from localknowledge.db.migrations_system.config import get_migrations_dir
+    MIGRATIONS_AVAILABLE = True
 except ImportError:
-    logger.warning("QA embeddings module not available. Skipping QA embedding tables.")
-    QA_EMBEDDINGS_AVAILABLE = False
-
-# Import additional database managers here as they are added
+    logger.warning("Migrations system not available. Skipping migrations check.")
+    MIGRATIONS_AVAILABLE = False
 
 def create_all_tables() -> None:
-    """Create all tables across all database modules."""
-    logger.info("Initializing database tables...")
+    """Create all tables across all database modules.
 
-    # List of database managers to initialize
-    managers = []
+    This function is deprecated and now redirects to create_baseline_db.py.
+    """
+    logger.warning(
+        "The create_all_tables() function is deprecated. "
+        "Use create_baseline_db.py for initial database setup and migrations for schema updates."
+    )
+
+    # Check if create_baseline_db.py exists
+    try:
+        from localknowledge.db.create_baseline_db import BaselineDBCreator
+
+        logger.info("Redirecting to create_baseline_db.py...")
+        creator = BaselineDBCreator(force=False)
+        creator.create_baseline_database()
+        creator.close()
+        logger.info("Database initialization complete")
+    except ImportError:
+        logger.error(
+            "create_baseline_db.py not found. "
+            "Please run 'python -m localknowledge.db.create_baseline_db' manually."
+        )
+        raise
+
+def check_database_infrastructure() -> bool:
+    """
+    Check if the database infrastructure is valid.
+
+    Returns:
+        bool: True if infrastructure is valid, False otherwise
+    """
+    if not INFRASTRUCTURE_CHECK_AVAILABLE:
+        logger.warning("Basic infrastructure module not available. Skipping infrastructure checks.")
+        return True
 
     try:
-        logger.info("Initializing MedRxiv tables...")
-        medrxiv_db = MedRxivDatabaseManager()
-        medrxiv_db.create_tables()
-        medrxiv_db.create_indices()
-        managers.append(medrxiv_db)
-        logger.info("MedRxiv tables initialized successfully")
+        is_valid, error_message = check_database_infrastructure()
+        if not is_valid:
+            logger.error(f"Database infrastructure check failed: {error_message}")
+            return False
+        return True
     except Exception as e:
-        logger.error(f"Error initializing MedRxiv tables: {e}")
+        logger.error(f"Error checking database infrastructure: {e}")
+        return False
 
-    try:
-        logger.info("Initializing User tables...")
-        user_db = UserDatabaseManager()
-        user_db.create_tables()
-        managers.append(user_db)
-        logger.info("User tables initialized successfully")
-    except Exception as e:
-        logger.error(f"Error initializing User tables: {e}")
 
-    try:
-        logger.info("Initializing PubMed tables...")
-        pubmed_db = PubMedDatabaseManager()
-        pubmed_db.create_tables()
-        pubmed_db.create_indices()
-        managers.append(pubmed_db)
-        logger.info("PubMed tables initialized successfully")
-    except Exception as e:
-        logger.error(f"Error initializing PubMed tables: {e}")
+def check_and_run_migrations(auto_migrate: bool = False) -> Tuple[bool, int, int]:
+    """
+    Check for pending migrations and optionally run them.
 
-    try:
-        logger.info("Initializing Reading Tracker tables...")
-        reading_tracker_db = ReadingTrackerManager()
-        reading_tracker_db.create_tables()
-        managers.append(reading_tracker_db)
-        logger.info("Reading Tracker tables initialized successfully")
-    except Exception as e:
-        logger.error(f"Error initializing Reading Tracker tables: {e}")
+    Args:
+        auto_migrate: Whether to automatically run pending migrations
 
-    # Initialize Embedding tables if available
-    if EMBEDDINGS_AVAILABLE:
-        try:
-            logger.info("Initializing Embedding tables...")
-            embedding_db = EmbeddingDatabaseManager()
-            embedding_db.create_tables()
-            embedding_db.create_indices()
-            managers.append(embedding_db)
-            logger.info("Embedding tables initialized successfully")
-        except Exception as e:
-            logger.error(f"Error initializing Embedding tables: {e}")
+    Returns:
+        Tuple[bool, int, int]: (has_pending, current_version, pending_count)
+    """
+    if not MIGRATIONS_AVAILABLE:
+        logger.warning("Migrations system not available. Skipping migrations check.")
+        return False, 0, 0
 
-    # Initialize QA Embedding tables if available
-    if QA_EMBEDDINGS_AVAILABLE:
-        try:
-            logger.info("Initializing QA Embedding tables...")
-            qa_embedding_db = QAEmbeddingDatabaseManager()
-            qa_embedding_db.create_tables()
-            qa_embedding_db.create_indices()
-            managers.append(qa_embedding_db)
-            logger.info("QA Embedding tables initialized successfully")
-        except Exception as e:
-            logger.error(f"Error initializing QA Embedding tables: {e}")
+    # Copy sample migrations to migrations directory if it's empty
+    migrations_dir = get_migrations_dir()
+    if not list(migrations_dir.glob('*.py')):
+        logger.info("No migrations found. Copying sample migrations...")
+        sample_dir = Path(__file__).parent / 'migrations_system' / 'sample_migrations'
+        if sample_dir.exists():
+            for sample_file in sample_dir.glob('*.py'):
+                dest_file = migrations_dir / sample_file.name
+                shutil.copy(sample_file, dest_file)
+                logger.info(f"Copied sample migration: {dest_file}")
 
-    # Initialize Document tables
-    try:
-        logger.info("Initializing Document tables...")
-        document_db = DocumentDatabaseManager()
-        document_db.create_tables()
-        document_db.create_indices()
-        managers.append(document_db)
-        logger.info("Document tables initialized successfully")
-    except Exception as e:
-        logger.error(f"Error initializing Document tables: {e}")
+    # Check for pending migrations
+    return check_migrations(auto_migrate=auto_migrate)
 
-    # Add calls to additional database modules' create_tables methods here
-
-    # Close all connections
-    for manager in managers:
-        try:
-            manager.close()
-        except Exception as e:
-            logger.error(f"Error closing database connection: {e}")
-
-    logger.info("Database initialization complete")
 
 def main():
     """Main function to execute when run as a script."""
-    create_all_tables()
+    logger.warning(
+        "This script is deprecated. "
+        "Use create_baseline_db.py for initial database setup and migrations for schema updates."
+    )
+
+    # Check if the database infrastructure is valid
+    if not check_database_infrastructure():
+        logger.error("Database infrastructure check failed. Please fix the issues and try again.")
+        return 1
+
+    # Check for pending migrations
+    has_pending, current_version, pending_count = check_and_run_migrations(auto_migrate=False)
+
+    if has_pending:
+        logger.warning(f"There are {pending_count} pending migrations. Database is at version {current_version}.")
+        logger.warning("Run 'python -m localknowledge.db.migrations_system.run_migrations' to apply them.")
+        choice = input("Do you want to run migrations now? [y/N] ")
+        if choice.lower() == 'y':
+            # Run migrations
+            has_pending, current_version, pending_count = check_and_run_migrations(auto_migrate=True)
+            if has_pending:
+                logger.error("Failed to run all migrations.")
+                return 1
+
+    # Ask if the user wants to create the baseline database
+    choice = input("Do you want to create/update the baseline database? [y/N] ")
+    if choice.lower() == 'y':
+        # Create the baseline database
+        try:
+            create_all_tables()
+        except Exception as e:
+            logger.error(f"Error creating baseline database: {e}")
+            return 1
+
+    return 0
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

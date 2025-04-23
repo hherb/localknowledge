@@ -15,7 +15,15 @@ Features:
 import os
 import sys
 import importlib
-from typing import Dict, List, Optional, Type, Any
+from typing import Dict, List, Optional, Type, Any, Tuple
+import logging
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
 from PySide6.QtCore import (
     Qt, QSize, QTimer, QPropertyAnimation, QEasingCurve,
@@ -1236,6 +1244,111 @@ class MainWindow(QMainWindow):
         self.handle_login()
 
 
+def check_database_migrations() -> Tuple[bool, int, int]:
+    """
+    Check for pending database migrations.
+
+    Returns:
+        Tuple[bool, int, int]: (has_pending, current_version, pending_count)
+    """
+    try:
+        # Import the migrations system
+        from localknowledge.db.migrations_system.check_migrations import check_migrations
+
+        # Check for pending migrations
+        has_pending, current_version, pending_count = check_migrations(auto_migrate=False)
+
+        if has_pending:
+            logger.warning(f"There are {pending_count} pending migrations. Database is at version {current_version}.")
+            logger.warning("Run 'python -m localknowledge.db.migrations_system.run_migrations' to apply them.")
+        else:
+            logger.info(f"Database is up to date at version {current_version}.")
+
+        return has_pending, current_version, pending_count
+    except ImportError:
+        logger.warning("Migrations system not available. Skipping migrations check.")
+        return False, 0, 0
+    except Exception as e:
+        logger.error(f"Error checking migrations: {e}")
+        return False, 0, 0
+
+
+def show_migrations_dialog(parent, pending_count: int, current_version: int) -> bool:
+    """
+    Show a dialog about pending migrations.
+
+    Args:
+        parent: Parent widget
+        pending_count: Number of pending migrations
+        current_version: Current database version
+
+    Returns:
+        bool: True if user wants to run migrations, False otherwise
+    """
+    message = f"There are {pending_count} pending database migrations.\n\n"
+    message += f"Current database version: {current_version}\n\n"
+    message += "Would you like to run these migrations now?\n\n"
+    message += "Note: Running migrations may take some time and require\n"
+    message += "the application to restart afterward."
+
+    result = QMessageBox.question(
+        parent,
+        "Database Migrations",
+        message,
+        QMessageBox.Yes | QMessageBox.No,
+        QMessageBox.No
+    )
+
+    return result == QMessageBox.Yes
+
+
+def run_migrations_and_restart():
+    """
+    Run migrations and restart the application.
+    """
+    try:
+        # Import the migrations system
+        from localknowledge.db.migrations_system.manager import MigrationsManager
+
+        # Create a migrations manager
+        migrations_manager = MigrationsManager()
+
+        # Run migrations
+        success = migrations_manager.run_pending_migrations(use_gui_tqdm=True)
+
+        if success:
+            new_version = migrations_manager.get_current_version()
+            logger.info(f"Migrations completed successfully. New database version: {new_version}")
+
+            # Show success message
+            QMessageBox.information(
+                None,
+                "Migrations Complete",
+                f"Migrations completed successfully.\n\nNew database version: {new_version}\n\nThe application will now restart."
+            )
+
+            # Restart the application
+            os.execl(sys.executable, sys.executable, *sys.argv)
+        else:
+            logger.error("Migration process failed")
+
+            # Show error message
+            QMessageBox.critical(
+                None,
+                "Migration Failed",
+                "The migration process failed. Please check the logs for details."
+            )
+    except Exception as e:
+        logger.error(f"Error running migrations: {e}")
+
+        # Show error message
+        QMessageBox.critical(
+            None,
+            "Migration Error",
+            f"An error occurred while running migrations:\n\n{str(e)}"
+        )
+
+
 def main():
     """Main entry point for the application."""
     app = QApplication(sys.argv)
@@ -1245,6 +1358,21 @@ def main():
     app.setApplicationDisplayName("Researcher's Workbench")
     app.setOrganizationName("RWB")
     app.setOrganizationDomain("rwb.org")
+
+    # Check for pending migrations
+    has_pending, current_version, pending_count = check_database_migrations()
+
+    if has_pending:
+        # Create a minimal window to show the migrations dialog
+        temp_window = QWidget()
+        temp_window.setWindowTitle("RWB - Database Migrations")
+        temp_window.resize(400, 200)
+
+        # Show the migrations dialog
+        if show_migrations_dialog(temp_window, pending_count, current_version):
+            # User wants to run migrations
+            run_migrations_and_restart()
+            return
 
     # Create the main window
     main_window = MainWindow()
