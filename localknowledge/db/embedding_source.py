@@ -80,16 +80,16 @@ class EmbeddingSourceDatabaseManager(DatabaseManager):
         RETURNING id
         """
         result = self.execute(query, (name, description), commit=True)
-        
+
         if result:
             source_id = result[0]['id']
             logger.info(f"Added embedding source '{name}' with ID {source_id}")
             return source_id
-        
+
         logger.error(f"Failed to add embedding source '{name}'")
         return -1
 
-    def update_embedding_source(self, source_id: int, name: Optional[str] = None, 
+    def update_embedding_source(self, source_id: int, name: Optional[str] = None,
                               description: Optional[str] = None) -> bool:
         """Update an embedding source.
 
@@ -159,3 +159,35 @@ def get_embedding_source_db():
     if _instance is None:
         _instance = EmbeddingSourceDatabaseManager()
     return _instance
+
+
+def get_embedding_source_by_name(cursor, name: str) -> Optional[Dict[str, Any]]:
+    """Get an embedding source by name using a cursor.
+
+    Args:
+        cursor: Database cursor
+        name: Name of the embedding source
+
+    Returns:
+        Embedding source record or None if not found
+    """
+    query = "SELECT * FROM embedding_source WHERE name = %s"
+    cursor.execute(query, (name,))
+    result = cursor.fetchall()
+    return dict(result[0]) if result else None
+
+
+def get_embedding_source_by_id(cursor, source_id: int) -> Optional[Dict[str, Any]]:
+    """Get an embedding source by ID using a cursor.
+
+    Args:
+        cursor: Database cursor
+        source_id: ID of the embedding source
+
+    Returns:
+        Embedding source record or None if not found
+    """
+    query = "SELECT * FROM embedding_source WHERE id = %s"
+    cursor.execute(query, (source_id,))
+    result = cursor.fetchall()
+    return dict(result[0]) if result else None

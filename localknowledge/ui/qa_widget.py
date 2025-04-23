@@ -27,6 +27,9 @@ from localknowledge.db.document import DocumentDatabaseManager
 from localknowledge.embeddings.multiembeddings import EmbeddingManager
 
 
+# Import the connection pool
+from localknowledge.db.connection_pool import get_cursor, initialize_pool, close_pool
+
 # Simple thread-safe search function
 def perform_semantic_search(embedding_manager, query, max_results=10, threshold=0.3, use_reranker=False, reranker_model='BAAI/bge-reranker-base'):
     """Perform a semantic search in a thread-safe way.
@@ -46,21 +49,45 @@ def perform_semantic_search(embedding_manager, query, max_results=10, threshold=
         # Create embedding for the question
         question_embedding = embedding_manager.create_embedding(query)
 
-        # Create a new database connection
-        from localknowledge.db.embeddings import EmbeddingsDatabaseManager
-        embeddings_db = EmbeddingsDatabaseManager()
+        # Get the embedding source ID
+        from localknowledge.db.embedding_source import get_embedding_source_by_name
 
-        try:
-            results = embeddings_db.search_similar(
-                embedding=question_embedding,
-                embed_source='abstract',  # Use 'abstract' as the embedding source
-                model_name=embedding_manager.model_name,
-                limit=max_results,
-                threshold=threshold
+        results = []
+        with get_cursor() as cursor:
+            # Get the embedding source ID
+            embed_source_record = get_embedding_source_by_name(cursor, 'abstract')
+
+            if not embed_source_record:
+                logger.error("Embedding source 'abstract' not found")
+                return []
+
+            embed_source_id = embed_source_record['id']
+
+            # Convert the embedding list to a PostgreSQL vector
+            # For pgvector, we need to pass the embedding as a string in the format '[0.1, 0.2, ...]'
+            embedding_str = str(question_embedding)
+
+            query_sql = """
+            SELECT e.*, s.name as embed_source,
+                   (e.embedding <=> vector(%s)) as distance,
+                   1 - (e.embedding <=> vector(%s)) as similarity,
+                   d.id, d.title, d.abstract, d.source_id, d.authors
+            FROM unified_multiembeddings e
+            JOIN embedding_source s ON e.embed_source_id = s.id
+            JOIN document d ON e.document_id = d.id
+            WHERE e.embed_source_id = %s
+            AND e.model_name = %s
+            AND 1 - (e.embedding <=> vector(%s)) >= %s
+            ORDER BY similarity DESC
+            LIMIT %s;
+            """
+
+            cursor.execute(
+                query_sql,
+                (embedding_str, embedding_str, embed_source_id, embedding_manager.model_name, embedding_str, threshold, max_results)
             )
-        finally:
-            # Ensure the database connection is closed
-            embeddings_db.close()
+
+            results = [dict(row) for row in cursor.fetchall()]
 
         # Apply reranking if requested
         if use_reranker and results:
@@ -135,21 +162,48 @@ def perform_hyde_search(embedding_manager, query, max_results=10, threshold=0.3,
                 'abstract': hypothetical_abstract
             }
 
-        # Search with the HyDE embedding
-        from localknowledge.db.embeddings import EmbeddingsDatabaseManager
-        embeddings_db = EmbeddingsDatabaseManager()
+        # Get the embedding source ID
+        from localknowledge.db.embedding_source import get_embedding_source_by_name
 
-        try:
-            results = embeddings_db.search_similar(
-                embedding=hyde_embedding,
-                embed_source='abstract',  # Use 'abstract' as the embedding source
-                model_name=embedding_manager.model_name,
-                limit=max_results,
-                threshold=threshold
+        results = []
+        with get_cursor() as cursor:
+            # Get the embedding source ID
+            embed_source_record = get_embedding_source_by_name(cursor, 'abstract')
+
+            if not embed_source_record:
+                logger.error("Embedding source 'abstract' not found")
+                return {
+                    'results': [],
+                    'abstract': hypothetical_abstract
+                }
+
+            embed_source_id = embed_source_record['id']
+
+            # Convert the embedding list to a PostgreSQL vector
+            # For pgvector, we need to pass the embedding as a string in the format '[0.1, 0.2, ...]'
+            embedding_str = str(hyde_embedding)
+
+            query_sql = """
+            SELECT e.*, s.name as embed_source,
+                   (e.embedding <=> vector(%s)) as distance,
+                   1 - (e.embedding <=> vector(%s)) as similarity,
+                   d.id, d.title, d.abstract, d.source_id, d.authors
+            FROM unified_multiembeddings e
+            JOIN embedding_source s ON e.embed_source_id = s.id
+            JOIN document d ON e.document_id = d.id
+            WHERE e.embed_source_id = %s
+            AND e.model_name = %s
+            AND 1 - (e.embedding <=> vector(%s)) >= %s
+            ORDER BY similarity DESC
+            LIMIT %s;
+            """
+
+            cursor.execute(
+                query_sql,
+                (embedding_str, embedding_str, embed_source_id, embedding_manager.model_name, embedding_str, threshold, max_results)
             )
-        finally:
-            # Ensure the database connection is closed
-            embeddings_db.close()
+
+            results = [dict(row) for row in cursor.fetchall()]
 
         # Apply reranking if requested
         if use_reranker and results:
@@ -201,32 +255,23 @@ def perform_keyword_search(query, max_results=10):
         List of search results
     """
     try:
-        # Only search documents that have abstract embeddings
-        query_sql = """
-        SELECT d.* FROM document d
-        JOIN embeddings e ON d.id = e.document_id
-        WHERE (d.title ILIKE %s OR d.abstract ILIKE %s)
-        AND e.embed_source = 'abstract'
-        GROUP BY d.id
-        LIMIT %s
-        """
-
         # Use wildcard search
         search_term = f"%{query}%"
 
-        # Create a new database connection
-        from localknowledge.db.document import DocumentDatabaseManager
-        db_manager = DocumentDatabaseManager()
+        with get_cursor() as cursor:
+            # Only search documents that have abstract embeddings
+            query_sql = """
+            SELECT d.id, d.title, d.abstract, d.source_id, d.authors FROM document d
+            JOIN unified_multiembeddings e ON d.id = e.document_id
+            JOIN embedding_source s ON e.embed_source_id = s.id
+            WHERE (d.title ILIKE %s OR d.abstract ILIKE %s)
+            AND s.name = 'abstract'
+            GROUP BY d.id
+            LIMIT %s
+            """
 
-        try:
-            # Execute query
-            results = db_manager.execute(
-                query_sql,
-                (search_term, search_term, max_results)
-            ) or []
-        finally:
-            # Ensure the database connection is closed
-            db_manager.close()
+            cursor.execute(query_sql, (search_term, search_term, max_results))
+            results = [dict(row) for row in cursor.fetchall()]
 
         return results
     except Exception as e:
@@ -252,6 +297,7 @@ def perform_synthetic_qa(query):
                        "In a real implementation, this would contain an answer generated based on the question.",
             'authors': ['AI Assistant'],
             'similarity': 1.0,
+            'source_id': None,  # No specific source for synthetic answers
             'synthetic': True
         }
 
@@ -275,8 +321,21 @@ class TitleListItem(QListWidgetItem):
             document: Document data dictionary
             similarity: Similarity score (optional)
         """
-        # Create display text with title in bold
-        display_text = document.get('title', 'Untitled')
+        # Get the document title
+        title = document.get('title', 'Untitled')
+
+        # Get the source information
+        source_id = document.get('source_id')
+        source_tag = ''
+
+        # Add source tag based on source_id
+        if source_id == 1:
+            source_tag = '[pubmed] '
+        elif source_id == 2:
+            source_tag = '[medrxiv] '
+
+        # Create display text with source tag and title
+        display_text = f"{source_tag}{title}"
 
         # Initialize the list item with the display text
         super().__init__(display_text)
@@ -298,7 +357,7 @@ class TitleListItem(QListWidgetItem):
             else:
                 authors_str = str(authors)
 
-            tooltip = f"{display_text}\n\nAuthors: {authors_str}"
+            tooltip = f"{title}\n\nSource: {'PubMed' if source_id == 1 else 'medRxiv' if source_id == 2 else 'Unknown'}\nAuthors: {authors_str}"
             if similarity is not None:
                 tooltip += f"\n\nSimilarity: {similarity:.2f}"
 
@@ -551,6 +610,9 @@ class QAWidget(QWidget):
     shows results from HyDE (Hypothetical Document Embeddings) search.
     """
 
+    # Signal emitted when the widget is closed
+    closed = Signal()
+
     def __init__(self, parent=None):
         """
         Initialize the QA widget.
@@ -559,6 +621,10 @@ class QAWidget(QWidget):
             parent: Parent widget
         """
         super().__init__(parent)
+
+        # Initialize connection pool
+        initialize_pool(min_connections=2, max_connections=10)
+        logger.info("Database connection pool initialized")
 
         # Initialize database managers
         self.doc_db = DocumentDatabaseManager()
@@ -1376,20 +1442,34 @@ class QAWidget(QWidget):
         Returns:
             Number of abstract embeddings
         """
-        from localknowledge.db.embeddings import get_embeddings_db
-        embeddings_db = get_embeddings_db()
+        try:
+            with get_cursor() as cursor:
+                # Get the embedding source ID for 'abstract'
+                from localknowledge.db.embedding_source import get_embedding_source_by_name
+                embed_source_record = get_embedding_source_by_name(cursor, 'abstract')
 
-        # Get statistics about embeddings
-        stats = embeddings_db.get_embedding_stats()
+                if not embed_source_record:
+                    logger.warning("Embedding source 'abstract' not found")
+                    return 0
 
-        # Find the count for abstract embeddings
-        abstract_count = 0
-        for source_stat in stats.get('embeddings_by_source', []):
-            if source_stat.get('name') == 'abstract':
-                abstract_count = source_stat.get('count', 0)
-                break
+                embed_source_id = embed_source_record['id']
 
-        return abstract_count
+                # Count embeddings for this source
+                query = """
+                SELECT COUNT(*) as count
+                FROM unified_multiembeddings
+                WHERE embed_source_id = %s
+                """
+
+                cursor.execute(query, (embed_source_id,))
+                result = cursor.fetchone()
+
+                if result and 'count' in result:
+                    return result['count']
+                return 0
+        except Exception as e:
+            logger.error(f"Error getting abstract embedding count: {e}\n{traceback.format_exc()}")
+            return 0
 
     # This method is no longer used as we now display results directly in _perform_search
     # Keeping it as a reference for now
@@ -1418,6 +1498,28 @@ class QAWidget(QWidget):
             f"Found {left_count} results and {right_count} results "
             f"from {abstract_count:,} abstract embeddings"
         )
+
+
+    def closeEvent(self, event):
+        """
+        Handle the widget close event.
+
+        Args:
+            event: The close event
+        """
+        # Close the connection pool
+        close_pool()
+        logger.info("Database connection pool closed")
+
+        # Close database connections
+        if hasattr(self, 'doc_db') and self.doc_db:
+            self.doc_db.close()
+
+        # Emit the closed signal
+        self.closed.emit()
+
+        # Accept the close event
+        event.accept()
 
 
 # Example standalone usage
