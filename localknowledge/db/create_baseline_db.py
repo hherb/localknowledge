@@ -19,6 +19,7 @@ import sys
 import argparse
 import logging
 import psycopg2
+import subprocess
 from pathlib import Path
 from typing import Dict, Any, Optional, List, Union
 
@@ -150,61 +151,132 @@ class BaselineDBCreator:
 
 
     def drop_all_tables(self) -> None:
-        """Drop all tables in the database."""
+        """Drop all tables in the database using psql."""
         if not self.force:
             logger.error("Cannot drop tables without --force flag")
             return
 
         logger.warning("Dropping all tables in the database")
 
-        # Get all tables
-        query = """
-        SELECT tablename
-        FROM pg_tables
-        WHERE schemaname = 'public'
+        # Get database connection parameters
+        if BASIC_INFRASTRUCTURE_AVAILABLE:
+            connection_params = get_db_connection_params(dotenv_path=self.dotenv_path)
+            dbname = connection_params['dbname']
+            user = connection_params['user']
+            password = connection_params['password']
+            host = connection_params['host']
+            port = connection_params['port']
+        else:
+            # Fallback to direct environment variable access
+            dbname = os.environ.get('POSTGRES_DB')
+            user = os.environ.get('POSTGRES_USER', 'postgres')
+            password = os.environ.get('POSTGRES_PASSWORD', '')
+            host = os.environ.get('POSTGRES_HOST', 'localhost')
+            port = os.environ.get('POSTGRES_PORT', '5432')
+
+            if not dbname:
+                raise ValueError("POSTGRES_DB environment variable must be set")
+
+        # Close the current connection if it exists
+        if self.connection:
+            self.connection.close()
+            self.connection = None
+
+        # Set up environment variables for psql
+        env = os.environ.copy()
+        if password:
+            env['PGPASSWORD'] = password
+
+        # Drop all tables using psql
+        drop_command = """
+        DO $$ DECLARE
+            r RECORD;
+        BEGIN
+            FOR r IN (SELECT tablename FROM pg_tables WHERE schemaname = 'public') LOOP
+                EXECUTE 'DROP TABLE IF EXISTS ' || quote_ident(r.tablename) || ' CASCADE';
+            END LOOP;
+        END $$;
         """
-        result = self.execute(query)
 
-        if not result:
-            logger.info("No tables to drop")
-            return
+        try:
+            cmd = ['psql', '-U', user, '-h', host, '-p', port, '-d', dbname, '-c', drop_command]
+            subprocess.run(cmd, env=env, check=True, capture_output=True, text=True)
+            logger.info("All tables dropped successfully")
+        except subprocess.CalledProcessError as e:
+            logger.error(f"Error dropping tables: {e}")
+            logger.error(f"Error output: {e.stderr}")
+            raise
 
-        # Drop all tables
-        for row in result:
-            table_name = row['tablename']
-            logger.info(f"Dropping table {table_name}")
-            self.execute(f"DROP TABLE IF EXISTS {table_name} CASCADE")
-
-        logger.info("All tables dropped")
+        # Reconnect to the database
+        self.connect()
 
     def execute_sql_file(self, file_path: Union[str, Path]) -> None:
-        """Execute SQL statements from a file.
+        """Execute SQL statements from a file using psql.
 
         Args:
             file_path: Path to the SQL file
 
         Raises:
             FileNotFoundError: If the file does not exist
-            psycopg2.Error: If there is an error executing the SQL
+            subprocess.CalledProcessError: If psql command fails
         """
         file_path = Path(file_path)
         if not file_path.exists():
             raise FileNotFoundError(f"SQL file not found: {file_path}")
 
-        logger.info(f"Executing SQL from file: {file_path}")
-        with open(file_path, 'r') as f:
-            sql = f.read()
+        # Get database connection parameters
+        if BASIC_INFRASTRUCTURE_AVAILABLE:
+            connection_params = get_db_connection_params(dotenv_path=self.dotenv_path)
+            dbname = connection_params['dbname']
+            user = connection_params['user']
+            password = connection_params['password']
+            host = connection_params['host']
+            port = connection_params['port']
+        else:
+            # Fallback to direct environment variable access
+            dbname = os.environ.get('POSTGRES_DB')
+            user = os.environ.get('POSTGRES_USER', 'postgres')
+            password = os.environ.get('POSTGRES_PASSWORD', '')
+            host = os.environ.get('POSTGRES_HOST', 'localhost')
+            port = os.environ.get('POSTGRES_PORT', '5432')
 
-        # Execute the SQL
-        cursor = self.connection.cursor()
+            if not dbname:
+                raise ValueError("POSTGRES_DB environment variable must be set")
+
+        # Close the current connection if it exists
+        if self.connection:
+            self.connection.close()
+            self.connection = None
+
+        # Set up environment variables for psql
+        env = os.environ.copy()
+        if password:
+            env['PGPASSWORD'] = password
+
+        # Create vector extension first
+        logger.info(f"Creating vector extension in database {dbname}")
         try:
-            cursor.execute(sql)
-            logger.info(f"Successfully executed SQL from file: {file_path}")
-        except psycopg2.Error as e:
-            logger.error(f"Error executing SQL from file {file_path}: {e}")
+            cmd = ['psql', '-U', user, '-h', host, '-p', port, '-d', dbname, '-c', 'CREATE EXTENSION IF NOT EXISTS vector;']
+            subprocess.run(cmd, env=env, check=True, capture_output=True, text=True)
+        except subprocess.CalledProcessError as e:
+            logger.error(f"Error creating vector extension: {e}")
+            logger.error(f"Error output: {e.stderr}")
             raise
-        finally:
-            cursor.close()
+
+        # Execute the SQL file
+        logger.info(f"Executing SQL file {file_path} using psql")
+        try:
+            cmd = ['psql', '-U', user, '-h', host, '-p', port, '-d', dbname, '-f', str(file_path)]
+            process_result = subprocess.run(cmd, env=env, check=True, capture_output=True, text=True)
+            logger.info(f"Successfully executed SQL file: {file_path}")
+            logger.debug(f"Output: {process_result.stdout}")
+        except subprocess.CalledProcessError as e:
+            logger.error(f"Error executing SQL file: {e}")
+            logger.error(f"Error output: {e.stderr}")
+            raise
+
+        # Reconnect to the database
+        self.connect()
 
     def create_baseline_database(self) -> None:
         """Create the baseline database schema using the schema.sql file."""
@@ -229,13 +301,52 @@ class BaselineDBCreator:
             logger.info(f"Creating baseline database using schema file: {schema_path}")
             self.execute_sql_file(schema_path)
 
-            # Insert initial version record if not already present
-            query = """
+            # Ensure version table is populated using psql
+            # Get database connection parameters
+            if BASIC_INFRASTRUCTURE_AVAILABLE:
+                connection_params = get_db_connection_params(dotenv_path=self.dotenv_path)
+                dbname = connection_params['dbname']
+                user = connection_params['user']
+                password = connection_params['password']
+                host = connection_params['host']
+                port = connection_params['port']
+            else:
+                # Fallback to direct environment variable access
+                dbname = os.environ.get('POSTGRES_DB')
+                user = os.environ.get('POSTGRES_USER', 'postgres')
+                password = os.environ.get('POSTGRES_PASSWORD', '')
+                host = os.environ.get('POSTGRES_HOST', 'localhost')
+                port = os.environ.get('POSTGRES_PORT', '5432')
+
+                if not dbname:
+                    raise ValueError("POSTGRES_DB environment variable must be set")
+
+            # Set up environment variables for psql
+            env = os.environ.copy()
+            if password:
+                env['PGPASSWORD'] = password
+
+            # Create version table and insert initial record
+            version_command = """
+            CREATE TABLE IF NOT EXISTS version (
+                version INTEGER UNIQUE NOT NULL,
+                migrated TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                migration_success BOOLEAN NOT NULL
+            );
+
             INSERT INTO version (version, migrated, migration_success)
             VALUES (1, CURRENT_TIMESTAMP, TRUE)
-            ON CONFLICT (version) DO NOTHING
+            ON CONFLICT (version) DO NOTHING;
             """
-            self.execute(query)
+
+            try:
+                cmd = ['psql', '-U', user, '-h', host, '-p', port, '-d', dbname, '-c', version_command]
+                subprocess.run(cmd, env=env, check=True, capture_output=True, text=True)
+                logger.info("Version table created and initialized to version 1")
+            except subprocess.CalledProcessError as e:
+                logger.error(f"Error creating version table: {e}")
+                logger.error(f"Error output: {e.stderr}")
+                raise
 
             logger.info("Baseline database created successfully")
         except Exception as e:
