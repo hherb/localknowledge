@@ -573,6 +573,7 @@ class MainWindow(QMainWindow):
         self.tab_widget.setTabsClosable(True)
         self.tab_widget.setMovable(True)
         self.tab_widget.tabCloseRequested.connect(self.close_plugin_tab)
+        self.tab_widget.currentChanged.connect(self.on_tab_changed)
         self.main_splitter.addWidget(self.tab_widget)
 
         # Set splitter sizes
@@ -701,12 +702,6 @@ class MainWindow(QMainWindow):
             # Switch to the new tab
             self.tab_widget.setCurrentIndex(self.tab_widget.count() - 1)
 
-            # Set configuration panel content if plugin has config widget
-            # but don't automatically show it
-            config_widget = plugin.get_config_widget()
-            if config_widget:
-                self.config_panel.set_content(config_widget)
-
             # Update UI
             self.statusBar().showMessage(f"Loaded plugin: {plugin.plugin_name}")
 
@@ -741,6 +736,14 @@ class MainWindow(QMainWindow):
         if self.config_animation.state() == QPropertyAnimation.Running:
             return
 
+        # Check if current plugin has a config widget
+        if not self.has_config_widget_for_current_tab():
+            # No config widget available, don't show panel
+            self.statusBar().showMessage("No configuration available for this plugin", 3000)
+            self.config_button.setChecked(False)
+            self.toggle_config_action.setChecked(False)
+            return
+
         if self.config_panel.isVisible():
             # Hide panel
             self.config_animation.setStartValue(self.config_panel.width())
@@ -762,6 +765,69 @@ class MainWindow(QMainWindow):
         """Hide the configuration panel after animation completes."""
         self.config_panel.setVisible(False)
         self.config_animation.finished.disconnect(self._hide_config_panel)
+
+    def on_tab_changed(self, index):
+        """Handle tab change event.
+
+        Args:
+            index: Index of the newly selected tab
+        """
+        # Update the configuration panel with the settings widget for the current tab
+        self.update_config_panel_for_current_tab()
+
+        # Update the config button state
+        self.update_config_button_state()
+
+    def update_config_panel_for_current_tab(self):
+        """Update the configuration panel with the settings widget for the current tab."""
+        current_index = self.tab_widget.currentIndex()
+        if current_index < 0:
+            # No tabs open
+            return
+
+        current_widget = self.tab_widget.widget(current_index)
+
+        # Find the plugin for this widget
+        for plugin_name, plugin in self.plugin_manager.get_active_plugins().items():
+            if plugin.get_main_widget() == current_widget:
+                # Found the plugin, get its config widget
+                config_widget = plugin.get_config_widget()
+                if config_widget:
+                    self.config_panel.set_content(config_widget)
+                break
+
+    def update_config_button_state(self):
+        """Update the config button state based on whether the current tab has a config widget."""
+        has_config = self.has_config_widget_for_current_tab()
+
+        # Enable/disable the config button
+        self.config_button.setEnabled(has_config)
+        self.toggle_config_action.setEnabled(has_config)
+
+        # If config panel is visible but current tab has no config, hide it
+        if self.config_panel.isVisible() and not has_config:
+            self.toggle_config_panel()
+
+    def has_config_widget_for_current_tab(self) -> bool:
+        """Check if the current tab has a configuration widget.
+
+        Returns:
+            bool: True if the current tab has a configuration widget, False otherwise
+        """
+        current_index = self.tab_widget.currentIndex()
+        if current_index < 0:
+            # No tabs open
+            return False
+
+        current_widget = self.tab_widget.widget(current_index)
+
+        # Find the plugin for this widget
+        for plugin_name, plugin in self.plugin_manager.get_active_plugins().items():
+            if plugin.get_main_widget() == current_widget:
+                # Found the plugin, check if it has a config widget
+                return plugin.get_config_widget() is not None
+
+        return False
 
     def get_config_panel_width(self):
         """
@@ -1108,6 +1174,9 @@ class MainWindow(QMainWindow):
 
                     # Add to UI
                     self.tab_widget.addTab(plugin.get_main_widget(), plugin.get_title())
+
+        # Update config button state after loading plugins
+        self.update_config_button_state()
 
     def closeEvent(self, event):
         """

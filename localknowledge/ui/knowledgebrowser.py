@@ -16,8 +16,7 @@ from PySide6.QtWidgets import (
     QPushButton, QSplitter, QListWidget, QListWidgetItem,
     QTabWidget, QLabel, QMessageBox, QApplication,
     QScrollArea, QStatusBar, QStyledItemDelegate, QStyle,
-    QCheckBox, QComboBox, QSlider, QSpinBox, QGroupBox,
-    QFormLayout, QToolButton, QDialog, QFrame
+    QComboBox, QToolButton, QDialog, QFrame
 )
 from PySide6.QtWebEngineWidgets import QWebEngineView
 import pymupdf4llm
@@ -47,20 +46,11 @@ from localknowledge.embeddings.embedding_manager import EmbeddingManager
 
 # Try to import rerankers
 try:
-    from localknowledge.ai.rerankers import get_available_rerankers, get_reranker
+    from localknowledge.ai.rerankers import get_reranker
     RERANKERS_AVAILABLE = True
 except ImportError:
     RERANKERS_AVAILABLE = False
-    # Define fallback functions
-    def get_available_rerankers():
-        return [
-            {
-                'id': 'BAAI/bge-reranker-base',
-                'name': 'BGE Reranker Base',
-                'description': 'Good general purpose reranker with balanced performance'
-            }
-        ]
-
+    # Define fallback function
     def get_reranker(model_name):
         return None
 
@@ -193,7 +183,25 @@ class KnowledgeBrowser(QWidget):
             'similarity_threshold': 0.3,
             'max_results': 20,
             'use_reranker': False,
-            'reranker_model': 'BAAI/bge-reranker-base'
+            'reranker_model': 'BAAI/bge-reranker-base',
+            'hybrid_weight': 0.5,
+            'embedding_model': 'snowflake-arctic-embed2:latest',
+            'use_hyde': False,
+            'hyde_model': 'gemma3:4b'
+        }
+
+        # Search sources
+        self.search_sources = {
+            'pubmed': True,
+            'medrxiv': True
+        }
+
+        # Search strategies
+        self.search_strategies = {
+            'keyword': True,
+            'semantic': True,
+            'hybrid': True,
+            'bm25': False
         }
 
         self.current_publication = None
@@ -357,19 +365,54 @@ class KnowledgeBrowser(QWidget):
 
     def _show_search_settings(self):
         """Show the search settings dialog."""
-        dialog = SearchSettingsDialog(
-            self,
-            similarity_threshold=self.search_settings['similarity_threshold'],
-            max_results=self.search_settings['max_results'],
-            use_reranker=self.search_settings.get('use_reranker', False),
-            reranker_model=self.search_settings.get('reranker_model', 'BAAI/bge-reranker-base'),
-            hybrid_weight=self.search_settings.get('hybrid_weight', 0.5)
+        # Import the settings widget
+        from localknowledge.ui.knowledgebrowser_settings import KnowledgeBrowserSettings
+
+        # Create a settings dialog
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Knowledge Browser Settings")
+        dialog.setMinimumWidth(600)
+        dialog.setMinimumHeight(500)
+
+        # Create layout
+        layout = QVBoxLayout(dialog)
+
+        # Create settings widget with current settings
+        settings_widget = KnowledgeBrowserSettings(
+            dialog,
+            {
+                'sources': self.search_sources,
+                'search_strategies': self.search_strategies,
+                'semantic_settings': self.search_settings,
+                'hybrid_settings': {
+                    'semantic_weight': self.search_settings.get('hybrid_weight', 0.5)
+                }
+            }
         )
 
-        if dialog.exec() == QDialog.Accepted:
-            # Update settings if the user clicked OK
-            self.search_settings = dialog.get_settings()
-            print(f"Updated search settings: {self.search_settings}")
+        # Connect settings changed signal
+        settings_widget.settingsChanged.connect(self._on_settings_changed)
+
+        # Add settings widget to dialog
+        layout.addWidget(settings_widget)
+
+        # Show the dialog
+        dialog.exec()
+
+    @Slot(dict)
+    def _on_settings_changed(self, settings):
+        """Handle settings changes."""
+        # Update search settings
+        self.search_settings.update(settings['semantic_settings'])
+        self.search_settings['hybrid_weight'] = settings['hybrid_settings']['semantic_weight']
+
+        # Update search sources
+        self.search_sources = settings['sources']
+
+        # Update search strategies
+        self.search_strategies = settings['search_strategies']
+
+        print(f"Updated search settings: {self.search_settings}")
 
     def _get_pdf_base_dir(self) -> Path:
         """
@@ -1032,172 +1075,7 @@ class KnowledgeBrowser(QWidget):
     # PDF-related methods are now handled by the PDFViewer widget
 
 
-class SearchSettingsDialog(QDialog):
-    """
-    Dialog for configuring search settings.
-    """
-    def __init__(self, parent=None, similarity_threshold=0.3, max_results=20,
-                 use_reranker=False, reranker_model="BAAI/bge-reranker-base",
-                 hybrid_weight=0.5):
-        super().__init__(parent)
-        self.setWindowTitle("Search Settings")
-        self.setMinimumWidth(500)
 
-        # Create layout
-        layout = QVBoxLayout(self)
-
-        # Create semantic search settings group
-        semantic_group = QGroupBox("Semantic Search Settings")
-        semantic_layout = QFormLayout(semantic_group)
-
-        # Similarity threshold slider
-        self.similarity_label = QLabel(f"Similarity Threshold: {similarity_threshold:.2f}")
-        self.similarity_slider = QSlider(Qt.Horizontal)
-        self.similarity_slider.setRange(0, 100)  # 0.0 to 1.0 mapped to 0-100
-        self.similarity_slider.setValue(int(similarity_threshold * 100))
-        self.similarity_slider.setTickPosition(QSlider.TicksBelow)
-        self.similarity_slider.setTickInterval(10)
-        self.similarity_slider.valueChanged.connect(self._update_similarity_label)
-
-        # Max results spinner
-        self.max_results_spinner = QSpinBox()
-        self.max_results_spinner.setRange(5, 100)
-        self.max_results_spinner.setValue(max_results)
-        self.max_results_spinner.setSingleStep(5)
-
-        # Add widgets to form layout
-        semantic_layout.addRow(self.similarity_label, self.similarity_slider)
-        semantic_layout.addRow("Maximum Results:", self.max_results_spinner)
-
-        # Add group to main layout
-        layout.addWidget(semantic_group)
-
-        # Create reranker settings group
-        reranker_group = QGroupBox("Reranking Settings")
-        reranker_layout = QFormLayout(reranker_group)
-
-        # Enable reranking checkbox
-        self.use_reranker_checkbox = QCheckBox("Enable Reranking")
-        self.use_reranker_checkbox.setChecked(use_reranker)
-        self.use_reranker_checkbox.stateChanged.connect(self._toggle_reranker_options)
-
-        # Reranker model selection
-        self.reranker_model_combo = QComboBox()
-
-        # Get available rerankers
-        self.available_rerankers = get_available_rerankers()
-
-        # Add rerankers to combo box
-        for reranker in self.available_rerankers:
-            self.reranker_model_combo.addItem(reranker['name'], reranker['id'])
-            # Set tooltip to show description
-            self.reranker_model_combo.setItemData(
-                self.reranker_model_combo.count() - 1,
-                reranker['description'],
-                Qt.ToolTipRole
-            )
-
-        # Set current reranker model
-        index = self.reranker_model_combo.findData(reranker_model)
-        if index >= 0:
-            self.reranker_model_combo.setCurrentIndex(index)
-
-        # Add reranker description label
-        self.reranker_description = QLabel()
-        self.reranker_description.setWordWrap(True)
-        self.reranker_description.setStyleSheet("font-size: 10px; color: #666;")
-        self._update_reranker_description(self.reranker_model_combo.currentIndex())
-
-        # Connect signal to update description when model changes
-        self.reranker_model_combo.currentIndexChanged.connect(self._update_reranker_description)
-
-        # Add widgets to form layout
-        reranker_layout.addRow("", self.use_reranker_checkbox)
-        reranker_layout.addRow("Reranker Model:", self.reranker_model_combo)
-        reranker_layout.addRow("", self.reranker_description)
-
-        # Add group to main layout
-        layout.addWidget(reranker_group)
-
-        # Create hybrid search settings group
-        hybrid_group = QGroupBox("Hybrid Search Settings")
-        hybrid_layout = QFormLayout(hybrid_group)
-
-        # Hybrid weight slider (balance between keyword and semantic results)
-        self.hybrid_weight_label = QLabel(f"Semantic Weight: {hybrid_weight:.2f}")
-        self.hybrid_weight_slider = QSlider(Qt.Horizontal)
-        self.hybrid_weight_slider.setRange(0, 100)  # 0.0 to 1.0 mapped to 0-100
-        self.hybrid_weight_slider.setValue(int(hybrid_weight * 100))
-        self.hybrid_weight_slider.setTickPosition(QSlider.TicksBelow)
-        self.hybrid_weight_slider.setTickInterval(10)
-        self.hybrid_weight_slider.valueChanged.connect(self._update_hybrid_weight_label)
-
-        # Add widgets to form layout
-        hybrid_layout.addRow(self.hybrid_weight_label, self.hybrid_weight_slider)
-
-        # Add explanation text
-        hybrid_explanation = QLabel("Adjusts the balance between keyword and semantic results. Higher values give more weight to semantic similarity.")
-        hybrid_explanation.setWordWrap(True)
-        hybrid_explanation.setStyleSheet("font-size: 10px; color: #666;")
-        hybrid_layout.addRow("", hybrid_explanation)
-
-        # Add group to main layout
-        layout.addWidget(hybrid_group)
-
-        # Set initial state of reranker options
-        self._toggle_reranker_options(self.use_reranker_checkbox.isChecked())
-
-        # Disable reranking if not available
-        if not RERANKERS_AVAILABLE:
-            self.use_reranker_checkbox.setChecked(False)
-            self.use_reranker_checkbox.setEnabled(False)
-            self.reranker_model_combo.setEnabled(False)
-            self.reranker_description.setText("Reranking is not available. Please install sentence-transformers.")
-            self.reranker_description.setStyleSheet("font-size: 10px; color: #f00;")
-
-        # Add buttons
-        button_layout = QHBoxLayout()
-        self.ok_button = QPushButton("OK")
-        self.cancel_button = QPushButton("Cancel")
-
-        self.ok_button.clicked.connect(self.accept)
-        self.cancel_button.clicked.connect(self.reject)
-
-        button_layout.addWidget(self.ok_button)
-        button_layout.addWidget(self.cancel_button)
-        layout.addLayout(button_layout)
-
-    def _toggle_reranker_options(self, enabled):
-        """Enable or disable reranker options based on checkbox state."""
-        self.reranker_model_combo.setEnabled(enabled)
-
-    def _update_reranker_description(self, index):
-        """Update the reranker description label when the model changes."""
-        if index >= 0 and index < len(self.available_rerankers):
-            description = self.available_rerankers[index]['description']
-            self.reranker_description.setText(description)
-        else:
-            self.reranker_description.setText("")
-
-    def _update_similarity_label(self, value):
-        """Update the similarity threshold label when the slider changes."""
-        threshold = value / 100.0
-        self.similarity_label.setText(f"Similarity Threshold: {threshold:.2f}")
-
-    def _update_hybrid_weight_label(self, value):
-        """Update the hybrid weight label when the slider changes."""
-        weight = value / 100.0
-        self.hybrid_weight_label.setText(f"Semantic Weight: {weight:.2f}")
-
-    def get_settings(self):
-        """Get the current settings from the dialog."""
-        return {
-            'similarity_threshold': self.similarity_slider.value() / 100.0,
-            'max_results': self.max_results_spinner.value(),
-            'use_reranker': self.use_reranker_checkbox.isChecked(),
-            'reranker_model': self.reranker_model_combo.currentData(),
-            'hybrid_weight': self.hybrid_weight_slider.value() / 100.0
-        }
 
 
 class WorkerSignals(QObject):
