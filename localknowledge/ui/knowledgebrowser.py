@@ -41,7 +41,7 @@ except ImportError:
     def remove_sequential_line_numbers(text):
         return text  # Just return the original text
 
-from localknowledge.db.medrxiv import MedRxivDatabaseManager
+from localknowledge.db.document import DocumentDatabaseManager
 from localknowledge.embeddings.embedding_manager import EmbeddingManager
 
 # Try to import rerankers
@@ -128,9 +128,24 @@ class PublicationItem(QListWidgetItem):
 
         # Create display text without HTML formatting
         title = publication.get('title', 'No Title')
-        authors = publication.get('authors', 'Unknown Authors')
-        date = publication.get('date_posted', '')
+
+        # Handle authors which is a list in the document structure
+        authors = publication.get('authors', [])
+        if authors:
+            authors_str = ', '.join(authors)
+        else:
+            authors_str = 'Unknown Authors'
+
+        # Handle date which is publication_date in the document structure
+        date = publication.get('publication_date', '')
+        if hasattr(date, 'strftime'):  # If it's a datetime object
+            date = date.strftime('%Y-%m-%d')
+
         similarity = publication.get('similarity', '')
+
+        # Add source tag if available
+        source_name = publication.get('source_name', '')
+        source_tag = f"[{source_name}] " if source_name else ""
 
         # Truncate the title if it's too long
         if len(title) > 80:
@@ -138,9 +153,9 @@ class PublicationItem(QListWidgetItem):
 
         # Format display text without HTML tags
         if similarity:
-            display_text = f"{title}\n{authors[:100]}{'...' if len(authors) > 100 else ''}\n{date} | Similarity: {similarity}"
+            display_text = f"{source_tag}{title}\n{authors_str[:100]}{'...' if len(authors_str) > 100 else ''}\n{date} | Similarity: {similarity}"
         else:
-            display_text = f"{title}\n{authors[:100]}{'...' if len(authors) > 100 else ''}\n{date}"
+            display_text = f"{source_tag}{title}\n{authors_str[:100]}{'...' if len(authors_str) > 100 else ''}\n{date}"
 
         # Initialize the item with display text
         super().__init__(display_text)
@@ -149,7 +164,7 @@ class PublicationItem(QListWidgetItem):
         self.setSizeHint(QSize(self.sizeHint().width(), self.sizeHint().height() + 10))
 
         # Set tooltip to show full title and authors on hover
-        self.setToolTip(f"{publication.get('title', 'No Title')}\n{publication.get('authors', 'Unknown Authors')}")
+        self.setToolTip(f"{publication.get('title', 'No Title')}\n{authors_str}")
 
 
 class KnowledgeBrowser(QWidget):
@@ -167,7 +182,7 @@ class KnowledgeBrowser(QWidget):
         """
         super().__init__(parent)
 
-        self.db_manager = MedRxivDatabaseManager()
+        self.db_manager = DocumentDatabaseManager()
 
         # Try to initialize the embedding manager, but make it optional
         self.embedding_manager = None
@@ -473,7 +488,7 @@ class KnowledgeBrowser(QWidget):
             QMessageBox.critical(self, "Search Error", f"An error occurred during search: {str(e)}")
 
     def _perform_keyword_search(self, search_text):
-        """Perform a keyword-based search using the database manager."""
+        """Perform a keyword-based search using the document database manager."""
         # Process search terms to build the query
         # If the search text is in quotes, search for the exact phrase
         # Otherwise, split by commas and search for each term
@@ -515,30 +530,29 @@ class KnowledgeBrowser(QWidget):
         # This assumes your database supports a full-text search with & operator for AND
         query = " & ".join(search_terms)
 
-        # Perform the search
-        publications = self.db_manager.search_preprints(query, fields=['abstract'])
+        # Get source filter based on settings
+        source_name = None
+        if self.search_sources.get('medrxiv', True) and not self.search_sources.get('pubmed', True):
+            source_name = 'medrxiv'
+        elif self.search_sources.get('pubmed', True) and not self.search_sources.get('medrxiv', True):
+            source_name = 'pubmed'
+        # If both are True or both are False, don't filter by source
+
+        # Perform the search using the document database manager
+        publications = self.db_manager.search_documents(
+            search_text=query,
+            source_name=source_name,
+            limit=self.search_settings.get('max_results', 20),
+            offset=0
+        )
 
         # Store the search query for reference
         self.last_search_query = "keyword"
 
         # Display the results
-        self._display_keyword_results(publications)
+        self._display_search_results(publications)
 
-    def _display_keyword_results(self, publications):
-        """Display keyword search results in the publication list."""
-        self.publication_list.clear()
 
-        if not publications:
-            self.publication_list.addItem("No results found.")
-            return
-
-        # Add each publication to the list
-        for pub in publications:
-            item = PublicationItem(pub)
-            self.publication_list.addItem(item)
-
-        # Update status bar with result count
-        self.status_bar.showMessage(f"Found {len(publications)} publications matching keyword search")
 
     def _perform_semantic_search(self, search_text):
         """Perform a semantic search using the embedding manager."""
@@ -548,13 +562,21 @@ class KnowledgeBrowser(QWidget):
             self.publication_list.addItem("Semantic search is not available. Please install Ollama and required models.")
             return
 
+        # Get source filter based on settings
+        source_id = None
+        if self.search_sources.get('medrxiv', True) and not self.search_sources.get('pubmed', True):
+            source_id = 'medrxiv'
+        elif self.search_sources.get('pubmed', True) and not self.search_sources.get('medrxiv', True):
+            source_id = 'pubmed'
+        # If both are True or both are False, don't filter by source
+
         # Create a worker for the semantic search
         worker = SemanticSearchWorker(
             embedding_manager=self.embedding_manager,
             query=search_text,
             limit=self.search_settings['max_results'],
             threshold=self.search_settings['similarity_threshold'],
-            source_id="medrxiv"  # Filter to medrxiv documents
+            source_id=source_id
         )
 
         # Connect signals
@@ -590,8 +612,28 @@ class KnowledgeBrowser(QWidget):
             similarity_pct = f"{similarity * 100:.1f}%"
 
             try:
-                # Get the full publication details from the database
-                publication = self.db_manager.get_preprint_by_doi(document_id)
+                # Get the document by ID if it's numeric
+                if isinstance(document_id, int) or (isinstance(document_id, str) and document_id.isdigit()):
+                    doc_id = document_id if isinstance(document_id, int) else int(document_id)
+                    query = """
+                    SELECT d.*, s.name as source_name, c.name as category_name
+                    FROM document d
+                    JOIN sources s ON d.source_id = s.id
+                    LEFT JOIN categories c ON d.category_id = c.id
+                    WHERE d.id = %s
+                    """
+                    result = self.db_manager.execute(query, (doc_id,))
+                    if result:
+                        publication = result[0]
+                    else:
+                        # Try to get by DOI if it's a string
+                        if isinstance(document_id, str):
+                            publication = self.db_manager.get_document_by_doi(document_id)
+                        else:
+                            publication = None
+                else:
+                    # Try to get by DOI
+                    publication = self.db_manager.get_document_by_doi(document_id)
 
                 if publication:
                     # Create a publication item with the similarity score added
@@ -793,13 +835,13 @@ class KnowledgeBrowser(QWidget):
         if not self.current_publication:
             return
 
-        # Get the local PDF path
-        local_pdf_path = self.current_publication.get('local_pdf_path', '')
+        # Get the local PDF path from the pdf_filename field
+        local_pdf_path = self.current_publication.get('pdf_filename', '')
 
         # Try to load PDF
         pdf_found = False
 
-        # First case: We have a local_pdf_path in the database
+        # First case: We have a local PDF path in the database
         if local_pdf_path:
             # Convert to string and ensure proper path handling
             if isinstance(self.pdf_base_dir, Path):
@@ -807,7 +849,6 @@ class KnowledgeBrowser(QWidget):
             else:
                 # If pdf_base_dir is a string, create a path object
                 full_pdf_path = Path(os.path.join(self.pdf_base_dir, local_pdf_path))
-
 
             if full_pdf_path.exists():
                 # Load the PDF using our PDFViewer widget
@@ -848,11 +889,13 @@ class KnowledgeBrowser(QWidget):
 
                     # Update the database with the correct path
                     try:
-                        self.db_manager.update_pdf_path(
-                            doi,
-                            filename,
-                            self.current_publication.get('full_text', '')
-                        )
+                        # Update the document with the new PDF path
+                        query = """
+                        UPDATE document
+                        SET pdf_filename = %s, updated_date = CURRENT_TIMESTAMP
+                        WHERE id = %s
+                        """
+                        self.db_manager.execute(query, (filename, self.current_publication['id']), commit=True)
                         print(f"Updated database with path: {filename}")
                     except Exception as e:
                         print(f"Failed to update database: {e}")
@@ -862,10 +905,16 @@ class KnowledgeBrowser(QWidget):
                     # No need to highlight search keywords here - handled by PDFViewer
                     break
 
-        # If we still couldn't find the PDF, show the not found message
+        # Enable or disable the PDF tab based on whether a PDF was found
+        pdf_tab_index = 0  # Assuming PDF tab is the first tab
+        self.tab_widget.setTabEnabled(pdf_tab_index, pdf_found)
+
+        # If we couldn't find the PDF, close the PDF viewer
         if not pdf_found:
             print("PDF not found by any method")
-            self._show_pdf_not_found()
+            self.pdf_viewer.close_pdf()
+            # Switch to the text tab
+            self.tab_widget.setCurrentIndex(1)  # Assuming text tab is the second tab
 
         # Check for existing markdown text
         full_text = self.current_publication.get('full_text', '')
@@ -875,24 +924,77 @@ class KnowledgeBrowser(QWidget):
             self._display_markdown(full_text)
         else:
             # Try to extract text if we have a PDF
-            if local_pdf_path and Path(self.pdf_base_dir / local_pdf_path).exists():
+            if pdf_found and local_pdf_path and Path(self.pdf_base_dir / local_pdf_path).exists():
                 try:
                     self._extract_and_display_markdown(str(self.pdf_base_dir / local_pdf_path))
                 except Exception as e:
                     self._display_markdown(f"Error extracting text from PDF: {str(e)}")
             else:
-                self._display_markdown("No text available for this publication.")
+                # If no full text and no PDF, display the abstract
+                self._display_formatted_abstract()
+
+    def _display_formatted_abstract(self):
+        """Format and display the abstract of the current publication."""
+        if not self.current_publication:
+            return
+
+        # Get publication details
+        title = self.current_publication.get('title', 'No Title')
+        abstract = self.current_publication.get('abstract', '')
+
+        # Handle authors which is a list in the document structure
+        authors = self.current_publication.get('authors', [])
+        if authors:
+            authors_str = ', '.join(authors)
+        else:
+            authors_str = 'Unknown Authors'
+
+        # Get publication date
+        pub_date = self.current_publication.get('publication_date', '')
+        if hasattr(pub_date, 'strftime'):  # If it's a datetime object
+            pub_date = pub_date.strftime('%Y-%m-%d')
+
+        # Get journal/source information
+        journal = self.current_publication.get('journal', '')
+        source_name = self.current_publication.get('source_name', '')
+        doi = self.current_publication.get('doi', '')
+
+        # Build the formatted markdown
+        markdown_text = f"# {title}\n\n"
+        markdown_text += f"**Authors:** {authors_str}\n\n"
+
+        if journal:
+            markdown_text += f"**Journal:** {journal}\n\n"
+
+        if pub_date:
+            markdown_text += f"**Publication Date:** {pub_date}\n\n"
+
+        if source_name:
+            markdown_text += f"**Source:** {source_name}\n\n"
+
+        if doi:
+            markdown_text += f"**DOI:** [{doi}](https://doi.org/{doi})\n\n"
+
+        markdown_text += "## Abstract\n\n"
+
+        if abstract:
+            markdown_text += abstract
+        else:
+            markdown_text += "*No abstract available for this publication.*"
+
+        # Display the formatted abstract
+        self._display_markdown(markdown_text)
+
+        # Switch to the markdown tab
+        self.tab_widget.setCurrentIndex(1)
 
     def _show_pdf_not_found(self):
         """Show a placeholder when PDF is not available."""
         # Close the PDF in our viewer
         self.pdf_viewer.close_pdf()
 
-        # Create a message in the markdown view about the missing PDF
-        self._display_markdown("# PDF Not Available\n\nThe PDF for this publication is not available locally.")
-
-        # Switch to markdown tab
-        self.tab_widget.setCurrentIndex(1)
+        # Display the abstract instead of a "PDF not found" message
+        self._display_formatted_abstract()
 
     def _on_search_completed(self, match_count):
         """Handle search completion from the PDF viewer.
@@ -1037,16 +1139,17 @@ class KnowledgeBrowser(QWidget):
         """
         markdown_text = result.get("markdown_text", "")
         doi = result.get("doi")
-        local_pdf_path = result.get("local_pdf_path")
 
-        # Save the markdown to the database if we have a DOI
-        if doi:
+        # Save the markdown to the database if we have a DOI and current publication
+        if doi and self.current_publication and 'id' in self.current_publication:
             try:
-                self.db_manager.update_pdf_path(
-                    doi,
-                    local_pdf_path,
-                    markdown_text
-                )
+                # Update the document with the extracted text
+                query = """
+                UPDATE document
+                SET full_text = %s, updated_date = CURRENT_TIMESTAMP
+                WHERE id = %s
+                """
+                self.db_manager.execute(query, (markdown_text, self.current_publication['id']), commit=True)
             except Exception as e:
                 print(f"Failed to update database with extracted text: {e}")
 
@@ -1256,7 +1359,22 @@ class HybridSearchWorker(QRunnable):
             if search_terms:
                 # Convert the search terms into an appropriate query
                 query = " & ".join(search_terms)
-                keyword_results = self.db_manager.search_preprints(query, fields=['abstract'])
+
+                # Get source filter based on settings
+                source_name = None
+                if self.search_settings.get('sources', {}).get('medrxiv', True) and not self.search_settings.get('sources', {}).get('pubmed', True):
+                    source_name = 'medrxiv'
+                elif self.search_settings.get('sources', {}).get('pubmed', True) and not self.search_settings.get('sources', {}).get('medrxiv', True):
+                    source_name = 'pubmed'
+                # If both are True or both are False, don't filter by source
+
+                # Perform the search using the document database manager
+                keyword_results = self.db_manager.search_documents(
+                    search_text=query,
+                    source_name=source_name,
+                    limit=self.search_settings.get('max_results', 20),
+                    offset=0
+                )
 
                 # Add source information to each result
                 for pub in keyword_results:
@@ -1266,12 +1384,20 @@ class HybridSearchWorker(QRunnable):
             semantic_results = []
             if self.embedding_manager:
                 try:
+                    # Get source filter based on settings
+                    source_id = None
+                    if self.search_settings.get('sources', {}).get('medrxiv', True) and not self.search_settings.get('sources', {}).get('pubmed', True):
+                        source_id = 'medrxiv'
+                    elif self.search_settings.get('sources', {}).get('pubmed', True) and not self.search_settings.get('sources', {}).get('medrxiv', True):
+                        source_id = 'pubmed'
+                    # If both are True or both are False, don't filter by source
+
                     # Get raw semantic search results
                     raw_results = self.embedding_manager.search(
                         query=self.query,
                         limit=self.search_settings.get('max_results', 20),
                         threshold=self.search_settings.get('similarity_threshold', 0.3),
-                        source_id="medrxiv"
+                        source_id=source_id
                     )
 
                     # Process semantic results
@@ -1284,8 +1410,28 @@ class HybridSearchWorker(QRunnable):
                         similarity_pct = f"{similarity * 100:.1f}%"
 
                         try:
-                            # Get the full publication details
-                            publication = self.db_manager.get_preprint_by_doi(document_id)
+                            # Get the document by ID if it's numeric
+                            if isinstance(document_id, int) or (isinstance(document_id, str) and document_id.isdigit()):
+                                doc_id = document_id if isinstance(document_id, int) else int(document_id)
+                                query = """
+                                SELECT d.*, s.name as source_name, c.name as category_name
+                                FROM document d
+                                JOIN sources s ON d.source_id = s.id
+                                LEFT JOIN categories c ON d.category_id = c.id
+                                WHERE d.id = %s
+                                """
+                                result = self.db_manager.execute(query, (doc_id,))
+                                if result:
+                                    publication = result[0]
+                                else:
+                                    # Try to get by DOI if it's a string
+                                    if isinstance(document_id, str):
+                                        publication = self.db_manager.get_document_by_doi(document_id)
+                                    else:
+                                        publication = None
+                            else:
+                                # Try to get by DOI
+                                publication = self.db_manager.get_document_by_doi(document_id)
 
                             if publication:
                                 # Add semantic search metadata
@@ -1413,19 +1559,18 @@ class PDFExtractionWorker(QRunnable):
     Worker thread for extracting text from PDF files.
     """
 
-    def __init__(self, pdf_path, doi=None, local_pdf_path=None):
+    def __init__(self, pdf_path, doi=None, _=None):
         """
         Initialize the worker.
 
         Args:
             pdf_path: Path to the PDF file to extract text from
             doi: DOI of the publication (for database update)
-            local_pdf_path: Local path of the PDF (for database update)
+            _: Unused parameter, kept for backward compatibility
         """
         super().__init__()
         self.pdf_path = pdf_path
         self.doi = doi
-        self.local_pdf_path = local_pdf_path
         self.signals = WorkerSignals()
 
     @Slot()
@@ -1444,8 +1589,7 @@ class PDFExtractionWorker(QRunnable):
             # Emit the result
             self.signals.result.emit({
                 "markdown_text": markdown_text,
-                "doi": self.doi,
-                "local_pdf_path": self.local_pdf_path
+                "doi": self.doi
             })
 
         except Exception as e:

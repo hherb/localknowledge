@@ -336,7 +336,7 @@ class EmbeddingManager:
             # This allows the search to proceed and fail gracefully if needed
             return True
 
-    def search(self, query: str, limit: int = 10, threshold: float = 0.5, source_id: Optional[str] = None) -> List[Dict[str, Any]]:
+    def search(self, query: str, limit: int = 10, threshold: float = 0.5, source_id: Optional[Union[str, int]] = None) -> List[Dict[str, Any]]:
         """
         Search for similar documents using semantic search.
 
@@ -344,7 +344,7 @@ class EmbeddingManager:
             query: Search query
             limit: Maximum number of results to return
             threshold: Similarity threshold (0-1)
-            source_id: Filter by source ID (optional)
+            source_id: Filter by source ID (can be a string name or integer ID)
 
         Returns:
             List of similar documents with similarity scores

@@ -187,7 +187,7 @@ def fetch_markdown_for_recent_papers(days_back: int = 7, limit: int = 100) -> in
         logger.error(f"Error during markdown conversion process: {e}")
         return 0
 
-def run_daily_update(summarize: bool = False, summary_limit: int = 100, convert_to_markdown: bool = False, markdown_limit: int = 100):
+def run_daily_update(summarize: bool = False, summary_limit: int = 250, convert_to_markdown: bool = True, markdown_limit: int = 250):
     """
     Run the daily update process to fetch papers from the last fetch date until yesterday
     

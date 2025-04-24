@@ -294,7 +294,7 @@ class EmbeddingsDatabaseManager(DatabaseManager):
     def search_similar(
         self,
         embedding: List[float],
-        embed_source: str,
+        embed_source: Union[str, int],
         model_name: str,
         limit: int = 10,
         threshold: float = 0.7
@@ -303,7 +303,7 @@ class EmbeddingsDatabaseManager(DatabaseManager):
 
         Args:
             embedding: Query embedding vector
-            embed_source: Name of the embedding source
+            embed_source: Name of the embedding source or source ID
             model_name: Name of the model
             limit: Maximum number of results
             threshold: Similarity threshold (0-1)
@@ -311,14 +311,26 @@ class EmbeddingsDatabaseManager(DatabaseManager):
         Returns:
             List of similar embedding records with similarity scores
         """
-        # Get the embedding source ID
-        embed_source_record = self.embedding_source_db.get_embedding_source_by_name(embed_source)
+        # Handle both string and integer embed_source
+        if isinstance(embed_source, str):
+            # Get the embedding source ID by name
+            embed_source_record = self.embedding_source_db.get_embedding_source_by_name(embed_source)
 
-        if not embed_source_record:
-            logger.error(f"Embedding source not found: {embed_source}")
-            return []
+            if not embed_source_record:
+                logger.error(f"Embedding source not found: {embed_source}")
+                return []
 
-        embed_source_id = embed_source_record['id']
+            embed_source_id = embed_source_record['id']
+        else:
+            # Use the provided ID directly
+            embed_source_id = embed_source
+
+            # Verify that the ID exists
+            embed_source_record = self.embedding_source_db.get_embedding_source_by_id(embed_source_id)
+
+            if not embed_source_record:
+                logger.error(f"Embedding source ID not found: {embed_source_id}")
+                return []
 
         # Check if pgvector extension is installed
         check_query = "SELECT EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'vector')"

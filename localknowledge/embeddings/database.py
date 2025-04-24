@@ -356,7 +356,112 @@ class EmbeddingDatabaseManager(DatabaseManager):
         # Convert embedding to PostgreSQL vector format
         embedding_str = f"[{','.join(map(str, query_embedding))}]"
 
-        # Build the query
+        # First try searching in the unified_multiembeddings table (new structure)
+        try:
+            # Build the query for unified_multiembeddings
+            query = """
+            SELECT e.id, e.document_id, e.embed_source_id, s.name as embed_source,
+                   e.chunk_no, e.page_no, e.text, e.keywords, e.model_name,
+                   1 - (e.embedding <=> %s::vector) AS similarity,
+                   d.title, d.abstract
+            FROM unified_multiembeddings e
+            JOIN embedding_source s ON e.embed_source_id = s.id
+            JOIN document d ON e.document_id = d.id
+            """
+
+            # Start building the WHERE clause
+            where_clauses = []
+            params = [embedding_str]
+
+            # Add source_id filter if provided
+            if source_id:
+                # If source_id is a string, we need to join with the sources table
+                if isinstance(source_id, str):
+                    query += " JOIN sources src ON d.source_id = src.id"
+                    where_clauses.append("src.name = %s")
+                    params.append(source_id)
+                else:
+                    # If source_id is an integer, use it directly
+                    where_clauses.append("d.source_id = %s")
+                    params.append(source_id)
+
+            # Add similarity threshold
+            where_clauses.append(f"1 - (e.embedding <=> %s::vector) > {threshold}")
+            # Add embedding_str again because we're using it twice in the query
+            params.append(embedding_str)
+
+            # Combine WHERE clauses
+            if where_clauses:
+                query += " WHERE " + " AND ".join(where_clauses)
+            query += " ORDER BY similarity DESC"
+            query += f" LIMIT {limit}"
+
+            start_time = time.time()
+            results = self.execute(query, tuple(params))
+            execution_time = time.time() - start_time
+
+            if results:
+                print(f"Database: Found {len(results)} similar documents in unified_multiembeddings in {execution_time:.3f} seconds")
+                return results
+            else:
+                print(f"Database: No similar documents found in unified_multiembeddings in {execution_time:.3f} seconds")
+
+                # Let's try a simpler query to see if we have any embeddings at all
+                count_query = "SELECT COUNT(*) FROM unified_multiembeddings"
+                count_result = self.execute(count_query)
+                if count_result and count_result[0].get('count', 0) > 0:
+                    print(f"Database: There are {count_result[0].get('count')} embeddings in unified_multiembeddings")
+
+                    # Try with a much lower threshold
+                    low_threshold = 0.1
+
+                    # Modify the query with a lower threshold
+                    modified_query = query.replace(f"> {threshold}", f"> {low_threshold}")
+                    modified_results = self.execute(modified_query, tuple(params))
+
+                    if modified_results:
+                        print(f"Database: Found {len(modified_results)} results with threshold {low_threshold}")
+                        print(f"Database: First result similarity: {modified_results[0].get('similarity')}")
+                        return modified_results
+                    else:
+                        print(f"Database: Still no results with threshold {low_threshold}")
+                else:
+                    print("Database: No embeddings found in unified_multiembeddings")
+
+                # Fall back to the legacy embeddings table
+                print("Database: Falling back to legacy embeddings table")
+                return self._search_similar_legacy(query_embedding, limit, threshold, source_id)
+        except Exception as e:
+            print(f"Database: Error searching similar documents in unified_multiembeddings: {e}")
+            import traceback
+            print(traceback.format_exc())
+            self.rollback_transaction()  # Ensure we're not left in a bad state
+
+            # Fall back to the legacy embeddings table
+            print("Database: Falling back to legacy embeddings table due to error")
+            return self._search_similar_legacy(query_embedding, limit, threshold, source_id)
+
+    def _search_similar_legacy(self,
+                              query_embedding: List[float],
+                              limit: int = 10,
+                              threshold: float = 0.7,
+                              source_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        """
+        Search for similar documents using vector similarity in the legacy embeddings table.
+
+        Args:
+            query_embedding: Vector embedding of the query
+            limit: Maximum number of results to return
+            threshold: Similarity threshold (0-1)
+            source_id: Filter by source ID (optional)
+
+        Returns:
+            List of similar embedding records with similarity scores
+        """
+        # Convert embedding to PostgreSQL vector format
+        embedding_str = f"[{','.join(map(str, query_embedding))}]"
+
+        # Build the query for legacy embeddings table
         query = """
         SELECT id, source_id, document_id, chunk_no, page_no, text, keywords, model_name,
                1 - (embedding <=> %s::vector) AS similarity
@@ -373,7 +478,6 @@ class EmbeddingDatabaseManager(DatabaseManager):
             params.append(source_id)
 
         # Add similarity threshold
-        # We need to add the embedding parameter again since we're using it twice in the query
         where_clauses.append(f"1 - (embedding <=> %s::vector) > {threshold}")
         # Add embedding_str again because we're using it twice in the query
         params.append(embedding_str)
@@ -384,22 +488,21 @@ class EmbeddingDatabaseManager(DatabaseManager):
         query += " ORDER BY similarity DESC"
         query += f" LIMIT {limit}"
 
-
         try:
             start_time = time.time()
             results = self.execute(query, tuple(params))
             execution_time = time.time() - start_time
 
             if results:
-                print(f"Database: Found {len(results)} similar documents in {execution_time:.3f} seconds")
+                print(f"Database: Found {len(results)} similar documents in legacy embeddings in {execution_time:.3f} seconds")
             else:
-                print(f"Database: No similar documents found in {execution_time:.3f} seconds")
+                print(f"Database: No similar documents found in legacy embeddings in {execution_time:.3f} seconds")
 
                 # Let's try a simpler query to see if we have any embeddings at all
                 count_query = "SELECT COUNT(*) FROM embeddings"
                 count_result = self.execute(count_query)
                 if count_result and count_result[0].get('count', 0) > 0:
-                    print(f"Database: There are {count_result[0].get('count')} embeddings in the database")
+                    print(f"Database: There are {count_result[0].get('count')} embeddings in legacy embeddings table")
 
                     # Try with a much lower threshold
                     low_threshold = 0.1
@@ -411,10 +514,11 @@ class EmbeddingDatabaseManager(DatabaseManager):
                     if modified_results:
                         print(f"Database: Found {len(modified_results)} results with threshold {low_threshold}")
                         print(f"Database: First result similarity: {modified_results[0].get('similarity')}")
+                        return modified_results
                     else:
                         print(f"Database: Still no results with threshold {low_threshold}")
                 else:
-                    print("Database: No embeddings found in the database")
+                    print("Database: No embeddings found in the legacy embeddings table")
 
             return results or []
         except Exception as e:
@@ -424,9 +528,82 @@ class EmbeddingDatabaseManager(DatabaseManager):
             self.rollback_transaction()  # Ensure we're not left in a bad state
             return []
 
-    def get_document_embeddings(self, source_id: str, document_id: str) -> List[Dict[str, Any]]:
+    def get_document_embeddings(self, source_id: Union[str, int], document_id: Union[str, int]) -> List[Dict[str, Any]]:
         """
         Get all embeddings for a specific document.
+
+        Args:
+            source_id: Source identifier (string name or integer ID)
+            document_id: Document identifier (string ID or integer ID)
+
+        Returns:
+            List of embeddings for the document
+        """
+        # First try the unified_multiembeddings table (new structure)
+        try:
+            # Build the query for unified_multiembeddings
+            query = """
+            SELECT e.id, e.document_id, e.embed_source_id, s.name as embed_source,
+                   e.chunk_no, e.page_no, e.text, e.keywords, e.model_name,
+                   d.title, d.abstract
+            FROM unified_multiembeddings e
+            JOIN embedding_source s ON e.embed_source_id = s.id
+            JOIN document d ON e.document_id = d.id
+            """
+
+            # Start building the WHERE clause
+            where_clauses = []
+            params = []
+
+            # Handle document_id
+            if isinstance(document_id, int):
+                where_clauses.append("e.document_id = %s")
+                params.append(document_id)
+            else:
+                # If document_id is a string, it might be a DOI or other external ID
+                # We need to join with the document table to find the internal ID
+                where_clauses.append("d.external_id = %s")
+                params.append(document_id)
+
+            # Handle source_id
+            if source_id:
+                # If source_id is a string, we need to join with the sources table
+                if isinstance(source_id, str):
+                    query += " JOIN sources src ON d.source_id = src.id"
+                    where_clauses.append("src.name = %s")
+                    params.append(source_id)
+                else:
+                    # If source_id is an integer, use it directly
+                    where_clauses.append("d.source_id = %s")
+                    params.append(source_id)
+
+            # Combine WHERE clauses
+            if where_clauses:
+                query += " WHERE " + " AND ".join(where_clauses)
+            query += " ORDER BY e.chunk_no, e.page_no"
+
+            start_time = time.time()
+            results = self.execute(query, tuple(params))
+            execution_time = time.time() - start_time
+
+            if results:
+                print(f"Database: Found {len(results)} embeddings for document in unified_multiembeddings in {execution_time:.3f} seconds")
+                return results
+            else:
+                print(f"Database: No embeddings found for document in unified_multiembeddings")
+
+                # Fall back to the legacy embeddings table
+                return self._get_document_embeddings_legacy(source_id, document_id)
+        except Exception as e:
+            logger.error(f"Error getting document embeddings from unified_multiembeddings: {e}")
+            self.rollback_transaction()  # Ensure we're not left in a bad state
+
+            # Fall back to the legacy embeddings table
+            return self._get_document_embeddings_legacy(source_id, document_id)
+
+    def _get_document_embeddings_legacy(self, source_id: str, document_id: str) -> List[Dict[str, Any]]:
+        """
+        Get all embeddings for a specific document from the legacy embeddings table.
 
         Args:
             source_id: Source identifier
@@ -435,7 +612,6 @@ class EmbeddingDatabaseManager(DatabaseManager):
         Returns:
             List of embeddings for the document
         """
-
         query = """
         SELECT id, source_id, document_id, chunk_no, page_no, text, keywords, model_name
         FROM embeddings
@@ -447,9 +623,15 @@ class EmbeddingDatabaseManager(DatabaseManager):
             start_time = time.time()
             results = self.execute(query, (source_id, document_id))
             execution_time = time.time() - start_time
+
+            if results:
+                print(f"Database: Found {len(results)} embeddings for document in legacy embeddings in {execution_time:.3f} seconds")
+            else:
+                print(f"Database: No embeddings found for document in legacy embeddings")
+
             return results or []
         except Exception as e:
-            logger.error(f"Error getting document embeddings for {source_id}/{document_id}: {e}")
+            logger.error(f"Error getting document embeddings from legacy embeddings: {e}")
             self.rollback_transaction()  # Ensure we're not left in a bad state
             return []
 
@@ -460,10 +642,10 @@ class EmbeddingDatabaseManager(DatabaseManager):
         Returns:
             Dimension (vector size) of the embeddings, or None if no embeddings exist
         """
-
+        # First try the unified_multiembeddings table (new structure)
         query = """
         SELECT embedding
-        FROM embeddings
+        FROM unified_multiembeddings
         LIMIT 1
         """
 
@@ -471,8 +653,24 @@ class EmbeddingDatabaseManager(DatabaseManager):
             results = self.execute(query)
 
             if not results or not results[0]['embedding']:
-                logger.debug("No embeddings found in database")
-                return None
+                # If no results in unified_multiembeddings, try the legacy embeddings table
+                legacy_query = """
+                SELECT embedding
+                FROM embeddings
+                LIMIT 1
+                """
+
+                try:
+                    legacy_results = self.execute(legacy_query)
+
+                    if not legacy_results or not legacy_results[0]['embedding']:
+                        logger.debug("No embeddings found in database (checked both unified_multiembeddings and embeddings tables)")
+                        return None
+
+                    results = legacy_results
+                except Exception:
+                    logger.debug("No embeddings found in database")
+                    return None
 
             # Parse the embedding vector to get its dimension
             # The embedding is stored as a string like '[0.1,0.2,0.3,...]'
@@ -536,35 +734,35 @@ class EmbeddingDatabaseManager(DatabaseManager):
     def model_to_tablename(model_name: str) -> str:
         """
         Convert model name to valid SQL table name, ensuring it's under 63 bytes.
-        
+
         Args:
             model_name: Name of the embedding model
-        
+
         Returns:
             Valid PostgreSQL table name under 63 bytes
         """
         # Remove version tags and convert to lowercase
         base_name = model_name.split(':')[0].lower()
-        
+
         # Replace non-alphanumeric chars with underscore
         clean_name = re.sub(r'[^a-z0-9]+', '_', base_name)
-        
+
         # Remove consecutive underscores
         clean_name = re.sub(r'_+', '_', clean_name)
-        
+
         # Trim underscores from ends
         clean_name = clean_name.strip('_')
-        
+
         # Prefix for embedding tables
         prefix = "emb_"
-        
+
         # Calculate maximum length for the name part (63 bytes - prefix length)
         max_name_length = 63 - len(prefix)
-        
+
         # Truncate if necessary
         if len(clean_name) > max_name_length:
             # Keep the start and end, remove from middle
             half_length = (max_name_length - 1) // 2  # -1 for the joining underscore
             clean_name = f"{clean_name[:half_length]}_{clean_name[-half_length:]}"
-        
+
         return f"{prefix}{clean_name}"
