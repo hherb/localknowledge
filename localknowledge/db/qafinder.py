@@ -1,8 +1,9 @@
 """
-Database manager for QA embeddings.
+Database manager for QA embeddings using the unified document and multiembeddings structure.
 
 This module provides a database manager for storing and retrieving QA embeddings
-generated from abstracts and other text sources.
+generated from abstracts and other text sources, using the unified document and
+multiembeddings tables.
 """
 
 import logging
@@ -10,18 +11,56 @@ import time
 from typing import List, Dict, Any, Optional, Tuple
 
 from localknowledge.db.base import DatabaseManager
+from localknowledge.db.document import DocumentDatabaseManager
+from localknowledge.db.embeddings import EmbeddingsDatabaseManager
 
 # Configure logging
 logger = logging.getLogger(__name__)
 
 class QAEmbeddingDatabaseManager(DatabaseManager):
-    """Database manager for QA embeddings."""
+    """
+    Database manager for QA embeddings using the unified document and multiembeddings structure.
+
+    This class provides methods for working with QA embeddings stored in the
+    unified_multiembeddings table. It does not create any tables or indices,
+    as those are handled by the migration system.
+    """
 
     def __init__(self):
         """Initialize the QA embedding database manager."""
         super().__init__()
-        self.create_tables()
-        self.create_indices()
+        self.document_db = DocumentDatabaseManager()
+        self.embeddings_db = EmbeddingsDatabaseManager()
+        self.qa_embed_source_id = self._get_qa_embed_source_id()
+
+    def _get_qa_embed_source_id(self) -> int:
+        """
+        Get the embedding source ID for QA embeddings.
+
+        Returns:
+            int: Embedding source ID for QA embeddings
+        """
+        # Get or create the embedding source for QA
+        query = """
+        SELECT id FROM embedding_source WHERE name = 'qa'
+        """
+        result = self.execute(query)
+
+        if result and result[0]['id']:
+            return result[0]['id']
+
+        # If not found, create it
+        query = """
+        INSERT INTO embedding_source (name, description)
+        VALUES ('qa', 'Question-Answer pair embeddings')
+        RETURNING id
+        """
+        result = self.execute(query, commit=True)
+
+        if result and result[0]['id']:
+            return result[0]['id']
+
+        raise ValueError("Could not get or create QA embedding source")
 
     def begin_transaction(self):
         """
@@ -80,84 +119,7 @@ class QAEmbeddingDatabaseManager(DatabaseManager):
             logger.error(f"Error rolling back transaction: {e}")
             # Don't raise here, as this is often called in exception handlers
 
-    def create_tables(self) -> None:
-        """Create QA embeddings table if it doesn't exist."""
-        logger.debug("Creating or verifying QA embeddings table")
 
-        # Begin a transaction for all table creation operations
-        self.begin_transaction()
-
-        try:
-            # First, ensure pgvector extension is installed
-            logger.debug("Checking pgvector extension")
-            self.execute("CREATE EXTENSION IF NOT EXISTS vector", commit=False)
-            logger.debug("pgvector extension created or verified")
-
-            # Create qaembeddings table
-            logger.debug("Creating qaembeddings table if it doesn't exist")
-            self.execute("""
-            CREATE TABLE IF NOT EXISTS qaembeddings (
-                id SERIAL PRIMARY KEY,
-                source_id TEXT NOT NULL,
-                document_id TEXT NOT NULL,
-                chunk_no INTEGER NOT NULL,
-                page_no INTEGER,
-                qa_pairs TEXT NOT NULL,
-                embedding vector(1024),
-                model_name TEXT NOT NULL,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE (source_id, document_id, chunk_no)
-            )
-            """, commit=False)
-            logger.debug("QA embeddings table created or verified")
-
-            # Commit all table creation operations
-            self.commit_transaction()
-            logger.debug("Table creation transaction committed")
-
-        except Exception as e:
-            logger.error(f"Error creating tables: {e}")
-            self.rollback_transaction()
-            logger.error("Please make sure pgvector is installed in your PostgreSQL instance")
-            raise
-
-    def create_indices(self) -> None:
-        """Create indices for the QA embeddings table."""
-        logger.debug("Creating or verifying QA embedding indices")
-
-        # Begin a transaction for all index creation operations
-        self.begin_transaction()
-
-        try:
-            # Create indices for faster lookups
-            logger.debug("Creating source_id index")
-            self.execute("""
-            CREATE INDEX IF NOT EXISTS idx_qaembeddings_source_id
-            ON qaembeddings(source_id)
-            """, commit=False)
-
-            logger.debug("Creating document_id index")
-            self.execute("""
-            CREATE INDEX IF NOT EXISTS idx_qaembeddings_document_id
-            ON qaembeddings(document_id)
-            """, commit=False)
-
-            # Create vector index for similarity search
-            logger.debug("Creating vector index")
-            self.execute("""
-            CREATE INDEX IF NOT EXISTS idx_qaembeddings_vector
-            ON qaembeddings
-            USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100)
-            """, commit=False)
-
-            # Commit all index creation operations
-            self.commit_transaction()
-            logger.debug("Index creation transaction committed")
-
-        except Exception as e:
-            logger.error(f"Error creating indices: {e}")
-            self.rollback_transaction()
-            raise
 
     def store_qa_embedding(self,
                         source_id: str,
@@ -169,7 +131,7 @@ class QAEmbeddingDatabaseManager(DatabaseManager):
                         page_no: Optional[int] = None,
                         commit: bool = True) -> int:
         """
-        Store a QA embedding in the database.
+        Store a QA embedding in the unified multiembeddings table.
 
         Args:
             source_id: Source identifier (e.g., 'pubmed', 'medrxiv')
@@ -184,56 +146,44 @@ class QAEmbeddingDatabaseManager(DatabaseManager):
         Returns:
             ID of the stored QA embedding
         """
-
-        query = """
-        INSERT INTO qaembeddings
-            (source_id, document_id, chunk_no, page_no, qa_pairs, embedding, model_name)
-        VALUES (%s, %s, %s, %s, %s, %s, %s)
-        ON CONFLICT (source_id, document_id, chunk_no) DO UPDATE SET
-            page_no = EXCLUDED.page_no,
-            qa_pairs = EXCLUDED.qa_pairs,
-            embedding = EXCLUDED.embedding,
-            model_name = EXCLUDED.model_name,
-            created_at = CURRENT_TIMESTAMP
-        RETURNING id
-        """
-
-        # Convert embedding to PostgreSQL vector format
-        embedding_str = f"[{','.join(map(str, embedding))}]"
-
-        params = (
-            source_id,
-            document_id,
-            chunk_no,
-            page_no,
-            qa_pairs,
-            embedding_str,
-            model_name
-        )
-
         try:
-            start_time = time.time()
-            result = self.execute(query, params, commit=commit)
-            execution_time = time.time() - start_time
-            logger.debug(f"Stored QA embedding for {source_id}/{document_id} in {execution_time:.2f}s")
+            # First, get the document ID from the document table
+            doc = self.document_db.get_document_by_external_id(source_id, document_id)
+            if not doc:
+                logger.error(f"Document not found: {source_id}/{document_id}")
+                return 0
 
-            if result and len(result) > 0:
-                logger.debug(f"Successfully stored QA embedding with ID: {result[0]['id']}")
-                return result[0]['id']
+            doc_id = doc['id']
 
-            logger.debug(f"No ID returned from store_qa_embedding for {source_id}/{document_id}")
-            # Even if no ID is returned, the operation might have succeeded (e.g., in case of an update)
-            # So we'll return 1 instead of -1 to indicate success
-            return 1
+            # Store the embedding in the unified_multiembeddings table
+            metadata = {
+                'qa_pairs': qa_pairs
+            }
+
+            # Use the embeddings database manager to store the embedding
+            embedding_id = self.embeddings_db.store_embedding(
+                document_id=doc_id,
+                embed_source='qa',
+                chunk_no=chunk_no,
+                text=qa_pairs,  # Store the QA pairs as text
+                embedding=embedding,
+                model_name=model_name,
+                page_no=page_no,
+                metadata=metadata,
+                commit=commit
+            )
+
+            logger.debug(f"Stored QA embedding for document ID {doc_id}, chunk {chunk_no}")
+            return embedding_id
         except Exception as e:
             logger.error(f"Error storing QA embedding: {e}")
             if commit:
                 self.rollback_transaction()  # Ensure we're not left in a bad state
-            raise
+            return 0
 
     def store_qa_embeddings_batch(self, embeddings: List[Dict[str, Any]], commit: bool = True) -> int:
         """
-        Store multiple QA embeddings in the database.
+        Store multiple QA embeddings in the unified multiembeddings table.
 
         Args:
             embeddings: List of embedding dictionaries with the following keys:
@@ -256,53 +206,8 @@ class QAEmbeddingDatabaseManager(DatabaseManager):
         # Begin a transaction for the batch operation
         self.begin_transaction()
 
-        query = """
-        INSERT INTO qaembeddings
-            (source_id, document_id, chunk_no, page_no, qa_pairs, embedding, model_name)
-        VALUES (%s, %s, %s, %s, %s, %s, %s)
-        ON CONFLICT (source_id, document_id, chunk_no) DO UPDATE SET
-            page_no = EXCLUDED.page_no,
-            qa_pairs = EXCLUDED.qa_pairs,
-            embedding = EXCLUDED.embedding,
-            model_name = EXCLUDED.model_name,
-            created_at = CURRENT_TIMESTAMP
-        """
-
-        # Prepare parameters for each embedding
-        params_list = []
-        for emb in embeddings:
-            # Convert embedding to PostgreSQL vector format
-            embedding_str = f"[{','.join(map(str, emb['embedding']))}]"
-
-            params = (
-                emb['source_id'],
-                emb['document_id'],
-                emb['chunk_no'],
-                emb.get('page_no'),  # Optional
-                emb['qa_pairs'],
-                embedding_str,
-                emb['model_name']
-            )
-            params_list.append(params)
-
         try:
-            # Execute the batch insert
-            start_time = time.time()
-            self.execute_many(query, params_list, commit=False)
-            execution_time = time.time() - start_time
-            logger.debug(f"Stored batch of {len(embeddings)} QA embeddings in {execution_time:.2f}s")
-
-            # Commit the transaction if requested
-            if commit:
-                self.commit_transaction()
-
-            return len(embeddings)
-        except Exception as e:
-            logger.error(f"Error storing QA embeddings batch: {e}")
-            self.rollback_transaction()
-
-            # Try to store embeddings individually
-            logger.info("Attempting to store embeddings individually")
+            # Process embeddings one by one
             count = 0
             for emb in embeddings:
                 try:
@@ -320,16 +225,16 @@ class QAEmbeddingDatabaseManager(DatabaseManager):
                 except Exception as individual_e:
                     logger.error(f"Error storing individual QA embedding: {individual_e}")
 
-            # Commit all successful individual embeddings at the end if requested
+            # Commit all successful embeddings at the end if requested
             if commit and count > 0:
-                try:
-                    self.commit_transaction()
-                except Exception as commit_e:
-                    logger.error(f"Error committing individual QA embeddings: {commit_e}")
-                    self.rollback_transaction()
-                    return 0
+                self.commit_transaction()
+                logger.debug(f"Successfully stored {count} QA embeddings")
 
             return count
+        except Exception as e:
+            logger.error(f"Error storing QA embeddings batch: {e}")
+            self.rollback_transaction()
+            return 0
 
     def search_similar(self,
                        query_embedding: List[float],
@@ -337,7 +242,7 @@ class QAEmbeddingDatabaseManager(DatabaseManager):
                        threshold: float = 0.7,
                        source_id: Optional[str] = None) -> List[Dict[str, Any]]:
         """
-        Search for similar QA pairs using vector similarity.
+        Search for similar QA pairs using vector similarity in the unified multiembeddings table.
 
         Args:
             query_embedding: Vector embedding of the query
@@ -348,56 +253,54 @@ class QAEmbeddingDatabaseManager(DatabaseManager):
         Returns:
             List of similar QA pairs with similarity scores
         """
-
-        # Convert embedding to PostgreSQL vector format
-        embedding_str = f"[{','.join(map(str, query_embedding))}]"
-
-        # Build the query
-        query = """
-        SELECT id, source_id, document_id, chunk_no, page_no, qa_pairs, model_name,
-               1 - (embedding <=> %s::vector) AS similarity
-        FROM qaembeddings
-        """
-
-        # Start building the WHERE clause
-        where_clauses = []
-        params = [embedding_str]
-
-        # Add source_id filter if provided
-        if source_id:
-            where_clauses.append("source_id = %s")
-            params.append(source_id)
-
-        # Add similarity threshold
-        where_clauses.append("1 - (embedding <=> %s::vector) >= %s")
-        params.append(embedding_str)  # Add embedding again for the threshold calculation
-        params.append(threshold)
-
-        # Combine WHERE clauses if any
-        if where_clauses:
-            query += " WHERE " + " AND ".join(where_clauses)
-
-        # Add ORDER BY and LIMIT
-        query += """
-        ORDER BY similarity DESC
-        LIMIT %s
-        """
-        params.append(limit)
-
         try:
-            start_time = time.time()
-            results = self.execute(query, tuple(params))
-            execution_time = time.time() - start_time
-            logger.debug(f"Similarity search completed in {execution_time:.2f}s")
-            return results or []
+            # Use the embeddings database manager to search for similar embeddings
+            results = self.embeddings_db.search_similar_embeddings(
+                embedding=query_embedding,
+                embed_source='qa',
+                threshold=threshold,
+                limit=limit
+            )
+
+            # If source_id filter is provided, filter the results
+            if source_id and results:
+                filtered_results = []
+                for result in results:
+                    # Get the document to check its source
+                    doc = self.document_db.get_document_by_id(result['document_id'])
+                    if doc and doc.get('source_name') == source_id:
+                        # Add the source_id and document_id (external_id) to the result
+                        result['source_id'] = source_id
+                        result['document_id'] = doc.get('external_id')
+                        # Extract QA pairs from metadata
+                        if result.get('metadata') and 'qa_pairs' in result['metadata']:
+                            result['qa_pairs'] = result['metadata']['qa_pairs']
+                        filtered_results.append(result)
+
+                return filtered_results[:limit]
+
+            # If no source_id filter, just process the results
+            processed_results = []
+            for result in results:
+                # Get the document to add its source and external_id
+                doc = self.document_db.get_document_by_id(result['document_id'])
+                if doc:
+                    # Add the source_id and document_id (external_id) to the result
+                    result['source_id'] = doc.get('source_name')
+                    result['document_id'] = doc.get('external_id')
+                    # Extract QA pairs from metadata
+                    if result.get('metadata') and 'qa_pairs' in result['metadata']:
+                        result['qa_pairs'] = result['metadata']['qa_pairs']
+                    processed_results.append(result)
+
+            return processed_results
         except Exception as e:
             logger.error(f"Error in similarity search: {e}")
-            self.rollback_transaction()  # Ensure we're not left in a bad state
             return []
 
     def get_document_qa_embeddings(self, source_id: str, document_id: str) -> List[Dict[str, Any]]:
         """
-        Get all QA embeddings for a specific document.
+        Get all QA embeddings for a specific document from the unified multiembeddings table.
 
         Args:
             source_id: Source identifier
@@ -406,26 +309,50 @@ class QAEmbeddingDatabaseManager(DatabaseManager):
         Returns:
             List of QA embeddings for the document
         """
-        query = """
-        SELECT id, source_id, document_id, chunk_no, page_no, qa_pairs, model_name
-        FROM qaembeddings
-        WHERE source_id = %s AND document_id = %s
-        ORDER BY chunk_no
-        """
-
         try:
-            start_time = time.time()
-            results = self.execute(query, (source_id, document_id))
-            execution_time = time.time() - start_time
-            return results or []
+            # First, get the document ID from the document table
+            doc = self.document_db.get_document_by_external_id(source_id, document_id)
+            if not doc:
+                logger.error(f"Document not found: {source_id}/{document_id}")
+                return []
+
+            doc_id = doc['id']
+
+            # Get all QA embeddings for this document
+            embeddings = self.embeddings_db.get_embeddings_by_document(
+                document_id=doc_id,
+                embed_source='qa'
+            )
+
+            # Process the results to match the expected format
+            results = []
+            for emb in embeddings:
+                result = {
+                    'id': emb['id'],
+                    'source_id': source_id,
+                    'document_id': document_id,
+                    'chunk_no': emb['chunk_no'],
+                    'page_no': emb.get('page_no'),
+                    'model_name': emb['model_name']
+                }
+
+                # Extract QA pairs from metadata
+                if emb.get('metadata') and 'qa_pairs' in emb['metadata']:
+                    result['qa_pairs'] = emb['metadata']['qa_pairs']
+                else:
+                    # Fallback to text if metadata is not available
+                    result['qa_pairs'] = emb.get('text', '')
+
+                results.append(result)
+
+            return sorted(results, key=lambda x: x['chunk_no'])
         except Exception as e:
             logger.error(f"Error getting document QA embeddings for {source_id}/{document_id}: {e}")
-            self.rollback_transaction()  # Ensure we're not left in a bad state
             return []
 
     def delete_document_qa_embeddings(self, source_id: str, document_id: str) -> int:
         """
-        Delete all QA embeddings for a specific document.
+        Delete all QA embeddings for a specific document from the unified multiembeddings table.
 
         Args:
             source_id: Source identifier
@@ -434,19 +361,23 @@ class QAEmbeddingDatabaseManager(DatabaseManager):
         Returns:
             Number of embeddings deleted
         """
-        query = """
-        DELETE FROM qaembeddings
-        WHERE source_id = %s AND document_id = %s
-        RETURNING id
-        """
-
         try:
-            start_time = time.time()
-            results = self.execute(query, (source_id, document_id), commit=True)
-            execution_time = time.time() - start_time
-            logger.debug(f"Deleted QA embeddings for {source_id}/{document_id} in {execution_time:.2f}s")
-            return len(results) if results else 0
+            # First, get the document ID from the document table
+            doc = self.document_db.get_document_by_external_id(source_id, document_id)
+            if not doc:
+                logger.error(f"Document not found: {source_id}/{document_id}")
+                return 0
+
+            doc_id = doc['id']
+
+            # Delete all QA embeddings for this document
+            count = self.embeddings_db.delete_embeddings(
+                document_id=doc_id,
+                embed_source='qa'
+            )
+
+            logger.debug(f"Deleted {count} QA embeddings for document {source_id}/{document_id}")
+            return count
         except Exception as e:
             logger.error(f"Error deleting QA embeddings for {source_id}/{document_id}: {e}")
-            self.rollback_transaction()  # Ensure we're not left in a bad state
             return 0

@@ -24,7 +24,7 @@ class DocumentDatabaseManager(DatabaseManager):
         super().__init__()
         # Database creation is done centrally in db.createdb.py by calling create_tables()
 
- 
+
     def get_source_id(self, source_name: str) -> Optional[int]:
         """
         Get the ID for a source by name.
@@ -141,9 +141,13 @@ class DocumentDatabaseManager(DatabaseManager):
         )
 
         try:
+            # Log the parameters for debugging
+            logger.debug(f"Adding document with params: {params}")
+
             result = self.execute(query, params, commit=True)
             if result:
                 document_id = result[0]['id']
+                logger.debug(f"Document added with ID: {document_id}")
 
                 # Process keywords if provided
                 keywords = document_data.get('keywords', [])
@@ -151,9 +155,12 @@ class DocumentDatabaseManager(DatabaseManager):
                     self._process_keywords(document_id, keywords)
 
                 return document_id
+            logger.error("No result returned from document insertion query")
             return None
         except Exception as e:
             logger.error(f"Error adding document: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             return None
 
     def _process_keywords(self, document_id: int, keywords: List[str]) -> None:

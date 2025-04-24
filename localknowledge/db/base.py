@@ -113,18 +113,32 @@ class DatabaseManager:
 
         cursor = self.connection.cursor(cursor_factory=DictCursor)
         try:
+            # Log the query and parameters for debugging
+            logger.debug(f"Executing SQL: {query}")
+            logger.debug(f"With parameters: {params}")
+
             cursor.execute(query, params or ())
 
             if commit:
                 self.connection.commit()
+                if cursor.rowcount > 0:
+                    logger.debug(f"Query affected {cursor.rowcount} rows")
+                if cursor.description and query.strip().upper().startswith(('INSERT', 'UPDATE')) and 'RETURNING' in query.upper():
+                    # This is an INSERT or UPDATE query with RETURNING clause
+                    result = [dict(row) for row in cursor.fetchall()]
+                    logger.debug(f"Query returned: {result}")
+                    return result
                 return None
 
             if cursor.description:  # This is a SELECT query
-                return [dict(row) for row in cursor.fetchall()]
+                result = [dict(row) for row in cursor.fetchall()]
+                logger.debug(f"Query returned {len(result)} rows")
+                return result
             return None
 
         except psycopg2.Error as e:
             self.connection.rollback()
+            logger.error(f"SQL Error: {e}")
             raise e
         finally:
             cursor.close()
