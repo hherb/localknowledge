@@ -133,6 +133,7 @@ def migrate(db_manager: MigrationsManager, progress_callback: Optional[Callable[
             )
             WHERE id IN (
                 SELECT id FROM public.document
+                WHERE all_keywords IS NULL
                 ORDER BY id
                 LIMIT {batch_size} OFFSET {start_id}
             );
