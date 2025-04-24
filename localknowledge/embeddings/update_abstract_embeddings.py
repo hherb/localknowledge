@@ -291,7 +291,7 @@ class AbstractEmbeddingUpdater:
                 # Calculate and display batch statistics
                 batch_duration = time.time() - batch_start_time
                 docs_per_second = len(documents) / batch_duration if batch_duration > 0 else 0
-                print(f"Batch {batch_number}: Processed {len(documents)} documents in {batch_duration:.2f}s ({docs_per_second:.2f} docs/s), {successful_count} successful")
+                logger.debug(f"Batch {batch_number}: Processed {len(documents)} documents in {batch_duration:.2f}s ({docs_per_second:.2f} docs/s), {successful_count} successful")
 
                 # Check if we've reached the limit
                 if limit is not None and total_processed >= limit:

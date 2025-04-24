@@ -488,47 +488,51 @@ class KnowledgeBrowser(QWidget):
             QMessageBox.critical(self, "Search Error", f"An error occurred during search: {str(e)}")
 
     def _perform_keyword_search(self, search_text):
-        """Perform a keyword-based search using the document database manager."""
-        # Process search terms to build the query
-        # If the search text is in quotes, search for the exact phrase
-        # Otherwise, split by commas and search for each term
-        search_terms = []
+        """
+        Perform a keyword-based search using the document database manager in a background thread.
 
-        # Extract quoted terms first
-        quoted_terms = []
-        remaining_text = search_text
+        This method parses the search text to extract include and exclude terms, then creates a
+        KeywordSearchWorker to perform the search in the background.
 
-        quote_start = remaining_text.find('"')
-        while quote_start != -1:
-            quote_end = remaining_text.find('"', quote_start + 1)
-            if quote_end != -1:
-                quoted_term = remaining_text[quote_start + 1:quote_end].strip()
-                if quoted_term:
-                    quoted_terms.append(quoted_term)
-                remaining_text = remaining_text[:quote_start] + " " + remaining_text[quote_end + 1:]
-            else:
-                # Unmatched quote, break
-                break
-            quote_start = remaining_text.find('"')
+        Include terms are comma-separated.
+        Exclude terms are prefixed with a minus sign (-).
 
-        # Add quoted terms
-        search_terms.extend(quoted_terms)
-
-        # Process remaining comma-separated terms
-        comma_terms = [term.strip() for term in remaining_text.split(",") if term.strip()]
-        search_terms.extend(comma_terms)
-
-        # Remove duplicates and empty terms
-        search_terms = [term for term in search_terms if term]
-
-        if not search_terms:
+        Example: "covid, vaccine, -children, -pediatric" will search for documents containing
+        "covid" or "vaccine" but not containing "children" or "pediatric".
+        """
+        # Check if the search text is empty
+        if not search_text.strip():
             self.publication_list.clear()
-            self.publication_list.addItem("Please enter valid search terms.")
+            self.publication_list.addItem("Please enter search terms.")
             return
 
-        # Convert the search terms into an appropriate query based on the database
-        # This assumes your database supports a full-text search with & operator for AND
-        query = " & ".join(search_terms)
+        # Parse the search text to extract include and exclude terms
+        include_terms = []
+        exclude_terms = []
+
+        # Split the search text by commas
+        parts = search_text.split(',')
+
+        # Process each part
+        for part in parts:
+            part = part.strip()
+            if part.startswith('-'):
+                # This is an exclude term
+                term = part[1:].strip()
+                if term:
+                    exclude_terms.append(term)
+            elif part:
+                # This is an include term
+                include_terms.append(part)
+
+        # If no include terms, show an error
+        if not include_terms:
+            self.publication_list.clear()
+            self.publication_list.addItem("Please enter at least one search term.")
+            return
+
+        # Join the include terms with commas for the query
+        query = ', '.join(include_terms)
 
         # Get source filter based on settings
         source_name = None
@@ -538,19 +542,41 @@ class KnowledgeBrowser(QWidget):
             source_name = 'pubmed'
         # If both are True or both are False, don't filter by source
 
-        # Perform the search using the document database manager
-        publications = self.db_manager.search_documents(
-            search_text=query,
+        # Show a loading message
+        self.publication_list.clear()
+        self.publication_list.addItem("Searching...")
+        QApplication.processEvents()  # Ensure the UI updates
+
+        # Create a worker for the keyword search using the array operator pattern
+        worker = KeywordSearchWorker(
+            db_manager=self.db_manager,
+            query=query,
             source_name=source_name,
             limit=self.search_settings.get('max_results', 20),
-            offset=0
+            exclude_terms=exclude_terms if exclude_terms else None
         )
 
+        # Connect signals
+        worker.signals.result.connect(self._handle_keyword_search_results)
+        worker.signals.error.connect(self._handle_keyword_search_error)
+
+        # Execute the worker
+        self.threadpool.start(worker)
+
+    def _handle_keyword_search_results(self, publications):
+        """Handle the results from keyword search."""
         # Store the search query for reference
         self.last_search_query = "keyword"
+        self.last_search_text = self.search_input.text().strip()
 
         # Display the results
         self._display_search_results(publications)
+
+    def _handle_keyword_search_error(self, error_msg, traceback_str):
+        """Handle errors from the keyword search worker."""
+        self.publication_list.clear()
+        self.publication_list.addItem(f"Search Error: {error_msg}")
+        print(f"Keyword search error: {error_msg}\n{traceback_str}")
 
 
 
@@ -700,11 +726,18 @@ class KnowledgeBrowser(QWidget):
             item = PublicationItem(pub)
             self.publication_list.addItem(item)
 
-        # Update status bar with result count
-        if reranked:
-            self.status_bar.showMessage(f"Found {len(publications)} publications matching semantic search (reranked)")
+        # Update status bar with result count based on search type
+        search_type = getattr(self, 'last_search_query', 'search')
+
+        if search_type == "keyword":
+            self.status_bar.showMessage(f"Found {len(publications)} publications matching keyword search")
+        elif search_type == "semantic":
+            if reranked:
+                self.status_bar.showMessage(f"Found {len(publications)} publications matching semantic search (reranked)")
+            else:
+                self.status_bar.showMessage(f"Found {len(publications)} publications matching semantic search")
         else:
-            self.status_bar.showMessage(f"Found {len(publications)} publications matching semantic search")
+            self.status_bar.showMessage(f"Found {len(publications)} publications")
 
         # Store the results for potential fallback
         self.last_search_results = publications
@@ -1188,6 +1221,92 @@ class WorkerSignals(QObject):
     finished = Signal()
     error = Signal(str, str)  # (error message, traceback)
     result = Signal(object)
+
+
+class KeywordSearchWorker(QRunnable):
+    """
+    Worker thread for keyword search.
+    """
+
+    def __init__(self, db_manager, query, source_name=None, limit=20, offset=0, exclude_terms=None):
+        """
+        Initialize the worker.
+
+        Args:
+            db_manager: DocumentDatabaseManager instance
+            query: Search query
+            source_name: Filter by source name (optional)
+            limit: Maximum number of results to return
+            offset: Offset for pagination
+            exclude_terms: Terms to exclude from search results (optional)
+        """
+        super().__init__()
+        self.db_manager = db_manager
+        self.query = query
+        self.source_name = source_name
+        self.limit = limit
+        self.offset = offset
+        self.exclude_terms = exclude_terms
+        self.signals = WorkerSignals()
+
+    @Slot()
+    def run(self):
+        """
+        Perform the keyword search.
+        """
+        try:
+            print(f"KeywordSearchWorker: Starting search with query: {self.query}")
+            print(f"KeywordSearchWorker: Source filter: {self.source_name}")
+            print(f"KeywordSearchWorker: Limit: {self.limit}")
+            if self.exclude_terms:
+                print(f"KeywordSearchWorker: Exclude terms: {self.exclude_terms}")
+
+            # Perform the search using the document database manager with the array operator pattern
+            publications = self.db_manager.search_documents(
+                search_text=self.query,
+                source_name=self.source_name,
+                limit=self.limit,
+                offset=self.offset,
+                exclude_terms=self.exclude_terms
+            )
+
+            # Check if we got any results
+            if publications:
+                print(f"KeywordSearchWorker: Search completed, found {len(publications)} results")
+                # Emit the result
+                self.signals.result.emit(publications)
+                print("KeywordSearchWorker: Results emitted")
+            else:
+                print("KeywordSearchWorker: Search completed, no results found")
+                # Emit an empty result set
+                self.signals.result.emit([])
+                print("KeywordSearchWorker: Empty results emitted")
+
+        except TimeoutError as e:
+            # Handle timeout specifically
+            print(f"KeywordSearchWorker: Search timed out: {e}")
+
+            # Emit a timeout error
+            self.signals.error.emit("Search timed out. Please try a more specific query.",
+                                   "The search took too long to complete. This might be due to a complex query or database load.")
+            print("KeywordSearchWorker: Timeout error emitted")
+
+        except Exception as e:
+            # Get the traceback
+            import traceback
+            trace = traceback.format_exc()
+
+            print(f"KeywordSearchWorker: Error during search: {e}")
+            print(trace)
+
+            # Emit the error
+            self.signals.error.emit(str(e), trace)
+            print("KeywordSearchWorker: Error emitted")
+
+        finally:
+            # Always emit finished signal
+            self.signals.finished.emit()
+            print("KeywordSearchWorker: Finished signal emitted")
 
 
 class SemanticSearchWorker(QRunnable):

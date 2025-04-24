@@ -257,45 +257,194 @@ class DocumentDatabaseManager(DatabaseManager):
                         search_text: str,
                         source_name: Optional[str] = None,
                         limit: int = 100,
-                        offset: int = 0) -> List[Dict[str, Any]]:
+                        offset: int = 0,
+                        exclude_terms: Optional[List[str]] = None) -> List[Dict[str, Any]]:
         """
-        Search for documents using full-text search.
+        Search for documents using the all_keywords column with GIN index.
+
+        This method uses the efficient array operators pattern with the all_keywords column
+        that combines keywords, augmented_keywords, and mesh_terms into a single array.
 
         Args:
-            search_text: Text to search for
+            search_text: Text to search for (comma-separated terms)
             source_name: Filter by source name (optional)
             limit: Maximum number of results to return
             offset: Number of results to skip
+            exclude_terms: Terms to exclude from search results (optional)
 
         Returns:
             List of matching documents
         """
-        # Convert search text to tsquery format
-        search_terms = ' & '.join(search_text.split())
+        print(f"DocumentDatabaseManager.search_documents: Starting search with text: {search_text}")
+        print(f"DocumentDatabaseManager.search_documents: Source filter: {source_name}")
+        print(f"DocumentDatabaseManager.search_documents: Limit: {limit}, Offset: {offset}")
 
-        query = """
-        SELECT d.*, s.name as source_name, c.name as category_name,
-               ts_rank_cd(to_tsvector('english', d.title || ' ' || COALESCE(d.abstract, '')),
-                         to_tsquery('english', %s)) as rank
-        FROM document d
-        JOIN sources s ON d.source_id = s.id
-        LEFT JOIN categories c ON d.category_id = c.id
-        WHERE to_tsvector('english', d.title || ' ' || COALESCE(d.abstract, '')) @@ to_tsquery('english', %s)
-        """
+        try:
+            # Parse the search text into an array of terms
+            include_terms = []
 
-        params = [search_terms, search_terms]
+            # Handle quoted phrases and comma-separated terms
+            remaining_text = search_text
 
-        # Add source filter if provided
-        if source_name:
-            source_id = self.get_source_id(source_name)
-            if source_id:
-                query += " AND d.source_id = %s"
-                params.append(source_id)
+            # Extract quoted phrases
+            quote_start = remaining_text.find('"')
+            while quote_start != -1:
+                quote_end = remaining_text.find('"', quote_start + 1)
+                if quote_end != -1:
+                    quoted_term = remaining_text[quote_start + 1:quote_end].strip()
+                    if quoted_term:
+                        include_terms.append(quoted_term.lower())
+                    remaining_text = remaining_text[:quote_start] + " " + remaining_text[quote_end + 1:]
+                else:
+                    break
+                quote_start = remaining_text.find('"')
 
-        query += " ORDER BY rank DESC LIMIT %s OFFSET %s"
-        params.extend([limit, offset])
+            # Split remaining text by commas
+            for term in remaining_text.split(','):
+                term = term.strip()
+                if term.startswith('-'):
+                    # This is an exclude term, skip it here
+                    continue
+                if term:
+                    include_terms.append(term.lower())
 
-        return self.execute(query, tuple(params)) or []
+            # If no terms were found, use the original search text
+            if not include_terms:
+                include_terms = [search_text.lower()]
+
+            print(f"DocumentDatabaseManager.search_documents: Include terms: {include_terms}")
+
+            # Check if all_keywords column exists
+            result = self.execute("""
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_name = 'document' AND column_name = 'all_keywords';
+            """)
+
+            has_all_keywords = bool(result)
+
+            if has_all_keywords:
+                # Use the all_keywords column with the efficient array operator pattern
+                # Convert include_terms to a string representation for the ARRAY constructor
+                include_array_str = "ARRAY[" + ", ".join(f"'{term}'" for term in include_terms) + "]"
+
+                query = f"""
+                SELECT d.*, s.name as source_name, c.name as category_name
+                FROM document d
+                JOIN sources s ON d.source_id = s.id
+                LEFT JOIN categories c ON d.category_id = c.id
+                WHERE d.all_keywords && {include_array_str}
+                """
+
+                # Add exclusion terms if provided
+                if exclude_terms and len(exclude_terms) > 0:
+                    print(f"DocumentDatabaseManager.search_documents: Exclude terms: {exclude_terms}")
+                    exclude_terms = [term.lower() for term in exclude_terms]
+
+                    # Convert exclude_terms to a string representation for the ARRAY constructor
+                    exclude_array_str = "ARRAY[" + ", ".join(f"'{term}'" for term in exclude_terms) + "]"
+
+                    query += f"""
+                    AND NOT (d.all_keywords && {exclude_array_str})
+                    """
+
+                print(f"DocumentDatabaseManager.search_documents: Using all_keywords column with GIN index")
+            else:
+                # Fall back to the original pattern with keywords and mesh_terms
+                # Convert include_terms to a string representation for the ARRAY constructor
+                include_array_str = "ARRAY[" + ", ".join(f"'{term}'" for term in include_terms) + "]"
+
+                query = f"""
+                SELECT d.*, s.name as source_name, c.name as category_name
+                FROM document d
+                JOIN sources s ON d.source_id = s.id
+                LEFT JOIN categories c ON d.category_id = c.id
+                WHERE
+                  (
+                    (d.keywords && {include_array_str})
+                    OR (d.mesh_terms && {include_array_str})
+                  )
+                """
+
+                # Add exclusion terms if provided
+                if exclude_terms and len(exclude_terms) > 0:
+                    print(f"DocumentDatabaseManager.search_documents: Exclude terms: {exclude_terms}")
+                    exclude_terms = [term.lower() for term in exclude_terms]
+
+                    # Convert exclude_terms to a string representation for the ARRAY constructor
+                    exclude_array_str = "ARRAY[" + ", ".join(f"'{term}'" for term in exclude_terms) + "]"
+
+                    query += f"""
+                    AND NOT (
+                        (d.keywords && {exclude_array_str})
+                        OR (d.mesh_terms && {exclude_array_str})
+                    )
+                    """
+
+                print(f"DocumentDatabaseManager.search_documents: Using keywords and mesh_terms columns")
+
+            # Add source filter if provided
+            if source_name:
+                source_id = self.get_source_id(source_name)
+                print(f"DocumentDatabaseManager.search_documents: Source ID for {source_name}: {source_id}")
+                if source_id:
+                    query += f" AND d.source_id = {source_id}"
+
+            # Add ordering and limit
+            query += f" ORDER BY d.publication_date DESC NULLS LAST LIMIT {limit} OFFSET {offset}"
+
+            print(f"DocumentDatabaseManager.search_documents: Executing array operator query")
+            print(f"DocumentDatabaseManager.search_documents: SQL Query: {query}")
+
+            # Execute the query with a longer timeout
+            results = self.execute(query, (), timeout=30) or []
+            print(f"DocumentDatabaseManager.search_documents: Array search completed, found {len(results)} results")
+
+            # If we got results, return them
+            if results:
+                return results
+
+            # If no results from array search, try a simple title search as fallback
+            print("DocumentDatabaseManager.search_documents: No results from array search, trying title search")
+
+            # Simple title search with ILIKE
+            # Use the first term for the title search
+            search_term = f"%{include_terms[0]}%"
+
+            query = f"""
+            SELECT d.*, s.name as source_name, c.name as category_name
+            FROM document d
+            JOIN sources s ON d.source_id = s.id
+            LEFT JOIN categories c ON d.category_id = c.id
+            WHERE d.title ILIKE '{search_term}'
+            """
+
+            # Add source filter if provided
+            if source_name:
+                source_id = self.get_source_id(source_name)
+                if source_id:
+                    query += f" AND d.source_id = {source_id}"
+
+            # Add ordering and limit
+            query += f" ORDER BY d.publication_date DESC NULLS LAST LIMIT {limit} OFFSET {offset}"
+
+            print(f"DocumentDatabaseManager.search_documents: Executing title search fallback")
+
+            # Execute with a longer timeout
+            results = self.execute(query, (), timeout=15) or []
+            print(f"DocumentDatabaseManager.search_documents: Title search completed, found {len(results)} results")
+
+            return results
+
+        except TimeoutError as e:
+            print(f"DocumentDatabaseManager.search_documents: Search timed out: {e}")
+            # Return an empty result set on timeout
+            return []
+        except Exception as e:
+            print(f"DocumentDatabaseManager.search_documents: Error during search: {e}")
+            import traceback
+            print(traceback.format_exc())
+            return []
 
     def get_recent_documents(self,
                            limit: int = 100,
