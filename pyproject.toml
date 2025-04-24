@@ -41,6 +41,7 @@ dependencies = [
     "spacy>=3.8.5",
     "sentence-transformers>=4.1.0",
     "pymedtermino>=0.3.3",
+    "nltk>=3.9.1",
 ]
 
 [project.optional-dependencies]

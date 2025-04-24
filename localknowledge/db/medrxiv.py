@@ -17,55 +17,7 @@ class MedRxivDatabaseManager(DatabaseManager):
     def __init__(self, create_indices: bool = False):
         """Initialize the medRxiv database manager."""
         super().__init__()
-        #self.create_tables()
-        if create_indices:
-            self.create_indices()
-    
-    def create_tables(self) -> None:
-        """Create medRxiv tables if they don't exist."""
-        # Create preprints table
-        self.execute("""
-        CREATE TABLE IF NOT EXISTS preprints (
-            doi TEXT PRIMARY KEY,
-            title TEXT,
-            abstract TEXT,
-            authors TEXT,
-            date_posted TEXT,
-            category TEXT,
-            pdf_url TEXT,
-            local_pdf_path TEXT,
-            full_text TEXT
-        )
-        """, commit=True)
         
-        # Create summaries table
-        self.execute("""
-        CREATE TABLE IF NOT EXISTS summaries (
-            id SERIAL PRIMARY KEY,
-            publication_id TEXT REFERENCES preprints(doi) ON DELETE CASCADE,
-            summary TEXT,
-            evaluation BOOLEAN,
-            reason TEXT,
-            interests TEXT[],
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-        """, commit=True)
-        
-    def create_indices(self) -> None:
-        """Create indices for the preprints and summaries tables."""
-        # Create indexes for searching
-        self.execute("CREATE INDEX IF NOT EXISTS idx_title_rx ON preprints(title)", commit=True)
-        # Drop the old B-tree index if it exists
-        self.execute("DROP INDEX IF EXISTS idx_abstract_rx", commit=True)
-        # Create a fulltext search index on abstract column
-        self.execute("""
-        CREATE INDEX IF NOT EXISTS idx_abstract_fts ON preprints 
-        USING gin(to_tsvector('english', abstract))
-        """, commit=True)
-        self.execute("CREATE INDEX IF NOT EXISTS idx_category ON preprints(category)", commit=True)
-        # Create index for summaries
-        self.execute("CREATE INDEX IF NOT EXISTS idx_summaries_publication_id ON summaries(publication_id)", commit=True)
-
     def store_preprint(self, preprint: Dict[str, Any]) -> None:
 
         """
