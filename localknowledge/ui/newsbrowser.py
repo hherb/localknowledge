@@ -209,6 +209,7 @@ class NewsBrowser(QWidget):
         self.filter_combo = QComboBox()
         self.filter_combo.addItem("All Documents")
         self.filter_combo.addItem("Unread Only")
+        self.filter_combo.addItem("Reading Suggestions")  # New option for reading suggestions
         self.filter_combo.addItem("Recommended")
         self.filter_combo.addItem("MedRxiv Only")
         self.filter_combo.addItem("PubMed Only")
@@ -445,7 +446,48 @@ class NewsBrowser(QWidget):
                     doc_ids = [doc['id'] for doc in documents]
                     self._load_suggestions_for_documents(doc_ids, suggestions_map)
 
-            elif filter_idx == 2:  # Recommended
+            elif filter_idx == 2:  # Reading Suggestions
+                # Get documents from reading_suggestions for the current user that are not in reading_records
+                query = """
+                SELECT d.*, s.name as source_name, rs.id as suggestion_id,
+                       rs.recommendation_strength, rs.confidence_level, rs.comment,
+                       rs.user_agreement, e.name as evaluator_name
+                FROM reading_suggestions rs
+                JOIN document d ON rs.document_id = d.id
+                JOIN sources s ON d.source_id = s.id
+                JOIN evaluators e ON rs.evaluator_id = e.id
+                WHERE rs.user_id = %s
+                AND NOT EXISTS (
+                    SELECT 1 FROM reading_records rr
+                    WHERE rr.document_id = rs.document_id
+                    AND rr.user_id = %s
+                )
+                ORDER BY rs.recommendation_strength DESC, rs.created_at DESC
+                LIMIT 100
+                """
+                try:
+                    result = self.db_manager.execute(query, (self.user_id, self.user_id))
+                    if result:
+                        documents = []
+                        for row in result:
+                            # Create document dictionary
+                            doc = {k: v for k, v in row.items() if k not in ['suggestion_id', 'recommendation_strength', 'confidence_level', 'comment', 'user_agreement', 'evaluator_name']}
+                            documents.append(doc)
+
+                            # Store suggestion info
+                            suggestions_map[doc['id']] = {
+                                'id': row['suggestion_id'],
+                                'recommendation_strength': row['recommendation_strength'],
+                                'confidence_level': row['confidence_level'],
+                                'comment': row['comment'],
+                                'user_agreement': row['user_agreement'],
+                                'evaluator_name': row['evaluator_name']
+                            }
+                except Exception as e:
+                    print(f"Error getting reading suggestions: {e}")
+                    traceback.print_exc()
+
+            elif filter_idx == 3:  # Recommended
                 # Get reading suggestions for the current user
                 suggestions = self.suggestions_manager.get_reading_suggestions(
                     user_id=self.user_id,
@@ -472,7 +514,7 @@ class NewsBrowser(QWidget):
                             'evaluator_name': suggestion['evaluator_name']
                         }
 
-            elif filter_idx == 3:  # MedRxiv Only
+            elif filter_idx == 4:  # MedRxiv Only
                 # Get documents from medrxiv source
                 source_id = self.db_manager.get_source_id('medrxiv')
                 if source_id:
@@ -485,7 +527,7 @@ class NewsBrowser(QWidget):
                 else:
                     documents = []
 
-            elif filter_idx == 4:  # PubMed Only
+            elif filter_idx == 5:  # PubMed Only
                 # Get documents from pubmed source
                 source_id = self.db_manager.get_source_id('pubmed')
                 if source_id:
@@ -771,25 +813,25 @@ class NewsBrowser(QWidget):
                 # First check if a record already exists
                 check_query = """
                 SELECT id FROM reading_records
-                WHERE document_id = %s
+                WHERE document_id = %s AND user_id = %s
                 """
-                existing = self.db_manager.execute(check_query, (document_id,))
+                existing = self.db_manager.execute(check_query, (document_id, self.user_id))
 
                 if existing:
                     # Update existing record
                     update_query = """
                     UPDATE reading_records
                     SET read_timestamp = NOW()
-                    WHERE document_id = %s
+                    WHERE document_id = %s AND user_id = %s
                     """
-                    self.db_manager.execute(update_query, (document_id,), commit=True)
+                    self.db_manager.execute(update_query, (document_id, self.user_id), commit=True)
                 else:
                     # Insert new record
                     insert_query = """
-                    INSERT INTO reading_records (document_id, read_timestamp)
-                    VALUES (%s, NOW())
+                    INSERT INTO reading_records (document_id, user_id, read_timestamp)
+                    VALUES (%s, %s, NOW())
                     """
-                    self.db_manager.execute(insert_query, (document_id,), commit=True)
+                    self.db_manager.execute(insert_query, (document_id, self.user_id), commit=True)
 
                 # Update local cache
                 self.read_summaries.add(document_id)
@@ -814,25 +856,25 @@ class NewsBrowser(QWidget):
                 # First check if a record already exists
                 check_query = """
                 SELECT id FROM reading_records
-                WHERE document_id = %s
+                WHERE document_id = %s AND user_id = %s
                 """
-                existing = self.db_manager.execute(check_query, (document_id,))
+                existing = self.db_manager.execute(check_query, (document_id, self.user_id))
 
                 if existing:
                     # Update existing record
                     update_query = """
                     UPDATE reading_records
                     SET read_timestamp = NOW()
-                    WHERE document_id = %s
+                    WHERE document_id = %s AND user_id = %s
                     """
-                    self.db_manager.execute(update_query, (document_id,), commit=True)
+                    self.db_manager.execute(update_query, (document_id, self.user_id), commit=True)
                 else:
                     # Insert new record
                     insert_query = """
-                    INSERT INTO reading_records (document_id, read_timestamp)
-                    VALUES (%s, NOW())
+                    INSERT INTO reading_records (document_id, user_id, read_timestamp)
+                    VALUES (%s, %s, NOW())
                     """
-                    self.db_manager.execute(insert_query, (document_id,), commit=True)
+                    self.db_manager.execute(insert_query, (document_id, self.user_id), commit=True)
 
                 # Update local cache
                 self.read_summaries.add(document_id)
@@ -856,9 +898,9 @@ class NewsBrowser(QWidget):
                 # Delete the reading record from the database
                 query = """
                 DELETE FROM reading_records
-                WHERE document_id = %s
+                WHERE document_id = %s AND user_id = %s
                 """
-                self.db_manager.execute(query, (document_id,), commit=True)
+                self.db_manager.execute(query, (document_id, self.user_id), commit=True)
 
                 # Remove from local cache
                 self.read_summaries.discard(document_id)
@@ -878,13 +920,14 @@ class NewsBrowser(QWidget):
         This helps improve performance by avoiding database lookups for each item.
         """
         try:
-            # Get recent read records directly from the database
+            # Get recent read records directly from the database for the current user
             query = """
             SELECT document_id FROM reading_records
+            WHERE user_id = %s
             ORDER BY read_timestamp DESC
             LIMIT 1000
             """
-            read_records = self.db_manager.execute(query)
+            read_records = self.db_manager.execute(query, (self.user_id,))
 
             # Clear and update the cache
             self.read_summaries.clear()
@@ -949,25 +992,25 @@ class NewsBrowser(QWidget):
             # First check if a record already exists
             check_query = """
             SELECT id FROM reading_records
-            WHERE document_id = %s
+            WHERE document_id = %s AND user_id = %s
             """
-            existing = self.db_manager.execute(check_query, (document_id,))
+            existing = self.db_manager.execute(check_query, (document_id, self.user_id))
 
             if existing:
                 # Update existing record
                 update_query = """
                 UPDATE reading_records
                 SET rating = %s
-                WHERE document_id = %s
+                WHERE document_id = %s AND user_id = %s
                 """
-                self.db_manager.execute(update_query, (1, document_id), commit=True)
+                self.db_manager.execute(update_query, (1, document_id, self.user_id), commit=True)
             else:
                 # Insert new record
                 insert_query = """
-                INSERT INTO reading_records (document_id, read_timestamp, rating)
-                VALUES (%s, NOW(), %s)
+                INSERT INTO reading_records (document_id, user_id, read_timestamp, rating)
+                VALUES (%s, %s, NOW(), %s)
                 """
-                self.db_manager.execute(insert_query, (document_id, 1), commit=True)
+                self.db_manager.execute(insert_query, (document_id, self.user_id, 1), commit=True)
 
             # Update the UI
             self.rating_label.setText("+1")
@@ -990,25 +1033,25 @@ class NewsBrowser(QWidget):
             # First check if a record already exists
             check_query = """
             SELECT id FROM reading_records
-            WHERE document_id = %s
+            WHERE document_id = %s AND user_id = %s
             """
-            existing = self.db_manager.execute(check_query, (document_id,))
+            existing = self.db_manager.execute(check_query, (document_id, self.user_id))
 
             if existing:
                 # Update existing record
                 update_query = """
                 UPDATE reading_records
                 SET rating = %s
-                WHERE document_id = %s
+                WHERE document_id = %s AND user_id = %s
                 """
-                self.db_manager.execute(update_query, (-1, document_id), commit=True)
+                self.db_manager.execute(update_query, (-1, document_id, self.user_id), commit=True)
             else:
                 # Insert new record
                 insert_query = """
-                INSERT INTO reading_records (document_id, read_timestamp, rating)
-                VALUES (%s, NOW(), %s)
+                INSERT INTO reading_records (document_id, user_id, read_timestamp, rating)
+                VALUES (%s, %s, NOW(), %s)
                 """
-                self.db_manager.execute(insert_query, (document_id, -1), commit=True)
+                self.db_manager.execute(insert_query, (document_id, self.user_id, -1), commit=True)
 
             # Update the UI
             self.rating_label.setText("-1")
@@ -1030,9 +1073,9 @@ class NewsBrowser(QWidget):
             # Get existing notes directly from the database
             query = """
             SELECT notes FROM reading_records
-            WHERE document_id = %s
+            WHERE document_id = %s AND user_id = %s
             """
-            record = self.db_manager.execute(query, (document_id,))
+            record = self.db_manager.execute(query, (document_id, self.user_id))
             record = record[0] if record else None
 
             existing_notes = record.get('notes', '') if record else ''
@@ -1068,25 +1111,25 @@ class NewsBrowser(QWidget):
                 # First check if a record already exists
                 check_query = """
                 SELECT id FROM reading_records
-                WHERE document_id = %s
+                WHERE document_id = %s AND user_id = %s
                 """
-                existing = self.db_manager.execute(check_query, (document_id,))
+                existing = self.db_manager.execute(check_query, (document_id, self.user_id))
 
                 if existing:
                     # Update existing record
                     update_query = """
                     UPDATE reading_records
                     SET notes = %s
-                    WHERE document_id = %s
+                    WHERE document_id = %s AND user_id = %s
                     """
-                    self.db_manager.execute(update_query, (notes, document_id), commit=True)
+                    self.db_manager.execute(update_query, (notes, document_id, self.user_id), commit=True)
                 else:
                     # Insert new record
                     insert_query = """
-                    INSERT INTO reading_records (document_id, read_timestamp, notes)
-                    VALUES (%s, NOW(), %s)
+                    INSERT INTO reading_records (document_id, user_id, read_timestamp, notes)
+                    VALUES (%s, %s, NOW(), %s)
                     """
-                    self.db_manager.execute(insert_query, (document_id, notes), commit=True)
+                    self.db_manager.execute(insert_query, (document_id, self.user_id, notes), commit=True)
 
                 # Mark as read if not already
                 if document_id not in self.read_summaries:
@@ -1169,9 +1212,9 @@ class NewsBrowser(QWidget):
             # Get the reading record directly from the database
             query = """
             SELECT rating, notes FROM reading_records
-            WHERE document_id = %s
+            WHERE document_id = %s AND user_id = %s
             """
-            record = self.db_manager.execute(query, (document_id,))
+            record = self.db_manager.execute(query, (document_id, self.user_id))
             record = record[0] if record else None
 
             if record:
