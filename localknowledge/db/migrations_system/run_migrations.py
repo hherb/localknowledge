@@ -28,47 +28,81 @@ def main():
     parser = argparse.ArgumentParser(description='Run pending database migrations')
     parser.add_argument('--gui', action='store_true', help='Use GUI progress bar')
     parser.add_argument('--check', action='store_true', help='Check for pending migrations without running them')
+    parser.add_argument('--force-version', type=int, help='Force run a specific migration version')
     args = parser.parse_args()
-    
+
     # Create a migrations manager
     migrations_manager = MigrationsManager()
-    
+
     # Get current version
     current_version = migrations_manager.get_current_version()
     print(f"Current database version: {current_version}")
-    
-    # Get pending migrations
-    pending_migrations = migrations_manager.get_pending_migrations()
-    
-    if not pending_migrations:
-        print("No pending migrations")
-        return 0
-    
-    print(f"Found {len(pending_migrations)} pending migrations:")
-    for version, path in pending_migrations:
-        print(f"  {version}: {path.name}")
-    
-    if args.check:
-        # Just checking, don't run migrations
-        return 0
-    
-    # Confirm before running migrations
-    if not args.gui:  # Only prompt if not using GUI
-        confirm = input("Run these migrations? [y/N] ")
-        if confirm.lower() != 'y':
-            print("Migrations cancelled")
+
+    if args.force_version:
+        # Force run a specific migration
+        available_migrations = migrations_manager.get_available_migrations()
+        force_migrations = [(v, p) for v, p in available_migrations if v == args.force_version]
+
+        if not force_migrations:
+            print(f"Migration version {args.force_version} not found")
+            return 1
+
+        version, path = force_migrations[0]
+        print(f"Forcing migration {version}: {path.name}")
+
+        if args.check:
+            # Just checking, don't run migrations
             return 0
-    
-    # Run migrations
-    success = migrations_manager.run_pending_migrations(use_gui_tqdm=args.gui)
-    
-    if success:
-        new_version = migrations_manager.get_current_version()
-        print(f"Migrations completed successfully. New database version: {new_version}")
-        return 0
+
+        # Confirm before running migration
+        if not args.gui:  # Only prompt if not using GUI
+            confirm = input(f"Run migration {version}? [y/N] ")
+            if confirm.lower() != 'y':
+                print("Migration cancelled")
+                return 0
+
+        # Run the specific migration
+        success = migrations_manager.run_migration(version, path)
+
+        if success:
+            print(f"Migration {version} completed successfully")
+            return 0
+        else:
+            print(f"Migration {version} failed")
+            return 1
     else:
-        print("Migration process failed")
-        return 1
+        # Get pending migrations
+        pending_migrations = migrations_manager.get_pending_migrations()
+
+        if not pending_migrations:
+            print("No pending migrations")
+            return 0
+
+        print(f"Found {len(pending_migrations)} pending migrations:")
+        for version, path in pending_migrations:
+            print(f"  {version}: {path.name}")
+
+        if args.check:
+            # Just checking, don't run migrations
+            return 0
+
+        # Confirm before running migrations
+        if not args.gui:  # Only prompt if not using GUI
+            confirm = input("Run these migrations? [y/N] ")
+            if confirm.lower() != 'y':
+                print("Migrations cancelled")
+                return 0
+
+        # Run migrations
+        success = migrations_manager.run_pending_migrations(use_gui_tqdm=args.gui)
+
+        if success:
+            new_version = migrations_manager.get_current_version()
+            print(f"Migrations completed successfully. New database version: {new_version}")
+            return 0
+        else:
+            print("Migration process failed")
+            return 1
 
 
 if __name__ == "__main__":

@@ -1,0 +1,132 @@
+# Project Management
+
+## Overview
+
+The Project Management module provides functionality for managing research projects in the Researcher's Workbench (RWB). It allows users to create, update, and delete projects, as well as manage project contributors.
+
+## Core Components
+
+### Database Structure
+
+The project management system uses two main tables:
+
+| Table | Description |
+|-------|-------------|
+| projects | Stores project metadata (title, description, creation date, etc.) |
+| project_contributors | Stores many-to-many relationships between projects and users |
+
+#### Projects Table
+
+The `projects` table has the following structure:
+
+| Column | Type | Description |
+|--------|------|-------------|
+| id | SERIAL | Primary key |
+| title | TEXT | Project title |
+| description | TEXT | Project description |
+| created_at | TIMESTAMP | When the project was created |
+| last_worked_on | TIMESTAMP | When the project was last worked on |
+| manager_id | INTEGER | Foreign key to users.id for the project manager |
+
+#### Project Contributors Table
+
+The `project_contributors` table has the following structure:
+
+| Column | Type | Description |
+|--------|------|-------------|
+| project_id | INTEGER | Foreign key to projects.id |
+| user_id | INTEGER | Foreign key to users.id |
+
+This table uses a composite primary key of (project_id, user_id) to ensure uniqueness.
+
+### Database Manager
+
+The `ProjectDatabaseManager` class in `localknowledge.db.project` handles database operations for project data:
+
+- Creating and updating projects
+- Managing project contributors
+- Retrieving project information
+- Searching for projects
+
+## Usage Examples
+
+### Basic Project Operations
+
+```python
+from localknowledge.db.project import ProjectDatabaseManager
+
+# Create a project manager
+project_db = ProjectDatabaseManager()
+
+# Create a new project
+project_id = project_db.create_project(
+    title="My Research Project",
+    description="This project investigates...",
+    manager_id=user_id
+)
+
+# Get project details
+project = project_db.get_project(project_id)
+print(f"Project: {project['title']}")
+
+# Update project
+project_db.update_project(
+    project_id=project_id,
+    data={
+        "title": "Updated Project Title",
+        "description": "Updated description"
+    }
+)
+
+# Delete project
+project_db.delete_project(project_id)
+```
+
+### Managing Contributors
+
+```python
+# Add a contributor to a project
+project_db.add_contributor(project_id, user_id)
+
+# Get all contributors for a project
+contributors = project_db.get_contributors(project_id)
+for contributor in contributors:
+    print(f"Contributor: {contributor['username']}")
+
+# Remove a contributor from a project
+project_db.remove_contributor(project_id, user_id)
+```
+
+### Finding Projects
+
+```python
+# Get all projects managed by a user
+manager_projects = project_db.get_projects_by_manager(user_id)
+
+# Get all projects where a user is a contributor
+contributor_projects = project_db.get_projects_by_contributor(user_id)
+
+# Get all projects a user has access to (as manager or contributor)
+all_projects = project_db.get_all_user_projects(user_id)
+
+# Search for projects by title or description
+search_results = project_db.search_projects("research", user_id)
+```
+
+## Integration with UI
+
+The project management functionality integrates with the RWB UI to provide:
+
+- Project listing and management
+- Project creation and editing
+- Contributor management
+- Project search
+
+## Best Practices
+
+When working with projects:
+
+1. Always update the `last_worked_on` timestamp when making changes to a project
+2. Check if a user has access to a project before allowing operations
+3. Use transactions for operations that modify multiple tables
+4. Validate project data before saving to the database
