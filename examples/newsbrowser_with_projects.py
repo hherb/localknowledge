@@ -90,8 +90,11 @@ class NewsBrowserWithProjects(QMainWindow):
         if project_id:
             project_title = self.project_combo.itemText(index)
             self.statusBar().showMessage(f"Selected project: {project_title}")
+            # Update window title to include project name
+            self.setWindowTitle(f"Publication News Browser - Project: {project_title} - User: Default User")
         else:
             self.statusBar().showMessage("No project selected")
+            self.setWindowTitle("Publication News Browser - User: Default User")
 
     def closeEvent(self, event):
         """Handle window close event."""

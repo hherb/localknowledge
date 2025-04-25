@@ -1474,6 +1474,10 @@ class NewsBrowser(QWidget):
             return
 
         try:
+            # Always ensure the project checkbox is enabled/disabled based on current project
+            # This needs to be done regardless of the current document
+            self.project_bookmark_cb.setEnabled(self.current_project_id is not None)
+
             # Check personal bookmark
             personal_bookmark = self.db_manager.is_bookmarked(
                 source_name,
@@ -1499,8 +1503,7 @@ class NewsBrowser(QWidget):
             is_personal = personal_bookmark == 'personal' or personal_bookmark == 'both'
             self.personal_bookmark_cb.setChecked(is_personal)
 
-            # Enable project checkbox only if a project is selected
-            self.project_bookmark_cb.setEnabled(self.current_project_id is not None)
+            # Set project checkbox state
             if self.current_project_id:
                 is_project = project_bookmark == 'project' or project_bookmark == 'both'
                 self.project_bookmark_cb.setChecked(is_project)
@@ -1512,7 +1515,7 @@ class NewsBrowser(QWidget):
             self.project_bookmark_cb.blockSignals(False)
 
             # Debug output
-            print(f"Bookmark status for {source_name}/{external_id}: Personal={is_personal}, Project={self.project_bookmark_cb.isChecked()}")
+            print(f"Bookmark status for {source_name}/{external_id}: Personal={is_personal}, Project={self.project_bookmark_cb.isChecked()}, Project enabled={self.project_bookmark_cb.isEnabled()}")
 
         except Exception as e:
             print(f"Error checking bookmark status: {e}")
@@ -1638,9 +1641,17 @@ class NewsBrowser(QWidget):
         # Update project bookmark checkbox state
         self.project_bookmark_cb.setEnabled(project_id is not None)
 
+        # Print debug info
+        print(f"Setting current project to {project_id}, checkbox enabled: {self.project_bookmark_cb.isEnabled()}")
+
         # If a document is selected, check its bookmark status
         if self.current_document:
             self._check_bookmark_status()
+        else:
+            # Even if no document is selected, we should update the UI
+            # to reflect the current project state
+            self.project_bookmark_cb.setEnabled(project_id is not None)
+            self.project_bookmark_cb.setChecked(False)
 
 
 class NewsBrowserWindow(QMainWindow):

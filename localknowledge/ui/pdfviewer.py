@@ -905,16 +905,16 @@ class PDFViewer(QWidget):
         """Clean up resources when the widget is destroyed."""
         # Close any open PDF - but safely check if attributes exist first
         try:
-            # Only call close_pdf if we have the necessary attributes
-            if hasattr(self, 'pdf_document') and hasattr(self, 'pdf_view'):
-                # Check if we have the page_label attribute before calling close_pdf
-                if hasattr(self, 'page_label'):
-                    self.close_pdf()
-                else:
-                    # Just close the document without updating navigation
-                    if hasattr(self, 'fitz_document') and self.fitz_document:
-                        self.fitz_document.close()
-                    self.pdf_document.close()
+            # Only close the PyMuPDF document and clear the temp directory
+            # Avoid calling methods that might access Qt widgets that could be deleted
+            if hasattr(self, 'fitz_document') and self.fitz_document:
+                self.fitz_document.close()
+                self.fitz_document = None
+
+            # Don't call close_pdf() as it might access deleted Qt widgets
+            # Just close the document directly if it exists
+            if hasattr(self, 'pdf_document'):
+                self.pdf_document.close()
         except Exception as e:
             print(f"Error closing PDF in __del__: {e}")
 
