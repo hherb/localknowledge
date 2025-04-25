@@ -632,3 +632,187 @@ class DocumentDatabaseManager(DatabaseManager):
 
         result = self.execute(query, tuple(params) if params else None)
         return result[0]['count'] if result else 0
+
+    def add_bookmark(self,
+                    source_name: str,
+                    external_id: str,
+                    user_id: int,
+                    bookmark_type: str,
+                    project_id: Optional[int] = None) -> bool:
+        """
+        Add a bookmark to a document.
+
+        Args:
+            source_name: Name of the source (e.g., 'pubmed', 'medrxiv')
+            external_id: External identifier (e.g., DOI, PMID)
+            user_id: User ID
+            bookmark_type: Type of bookmark ('personal', 'project', or 'both')
+            project_id: Project ID (required for 'project' or 'both' types)
+
+        Returns:
+            True if successful, False otherwise
+        """
+        # Validate bookmark type
+        if bookmark_type not in ('personal', 'project', 'both'):
+            logger.error(f"Invalid bookmark type: {bookmark_type}")
+            return False
+
+        # Validate project_id for project bookmarks
+        if bookmark_type in ('project', 'both') and project_id is None:
+            logger.error(f"Project ID is required for bookmark type: {bookmark_type}")
+            return False
+
+        # Get document ID
+        document = self.get_document_by_external_id(source_name, external_id)
+        if not document:
+            logger.error(f"Document not found: {source_name}/{external_id}")
+            return False
+
+        document_id = document['id']
+
+        # Add bookmark
+        query = """
+        INSERT INTO bookmarks (document_id, user_id, project_id, bookmark_type)
+        VALUES (%s, %s, %s, %s)
+        ON CONFLICT (document_id, user_id, project_id)
+        DO UPDATE SET bookmark_type = %s, created_at = CURRENT_TIMESTAMP
+        """
+
+        try:
+            self.execute(query, (document_id, user_id, project_id, bookmark_type, bookmark_type), commit=True)
+            return True
+        except Exception as e:
+            logger.error(f"Error adding bookmark: {e}")
+            return False
+
+    def remove_bookmark(self,
+                       source_name: str,
+                       external_id: str,
+                       user_id: int,
+                       project_id: Optional[int] = None) -> bool:
+        """
+        Remove a bookmark from a document.
+
+        Args:
+            source_name: Name of the source (e.g., 'pubmed', 'medrxiv')
+            external_id: External identifier (e.g., DOI, PMID)
+            user_id: User ID
+            project_id: Project ID (optional, if None removes personal bookmark)
+
+        Returns:
+            True if successful, False otherwise
+        """
+        # Get document ID
+        document = self.get_document_by_external_id(source_name, external_id)
+        if not document:
+            logger.error(f"Document not found: {source_name}/{external_id}")
+            return False
+
+        document_id = document['id']
+
+        # Remove bookmark
+        query = """
+        DELETE FROM bookmarks
+        WHERE document_id = %s AND user_id = %s
+        """
+
+        params = [document_id, user_id]
+
+        # Add project filter if provided
+        if project_id is not None:
+            query += " AND project_id = %s"
+            params.append(project_id)
+        else:
+            query += " AND project_id IS NULL"
+
+        try:
+            self.execute(query, tuple(params), commit=True)
+            return True
+        except Exception as e:
+            logger.error(f"Error removing bookmark: {e}")
+            return False
+
+    def is_bookmarked(self,
+                     source_name: str,
+                     external_id: str,
+                     user_id: int,
+                     project_id: Optional[int] = None) -> Optional[str]:
+        """
+        Check if a document is bookmarked.
+
+        Args:
+            source_name: Name of the source (e.g., 'pubmed', 'medrxiv')
+            external_id: External identifier (e.g., DOI, PMID)
+            user_id: User ID
+            project_id: Project ID (optional)
+
+        Returns:
+            Bookmark type ('personal', 'project', or 'both') if bookmarked, None otherwise
+        """
+        # Get document ID
+        document = self.get_document_by_external_id(source_name, external_id)
+        if not document:
+            logger.error(f"Document not found: {source_name}/{external_id}")
+            return None
+
+        document_id = document['id']
+
+        # Check for bookmark
+        query = """
+        SELECT bookmark_type
+        FROM bookmarks
+        WHERE document_id = %s AND user_id = %s
+        """
+
+        params = [document_id, user_id]
+
+        # Add project filter if provided
+        if project_id is not None:
+            query += " AND project_id = %s"
+            params.append(project_id)
+        else:
+            query += " AND project_id IS NULL"
+
+        result = self.execute(query, tuple(params))
+        return result[0]['bookmark_type'] if result else None
+
+    def get_bookmarked_documents(self,
+                                user_id: int,
+                                project_id: Optional[int] = None,
+                                limit: int = 100,
+                                offset: int = 0) -> List[Dict[str, Any]]:
+        """
+        Get bookmarked documents for a user or project.
+
+        Args:
+            user_id: User ID
+            project_id: Project ID (optional)
+            limit: Maximum number of results to return
+            offset: Number of results to skip
+
+        Returns:
+            List of bookmarked documents
+        """
+        query = """
+        SELECT d.*, s.name as source_name, c.name as category_name, b.bookmark_type, b.created_at as bookmarked_at
+        FROM bookmarks b
+        JOIN document d ON b.document_id = d.id
+        JOIN sources s ON d.source_id = s.id
+        LEFT JOIN categories c ON d.category_id = c.id
+        WHERE b.user_id = %s
+        """
+
+        params = [user_id]
+
+        # Add project filter if provided
+        if project_id is not None:
+            query += " AND b.project_id = %s"
+            params.append(project_id)
+        else:
+            query += " AND b.project_id IS NULL"
+
+        # Add ordering and limit
+        query += " ORDER BY b.created_at DESC LIMIT %s OFFSET %s"
+        params.extend([limit, offset])
+
+        return self.execute(query, tuple(params)) or []

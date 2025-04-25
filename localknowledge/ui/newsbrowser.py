@@ -297,6 +297,7 @@ class NewsBrowser(QWidget):
         self.user_id = 1
         self.pdf_base_dir = self._get_pdf_base_dir()
         self.read_summaries = set()  # Local cache of read summaries for performance
+        self.current_project_id = None  # Current selected project ID, None for personal view
 
         # For PDF search
         self.current_pdf_path = None
@@ -332,6 +333,7 @@ class NewsBrowser(QWidget):
         self.filter_combo.addItem("Unread Only")
         self.filter_combo.addItem("Reading Suggestions")  # New option for reading suggestions
         self.filter_combo.addItem("Recommended")
+        self.filter_combo.addItem("Bookmarked")  # New option for bookmarked documents
         self.filter_combo.addItem("MedRxiv Only")
         self.filter_combo.addItem("PubMed Only")
         self.filter_combo.addItem("Emergency Medicine")
@@ -460,9 +462,28 @@ class NewsBrowser(QWidget):
         recommendation_layout.addWidget(self.agree_btn)
         recommendation_layout.addWidget(self.disagree_btn)
 
+        # Bookmark controls
+        bookmark_group = QWidget()
+        bookmark_layout = QHBoxLayout(bookmark_group)
+        bookmark_layout.setContentsMargins(0, 0, 0, 0)
+
+        bookmark_label = QLabel("Bookmark:")
+        self.personal_bookmark_cb = QCheckBox("Personal")
+        self.personal_bookmark_cb.setToolTip("Add to personal bookmarks")
+        self.personal_bookmark_cb.stateChanged.connect(self._toggle_personal_bookmark)
+
+        self.project_bookmark_cb = QCheckBox("Project")
+        self.project_bookmark_cb.setToolTip("Add to project bookmarks")
+        self.project_bookmark_cb.stateChanged.connect(self._toggle_project_bookmark)
+
+        bookmark_layout.addWidget(bookmark_label)
+        bookmark_layout.addWidget(self.personal_bookmark_cb)
+        bookmark_layout.addWidget(self.project_bookmark_cb)
+
         # Add to interaction panel
         interaction_panel_layout.addWidget(rating_group)
         interaction_panel_layout.addWidget(self.recommendation_group)
+        interaction_panel_layout.addWidget(bookmark_group)
         interaction_panel_layout.addStretch(1)
         interaction_panel_layout.addWidget(self.notes_btn)
 
@@ -643,7 +664,20 @@ class NewsBrowser(QWidget):
                             'evaluator_name': suggestion['evaluator_name']
                         }
 
-            elif filter_idx == 4:  # MedRxiv Only
+            elif filter_idx == 4:  # Bookmarked
+                # Get bookmarked documents for the current user
+                documents = self.db_manager.get_bookmarked_documents(
+                    user_id=self.user_id,
+                    project_id=self.current_project_id,
+                    limit=100
+                )
+
+                # Get suggestions for these documents
+                if documents:
+                    doc_ids = [doc['id'] for doc in documents]
+                    self._load_suggestions_for_documents(doc_ids, suggestions_map)
+
+            elif filter_idx == 5:  # MedRxiv Only
                 # Get documents from medrxiv source
                 source_id = self.db_manager.get_source_id('medrxiv')
                 if source_id:
@@ -656,7 +690,7 @@ class NewsBrowser(QWidget):
                 else:
                     documents = []
 
-            elif filter_idx == 5:  # PubMed Only
+            elif filter_idx == 6:  # PubMed Only
                 # Get documents from pubmed source
                 source_id = self.db_manager.get_source_id('pubmed')
                 if source_id:
@@ -668,6 +702,38 @@ class NewsBrowser(QWidget):
                         self._load_suggestions_for_documents(doc_ids, suggestions_map)
                 else:
                     documents = []
+            elif filter_idx == 7:  # Emergency Medicine
+                documents = self.db_manager.search_documents("emergency medicine", limit=100)
+
+                # Get suggestions for these documents
+                if documents:
+                    doc_ids = [doc['id'] for doc in documents]
+                    self._load_suggestions_for_documents(doc_ids, suggestions_map)
+
+            elif filter_idx == 8:  # Rural Medicine
+                documents = self.db_manager.search_documents("rural medicine", limit=100)
+
+                # Get suggestions for these documents
+                if documents:
+                    doc_ids = [doc['id'] for doc in documents]
+                    self._load_suggestions_for_documents(doc_ids, suggestions_map)
+
+            elif filter_idx == 9:  # AI in Medicine
+                documents = self.db_manager.search_documents("artificial intelligence medicine", limit=100)
+
+                # Get suggestions for these documents
+                if documents:
+                    doc_ids = [doc['id'] for doc in documents]
+                    self._load_suggestions_for_documents(doc_ids, suggestions_map)
+
+            elif filter_idx == 10:  # Machine Learning
+                documents = self.db_manager.search_documents("machine learning", limit=100)
+
+                # Get suggestions for these documents
+                if documents:
+                    doc_ids = [doc['id'] for doc in documents]
+                    self._load_suggestions_for_documents(doc_ids, suggestions_map)
+
             else:  # Filter by keyword search
                 # Use the filter text as a search query
                 documents = self.db_manager.search_documents(filter_text, limit=100)
@@ -1385,12 +1451,196 @@ class NewsBrowser(QWidget):
                 # No recommendation, hide the buttons
                 self.recommendation_group.setVisible(False)
 
+            # Check bookmark status
+            self._check_bookmark_status()
+
         except Exception as e:
             print(f"Error loading reading record: {e}")
             traceback.print_exc()
             self.rating_label.setText("?")
             self.notes_btn.setText("Edit Notes")
             self.recommendation_group.setVisible(False)
+
+
+    def _check_bookmark_status(self):
+        """Check if the current document is bookmarked."""
+        if not self.current_document:
+            return
+
+        source_name = self.current_document.get('source_name')
+        external_id = self.current_document.get('external_id')
+
+        if not source_name or not external_id:
+            return
+
+        try:
+            # Check personal bookmark
+            personal_bookmark = self.db_manager.is_bookmarked(
+                source_name,
+                external_id,
+                self.user_id
+            )
+
+            # Check project bookmark if a project is selected
+            project_bookmark = None
+            if self.current_project_id:
+                project_bookmark = self.db_manager.is_bookmarked(
+                    source_name,
+                    external_id,
+                    self.user_id,
+                    self.current_project_id
+                )
+
+            # Update checkboxes without triggering signals
+            self.personal_bookmark_cb.blockSignals(True)
+            self.project_bookmark_cb.blockSignals(True)
+
+            # Set checkbox states
+            is_personal = personal_bookmark == 'personal' or personal_bookmark == 'both'
+            self.personal_bookmark_cb.setChecked(is_personal)
+
+            # Enable project checkbox only if a project is selected
+            self.project_bookmark_cb.setEnabled(self.current_project_id is not None)
+            if self.current_project_id:
+                is_project = project_bookmark == 'project' or project_bookmark == 'both'
+                self.project_bookmark_cb.setChecked(is_project)
+            else:
+                self.project_bookmark_cb.setChecked(False)
+
+            # Unblock signals
+            self.personal_bookmark_cb.blockSignals(False)
+            self.project_bookmark_cb.blockSignals(False)
+
+            # Debug output
+            print(f"Bookmark status for {source_name}/{external_id}: Personal={is_personal}, Project={self.project_bookmark_cb.isChecked()}")
+
+        except Exception as e:
+            print(f"Error checking bookmark status: {e}")
+            traceback.print_exc()
+
+    def _toggle_personal_bookmark(self, state):
+        """Toggle personal bookmark for the current document."""
+        if not self.current_document:
+            return
+
+        source_name = self.current_document.get('source_name')
+        external_id = self.current_document.get('external_id')
+
+        if not source_name or not external_id:
+            return
+
+        try:
+            # Check if there's also a project bookmark
+            project_bookmark = False
+            if self.current_project_id:
+                project_bookmark_type = self.db_manager.is_bookmarked(
+                    source_name,
+                    external_id,
+                    self.user_id,
+                    self.current_project_id
+                )
+                project_bookmark = project_bookmark_type is not None
+
+            if state:  # Checked
+                # Add personal bookmark
+                bookmark_type = 'both' if project_bookmark else 'personal'
+                self.db_manager.add_bookmark(
+                    source_name,
+                    external_id,
+                    self.user_id,
+                    bookmark_type,
+                    self.current_project_id if project_bookmark else None
+                )
+                self.status_bar.showMessage("Added to personal bookmarks")
+            else:  # Unchecked
+                if project_bookmark:
+                    # Change to project-only bookmark
+                    self.db_manager.add_bookmark(
+                        source_name,
+                        external_id,
+                        self.user_id,
+                        'project',
+                        self.current_project_id
+                    )
+                else:
+                    # Remove personal bookmark
+                    self.db_manager.remove_bookmark(
+                        source_name,
+                        external_id,
+                        self.user_id
+                    )
+                self.status_bar.showMessage("Removed from personal bookmarks")
+
+        except Exception as e:
+            print(f"Error toggling personal bookmark: {e}")
+            traceback.print_exc()
+            self.status_bar.showMessage("Error updating bookmark")
+
+    def _toggle_project_bookmark(self, state):
+        """Toggle project bookmark for the current document."""
+        if not self.current_document or not self.current_project_id:
+            return
+
+        source_name = self.current_document.get('source_name')
+        external_id = self.current_document.get('external_id')
+
+        if not source_name or not external_id:
+            return
+
+        try:
+            # Check if there's also a personal bookmark
+            personal_bookmark_type = self.db_manager.is_bookmarked(
+                source_name,
+                external_id,
+                self.user_id
+            )
+            personal_bookmark = personal_bookmark_type is not None and personal_bookmark_type != 'project'
+
+            if state:  # Checked
+                # Add project bookmark
+                bookmark_type = 'both' if personal_bookmark else 'project'
+                self.db_manager.add_bookmark(
+                    source_name,
+                    external_id,
+                    self.user_id,
+                    bookmark_type,
+                    self.current_project_id
+                )
+                self.status_bar.showMessage("Added to project bookmarks")
+            else:  # Unchecked
+                if personal_bookmark:
+                    # Change to personal-only bookmark
+                    self.db_manager.add_bookmark(
+                        source_name,
+                        external_id,
+                        self.user_id,
+                        'personal'
+                    )
+                else:
+                    # Remove project bookmark
+                    self.db_manager.remove_bookmark(
+                        source_name,
+                        external_id,
+                        self.user_id,
+                        self.current_project_id
+                    )
+                self.status_bar.showMessage("Removed from project bookmarks")
+
+        except Exception as e:
+            print(f"Error toggling project bookmark: {e}")
+            traceback.print_exc()
+            self.status_bar.showMessage("Error updating bookmark")
+
+    def set_current_project(self, project_id):
+        """Set the current project ID for project bookmarks."""
+        self.current_project_id = project_id
+
+        # Update project bookmark checkbox state
+        self.project_bookmark_cb.setEnabled(project_id is not None)
+
+        # If a document is selected, check its bookmark status
+        if self.current_document:
+            self._check_bookmark_status()
 
 
 class NewsBrowserWindow(QMainWindow):
@@ -1409,6 +1659,14 @@ class NewsBrowserWindow(QMainWindow):
 
         # Set as central widget
         self.setCentralWidget(self.news_browser)
+
+    def set_current_project(self, project_id):
+        """Set the current project ID for project bookmarks."""
+        self.news_browser.set_current_project(project_id)
+
+    def get_current_project(self):
+        """Get the current project ID."""
+        return self.news_browser.current_project_id
 
     def closeEvent(self, event):
         """Handle window close event."""

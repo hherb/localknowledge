@@ -294,6 +294,12 @@ class KnowledgeBrowser(QWidget):
         self.threadpool = QThreadPool()
         print(f"Multithreading with maximum {self.threadpool.maxThreadCount()} threads")
 
+        # Default user ID - in a real app, this would come from user authentication
+        self.user_id = 1
+
+        # Current project ID for project bookmarks
+        self.current_project_id = None
+
         self._init_ui()
 
     def _init_ui(self):
@@ -318,6 +324,7 @@ class KnowledgeBrowser(QWidget):
         self.search_mode.addItem("Keyword Search", "keyword")
         self.search_mode.addItem("Semantic Search", "semantic")
         self.search_mode.addItem("Hybrid Search", "hybrid")
+        self.search_mode.addItem("Bookmarked", "bookmarked")
         self.search_mode.setToolTip("Keyword search uses exact matching. Semantic search uses AI to find related content. Hybrid search combines both approaches.")
 
         # Disable semantic and hybrid search if embedding manager is not available
@@ -408,9 +415,38 @@ class KnowledgeBrowser(QWidget):
         self.markdown_view = QWebEngineView()
         self.tab_widget.addTab(self.markdown_view, "Extracted Text")
 
+        # Create a container for the right side with tabs and bookmark controls
+        right_container = QWidget()
+        right_layout = QVBoxLayout(right_container)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+
+        # Add bookmark controls
+        bookmark_container = QWidget()
+        bookmark_layout = QHBoxLayout(bookmark_container)
+        bookmark_layout.setContentsMargins(5, 5, 5, 5)
+
+        bookmark_label = QLabel("Bookmark:")
+        self.personal_bookmark_cb = QCheckBox("Personal")
+        self.personal_bookmark_cb.setToolTip("Add to personal bookmarks")
+        self.personal_bookmark_cb.stateChanged.connect(self._toggle_personal_bookmark)
+
+        self.project_bookmark_cb = QCheckBox("Project")
+        self.project_bookmark_cb.setToolTip("Add to project bookmarks")
+        self.project_bookmark_cb.setEnabled(self.current_project_id is not None)
+        self.project_bookmark_cb.stateChanged.connect(self._toggle_project_bookmark)
+
+        bookmark_layout.addWidget(bookmark_label)
+        bookmark_layout.addWidget(self.personal_bookmark_cb)
+        bookmark_layout.addWidget(self.project_bookmark_cb)
+        bookmark_layout.addStretch(1)
+
+        # Add tab widget and bookmark controls to right container
+        right_layout.addWidget(bookmark_container)
+        right_layout.addWidget(self.tab_widget)
+
         # Add widgets to splitter
         self.splitter.addWidget(self.publication_list)
-        self.splitter.addWidget(self.tab_widget)
+        self.splitter.addWidget(right_container)
 
         # Set initial sizes (40% for list, 60% for document)
         self.splitter.setSizes([400, 600])
@@ -435,6 +471,8 @@ class KnowledgeBrowser(QWidget):
             self.search_input.setPlaceholderText("Enter a question or description of what you're looking for")
         elif search_mode == "hybrid":
             self.search_input.setPlaceholderText("Enter keywords or a question to search using both methods")
+        elif search_mode == "bookmarked":
+            self.search_input.setPlaceholderText("Filter bookmarked publications (leave empty to show all)")
         else:
             self.search_input.setPlaceholderText("Enter search terms")
 
@@ -538,6 +576,9 @@ class KnowledgeBrowser(QWidget):
             elif search_mode == "hybrid":
                 # Hybrid search - combine keyword and semantic search
                 self._perform_hybrid_search(search_text)
+            elif search_mode == "bookmarked":
+                # Bookmarked search - show bookmarked publications
+                self._perform_bookmarked_search(search_text)
             else:
                 # Unknown search mode
                 raise ValueError(f"Unknown search mode: {search_mode}")
@@ -920,6 +961,9 @@ class KnowledgeBrowser(QWidget):
         if 'matched_text' in self.current_publication:
             self._display_matched_text(self.current_publication['matched_text'])
 
+        # Check bookmark status
+        self._check_bookmark_status()
+
         # Load the PDF if available
         self._load_publication_content()
 
@@ -1260,6 +1304,219 @@ class KnowledgeBrowser(QWidget):
         error_text = f"# Error Extracting Text\n\n```\n{error_msg}\n\n{traceback_str}\n```"
         self._display_markdown(error_text)
 
+    def _check_bookmark_status(self):
+        """Check if the current publication is bookmarked."""
+        if not self.current_publication:
+            return
+
+        source_name = self.current_publication.get('source_name')
+        external_id = self.current_publication.get('external_id')
+
+        if not source_name or not external_id:
+            return
+
+        try:
+            # Check personal bookmark
+            personal_bookmark = self.db_manager.is_bookmarked(
+                source_name,
+                external_id,
+                self.user_id
+            )
+
+            # Check project bookmark if a project is selected
+            project_bookmark = None
+            if self.current_project_id:
+                project_bookmark = self.db_manager.is_bookmarked(
+                    source_name,
+                    external_id,
+                    self.user_id,
+                    self.current_project_id
+                )
+
+            # Update checkboxes without triggering signals
+            self.personal_bookmark_cb.blockSignals(True)
+            self.project_bookmark_cb.blockSignals(True)
+
+            # Set checkbox states
+            is_personal = personal_bookmark == 'personal' or personal_bookmark == 'both'
+            self.personal_bookmark_cb.setChecked(is_personal)
+
+            # Enable project checkbox only if a project is selected
+            self.project_bookmark_cb.setEnabled(self.current_project_id is not None)
+            if self.current_project_id:
+                is_project = project_bookmark == 'project' or project_bookmark == 'both'
+                self.project_bookmark_cb.setChecked(is_project)
+            else:
+                self.project_bookmark_cb.setChecked(False)
+
+            # Unblock signals
+            self.personal_bookmark_cb.blockSignals(False)
+            self.project_bookmark_cb.blockSignals(False)
+
+            # Debug output
+            print(f"Bookmark status for {source_name}/{external_id}: Personal={is_personal}, Project={self.project_bookmark_cb.isChecked()}")
+
+        except Exception as e:
+            print(f"Error checking bookmark status: {e}")
+            traceback.print_exc()
+
+    def _toggle_personal_bookmark(self, state):
+        """Toggle personal bookmark for the current publication."""
+        if not self.current_publication:
+            return
+
+        source_name = self.current_publication.get('source_name')
+        external_id = self.current_publication.get('external_id')
+
+        if not source_name or not external_id:
+            return
+
+        try:
+            # Check if there's also a project bookmark
+            project_bookmark = False
+            if self.current_project_id:
+                project_bookmark_type = self.db_manager.is_bookmarked(
+                    source_name,
+                    external_id,
+                    self.user_id,
+                    self.current_project_id
+                )
+                project_bookmark = project_bookmark_type is not None
+
+            if state:  # Checked
+                # Add personal bookmark
+                bookmark_type = 'both' if project_bookmark else 'personal'
+                self.db_manager.add_bookmark(
+                    source_name,
+                    external_id,
+                    self.user_id,
+                    bookmark_type,
+                    self.current_project_id if project_bookmark else None
+                )
+                self.status_bar.showMessage("Added to personal bookmarks")
+            else:  # Unchecked
+                if project_bookmark:
+                    # Change to project-only bookmark
+                    self.db_manager.add_bookmark(
+                        source_name,
+                        external_id,
+                        self.user_id,
+                        'project',
+                        self.current_project_id
+                    )
+                else:
+                    # Remove personal bookmark
+                    self.db_manager.remove_bookmark(
+                        source_name,
+                        external_id,
+                        self.user_id
+                    )
+                self.status_bar.showMessage("Removed from personal bookmarks")
+
+        except Exception as e:
+            print(f"Error toggling personal bookmark: {e}")
+            traceback.print_exc()
+            self.status_bar.showMessage("Error updating bookmark")
+
+    def _toggle_project_bookmark(self, state):
+        """Toggle project bookmark for the current publication."""
+        if not self.current_publication or not self.current_project_id:
+            return
+
+        source_name = self.current_publication.get('source_name')
+        external_id = self.current_publication.get('external_id')
+
+        if not source_name or not external_id:
+            return
+
+        try:
+            # Check if there's also a personal bookmark
+            personal_bookmark_type = self.db_manager.is_bookmarked(
+                source_name,
+                external_id,
+                self.user_id
+            )
+            personal_bookmark = personal_bookmark_type is not None and personal_bookmark_type != 'project'
+
+            if state:  # Checked
+                # Add project bookmark
+                bookmark_type = 'both' if personal_bookmark else 'project'
+                self.db_manager.add_bookmark(
+                    source_name,
+                    external_id,
+                    self.user_id,
+                    bookmark_type,
+                    self.current_project_id
+                )
+                self.status_bar.showMessage("Added to project bookmarks")
+            else:  # Unchecked
+                if personal_bookmark:
+                    # Change to personal-only bookmark
+                    self.db_manager.add_bookmark(
+                        source_name,
+                        external_id,
+                        self.user_id,
+                        'personal'
+                    )
+                else:
+                    # Remove project bookmark
+                    self.db_manager.remove_bookmark(
+                        source_name,
+                        external_id,
+                        self.user_id,
+                        self.current_project_id
+                    )
+                self.status_bar.showMessage("Removed from project bookmarks")
+
+        except Exception as e:
+            print(f"Error toggling project bookmark: {e}")
+            traceback.print_exc()
+            self.status_bar.showMessage("Error updating bookmark")
+
+    def set_current_project(self, project_id):
+        """Set the current project ID for project bookmarks."""
+        self.current_project_id = project_id
+
+        # Update project bookmark checkbox state
+        self.project_bookmark_cb.setEnabled(project_id is not None)
+
+        # If a publication is selected, check its bookmark status
+        if self.current_publication:
+            self._check_bookmark_status()
+
+    def _perform_bookmarked_search(self, filter_text=None):
+        """Perform a search for bookmarked publications."""
+        # Create a worker for the bookmarked search
+        worker = BookmarkedSearchWorker(
+            db_manager=self.db_manager,
+            user_id=self.user_id,
+            project_id=self.current_project_id,
+            filter_text=filter_text,
+            limit=self.search_settings.get('max_results', 20)
+        )
+
+        # Connect signals
+        worker.signals.result.connect(self._handle_bookmarked_search_results)
+        worker.signals.error.connect(self._handle_bookmarked_search_error)
+
+        # Execute the worker
+        self.threadpool.start(worker)
+
+    def _handle_bookmarked_search_results(self, publications):
+        """Handle the results from bookmarked search."""
+        # Store the search query for reference
+        self.last_search_query = "bookmarked"
+        self.last_search_text = self.search_input.text().strip()
+
+        # Display the results
+        self._display_search_results(publications)
+
+    def _handle_bookmarked_search_error(self, error_msg, traceback_str):
+        """Handle errors from the bookmarked search worker."""
+        self.publication_list.clear()
+        self.publication_list.addItem(f"Search Error: {error_msg}")
+        print(f"Bookmarked search error: {error_msg}\n{traceback_str}")
+
     def close_database(self):
         """Close the database connections."""
         if hasattr(self, 'db_manager'):
@@ -1468,6 +1725,94 @@ class RerankerWorker(QRunnable):
             # Get the traceback
             import traceback
             trace = traceback.format_exc()
+
+            # Emit the error
+            self.signals.error.emit(str(e), trace)
+
+        finally:
+            # Always emit finished signal
+            self.signals.finished.emit()
+
+
+class BookmarkedSearchWorker(QRunnable):
+    """
+    Worker thread for searching bookmarked publications.
+    """
+
+    def __init__(self, db_manager, user_id, project_id=None, filter_text=None, limit=20, offset=0):
+        """
+        Initialize the worker.
+
+        Args:
+            db_manager: Database manager instance
+            user_id: User ID
+            project_id: Project ID (optional)
+            filter_text: Text to filter results (optional)
+            limit: Maximum number of results to return
+            offset: Offset for pagination
+        """
+        super().__init__()
+        self.db_manager = db_manager
+        self.user_id = user_id
+        self.project_id = project_id
+        self.filter_text = filter_text
+        self.limit = limit
+        self.offset = offset
+        self.signals = WorkerSignals()
+
+    @Slot()
+    def run(self):
+        """
+        Perform the bookmarked search.
+        """
+        try:
+            print(f"BookmarkedSearchWorker: Starting search for user {self.user_id}")
+            if self.project_id:
+                print(f"BookmarkedSearchWorker: Project filter: {self.project_id}")
+            if self.filter_text:
+                print(f"BookmarkedSearchWorker: Text filter: {self.filter_text}")
+
+            # Get bookmarked publications
+            publications = self.db_manager.get_bookmarked_documents(
+                user_id=self.user_id,
+                project_id=self.project_id,
+                limit=self.limit,
+                offset=self.offset
+            )
+
+            # If filter text is provided, filter the results
+            if self.filter_text and publications:
+                filtered_publications = []
+                filter_terms = [term.strip().lower() for term in self.filter_text.split(',')]
+
+                for pub in publications:
+                    # Check if any filter term is in the title, abstract, or authors
+                    title = pub.get('title', '').lower()
+                    abstract = pub.get('abstract', '').lower()
+                    authors = ' '.join(pub.get('authors', [])).lower()
+
+                    if any(term in title or term in abstract or term in authors for term in filter_terms):
+                        filtered_publications.append(pub)
+
+                publications = filtered_publications
+
+            # Check if we got any results
+            if publications:
+                print(f"BookmarkedSearchWorker: Search completed, found {len(publications)} results")
+                # Emit the result
+                self.signals.result.emit(publications)
+            else:
+                print("BookmarkedSearchWorker: Search completed, no results found")
+                # Emit an empty result set
+                self.signals.result.emit([])
+
+        except Exception as e:
+            # Get the traceback
+            import traceback
+            trace = traceback.format_exc()
+
+            print(f"BookmarkedSearchWorker: Error during search: {e}")
+            print(trace)
 
             # Emit the error
             self.signals.error.emit(str(e), trace)

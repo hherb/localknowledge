@@ -38,7 +38,7 @@ class LoginDialog(QDialog):
         self.setMinimumWidth(400)
 
         # Set window icon and store path for later use
-        self.icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "icons", "rwb_medium_icon.png")
+        self.icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "icons", "enthusiasticrobo_medium.png")
         self.setWindowIcon(QIcon(self.icon_path))
 
         self.setup_ui()

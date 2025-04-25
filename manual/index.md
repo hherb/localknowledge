@@ -25,6 +25,7 @@ This manual provides comprehensive documentation for developers working with the
 3. [QA Embeddings](qaembeddings.md)
 4. [Keywords Extraction](keywords.md)
 5. [Chunking](chunking.md)
+6. [Bookmarking System](bookmarks.md)
 
 ### Development
 
