@@ -9,15 +9,19 @@ from typing import Dict, List, Optional, Any
 import sys
 import traceback
 
-from PySide6.QtCore import Qt, Signal, Slot, QUrl, QSize, QPointF, QObject, QRunnable, QThreadPool
-from PySide6.QtGui import QColor, QFont
+from PySide6.QtCore import Qt, Signal, Slot, QUrl, QSize, QPointF, QObject, QRunnable, QThreadPool, QRect
+from PySide6.QtGui import QColor, QFont, QIcon, QPainter
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLineEdit,
     QPushButton, QSplitter, QListWidget, QListWidgetItem,
     QTabWidget, QLabel, QMessageBox, QApplication, QTextBrowser, QTextEdit,
     QFrame, QComboBox, QCheckBox, QToolBar, QMainWindow, QStatusBar,
-    QDialog, QDialogButtonBox, QSizePolicy, QScrollArea
+    QDialog, QDialogButtonBox, QSizePolicy, QScrollArea, QStyledItemDelegate, QStyle
 )
+
+# Path to icons
+PUBMED_ICON_PATH = "localknowledge/ui/icons/pubmed_tag.png"
+MEDRXIV_ICON_PATH = "localknowledge/ui/icons/medrxiv_tag.png"
 from PySide6.QtWebEngineWidgets import QWebEngineView
 # Import our custom PDFViewer widget
 from localknowledge.ui.pdfviewer import PDFViewer
@@ -33,6 +37,123 @@ from localknowledge.db.document import DocumentDatabaseManager
 from localknowledge.db.reading_tracker import ReadingTrackerManager
 from localknowledge.db.reading_suggestions import ReadingSuggestionsManager
 from localknowledge.document import DocumentClient
+
+
+class SummaryItemDelegate(QStyledItemDelegate):
+    """Custom delegate for rendering summary items with source icons."""
+
+    def __init__(self, parent=None):
+        """Initialize the delegate."""
+        super().__init__(parent)
+        # Load icons
+        self.pubmed_icon = QIcon(PUBMED_ICON_PATH)
+        self.medrxiv_icon = QIcon(MEDRXIV_ICON_PATH)
+
+    def paint(self, painter, option, index):
+        """
+        Paint the item with custom rendering.
+
+        Args:
+            painter: QPainter to use for drawing
+            option: Style options for the item
+            index: Model index of the item
+        """
+        # Get the item data directly from the model
+        item = index.model().itemFromIndex(index) if hasattr(index.model(), 'itemFromIndex') else None
+
+        # If we can't get the item directly, try to get it from the list widget
+        if not item or not isinstance(item, SummaryItem):
+            # Try to get the list widget and the item from it
+            list_widget = self.parent()
+            if isinstance(list_widget, QListWidget):
+                item = list_widget.item(index.row())
+
+            # If we still don't have a valid item, fall back to default rendering
+            if not item or not isinstance(item, SummaryItem):
+                super().paint(painter, option, index)
+                return
+
+        # Save painter state
+        painter.save()
+
+        # Draw selection background if selected
+        if option.state & QStyle.State_Selected:
+            painter.fillRect(option.rect, option.palette.highlight())
+            painter.setPen(option.palette.highlightedText().color())
+        else:
+            painter.setPen(option.palette.text().color())
+
+        # Calculate icon and text positions
+        rect = option.rect
+        icon_size = QSize(16, 16)  # Size of the source icon
+
+        # Draw source icon if available
+        source_id = item.document.get('source_id')
+        icon_rect = QRect(rect.left() + 4, rect.top() + (rect.height() - icon_size.height()) // 2,
+                         icon_size.width(), icon_size.height())
+
+        if source_id == 1:  # PubMed
+            self.pubmed_icon.paint(painter, icon_rect)
+        elif source_id == 2:  # medRxiv
+            self.medrxiv_icon.paint(painter, icon_rect)
+
+        # Calculate text position (after the icon)
+        text_left = icon_rect.right() + 8
+
+        # Get the document data
+        title = item.document.get('title', 'No Title')
+        date = item.document.get('publication_date', '')
+        source = item.document.get('source_name', '').capitalize()
+
+        # Add suggestion strength indicator if available
+        suggestion_indicator = ""
+        if item.suggestion:
+            strength = item.suggestion.get('recommendation_strength', 0)
+            # Use stars to indicate strength (★)
+            stars = "★" * strength
+            suggestion_indicator = f" • Recommended: {stars}"
+
+        # Format title - handle long titles
+        if len(title) > 80:
+            title = title[:77] + "..."
+
+        # Draw the title text
+        title_rect = QRect(text_left, rect.top() + 4, rect.width() - text_left - 4, rect.height() // 2)
+
+        # Use bold font for the title if unread
+        font = painter.font()
+        if not item.is_read:
+            font.setBold(True)
+            painter.setFont(font)
+
+        painter.drawText(title_rect, Qt.AlignLeft | Qt.AlignTop, title)
+
+        # Reset font for metadata
+        font.setBold(False)
+        painter.setFont(font)
+
+        # Draw the metadata text
+        meta_text = f"{date} • Source: {source}{suggestion_indicator}"
+        meta_rect = QRect(text_left, rect.top() + rect.height() // 2, rect.width() - text_left - 4, rect.height() // 2)
+        painter.drawText(meta_rect, Qt.AlignLeft | Qt.AlignTop, meta_text)
+
+        # Restore painter state
+        painter.restore()
+
+    def sizeHint(self, option, index):
+        """
+        Get the size hint for the item.
+
+        Args:
+            option: Style options for the item
+            index: Model index of the item
+
+        Returns:
+            QSize with the recommended size
+        """
+        size = super().sizeHint(option, index)
+        # Make items a bit taller to accommodate icons and two lines of text
+        return QSize(size.width(), max(size.height(), 44))
 
 
 class SummaryItem(QListWidgetItem):
@@ -251,6 +372,14 @@ class NewsBrowser(QWidget):
         self.summary_list = QListWidget()
         self.summary_list.currentItemChanged.connect(self._on_summary_selected)
         self.summary_list.setAlternatingRowColors(True)
+
+        # Set custom delegate for rendering items with source icons
+        self.item_delegate = SummaryItemDelegate(self.summary_list)
+        self.summary_list.setItemDelegate(self.item_delegate)
+
+        # Set item height to accommodate icons and tags
+        self.summary_list.setIconSize(QSize(16, 16))
+
         self.summary_list.setStyleSheet("""
             QListWidget {
                 padding: 5px;

@@ -10,7 +10,7 @@ import sys
 import traceback
 
 from PySide6.QtCore import Qt, Signal, Slot, QUrl, QSize, QPointF, QObject, QRunnable, QThreadPool, QRect
-from PySide6.QtGui import QColor, QFont, QPainter, QTextDocument, QAbstractTextDocumentLayout
+from PySide6.QtGui import QColor, QFont, QPainter, QTextDocument, QAbstractTextDocumentLayout, QIcon
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLineEdit,
     QPushButton, QSplitter, QListWidget, QListWidgetItem,
@@ -18,6 +18,10 @@ from PySide6.QtWidgets import (
     QScrollArea, QStatusBar, QStyledItemDelegate, QStyle,
     QComboBox, QToolButton, QDialog, QFrame
 )
+
+# Path to icons
+PUBMED_ICON_PATH = "localknowledge/ui/icons/pubmed_tag.png"
+MEDRXIV_ICON_PATH = "localknowledge/ui/icons/medrxiv_tag.png"
 from PySide6.QtWebEngineWidgets import QWebEngineView
 import pymupdf4llm
 
@@ -56,10 +60,32 @@ except ImportError:
 
 
 class PublicationItemDelegate(QStyledItemDelegate):
-    """Custom delegate for rendering publication items with bold titles."""
+    """Custom delegate for rendering publication items with source icons and bold titles."""
+
+    def __init__(self, parent=None):
+        """Initialize the delegate."""
+        super().__init__(parent)
+        # Load icons
+        self.pubmed_icon = QIcon(PUBMED_ICON_PATH)
+        self.medrxiv_icon = QIcon(MEDRXIV_ICON_PATH)
 
     def paint(self, painter, option, index):
         """Paint the item with custom formatting."""
+        # Get the item data directly from the model
+        item = index.model().itemFromIndex(index) if hasattr(index.model(), 'itemFromIndex') else None
+
+        # If we can't get the item directly, try to get it from the list widget
+        if not item or not isinstance(item, PublicationItem):
+            # Try to get the list widget and the item from it
+            list_widget = self.parent()
+            if isinstance(list_widget, QListWidget):
+                item = list_widget.item(index.row())
+
+            # If we still don't have a valid item, fall back to default rendering
+            if not item or not isinstance(item, PublicationItem):
+                super().paint(painter, option, index)
+                return
+
         # Get the item data
         item_data = index.data()
         if not item_data:
@@ -87,15 +113,31 @@ class PublicationItemDelegate(QStyledItemDelegate):
         else:
             painter.setPen(option.palette.text().color())
 
-        # Calculate text rectangles
+        # Calculate icon and text positions
         rect = option.rect.adjusted(5, 5, -5, -5)  # Add some padding
+        icon_size = QSize(16, 16)  # Size of the source icon
+
+        # Draw source icon if available
+        source_id = item.publication.get('source_id')
+        icon_rect = QRect(rect.left(), rect.top() + (rect.height() - icon_size.height()) // 2,
+                         icon_size.width(), icon_size.height())
+
+        if source_id == 1:  # PubMed
+            self.pubmed_icon.paint(painter, icon_rect)
+        elif source_id == 2:  # medRxiv
+            self.medrxiv_icon.paint(painter, icon_rect)
+
+        # Calculate text position (after the icon)
+        text_left = icon_rect.right() + 8
+
+        # Calculate text rectangles with adjusted left position
         title_height = painter.fontMetrics().height() + 2
         authors_height = painter.fontMetrics().height() + 2
         date_height = painter.fontMetrics().height()
 
-        title_rect = QRect(rect.left(), rect.top(), rect.width(), title_height)
-        authors_rect = QRect(rect.left(), rect.top() + title_height, rect.width(), authors_height)
-        date_rect = QRect(rect.left(), rect.top() + title_height + authors_height, rect.width(), date_height)
+        title_rect = QRect(text_left, rect.top(), rect.width() - (text_left - rect.left()), title_height)
+        authors_rect = QRect(text_left, rect.top() + title_height, rect.width() - (text_left - rect.left()), authors_height)
+        date_rect = QRect(text_left, rect.top() + title_height + authors_height, rect.width() - (text_left - rect.left()), date_height)
 
         # Draw title with bold font
         bold_font = painter.font()
@@ -112,6 +154,21 @@ class PublicationItemDelegate(QStyledItemDelegate):
 
         # Restore painter state
         painter.restore()
+
+    def sizeHint(self, option, index):
+        """
+        Get the size hint for the item.
+
+        Args:
+            option: Style options for the item
+            index: Model index of the item
+
+        Returns:
+            QSize with the recommended size
+        """
+        size = super().sizeHint(option, index)
+        # Make items a bit taller to accommodate icons
+        return QSize(size.width(), max(size.height(), 60))
 
 
 class PublicationItem(QListWidgetItem):
@@ -308,9 +365,12 @@ class KnowledgeBrowser(QWidget):
         self.publication_list.currentItemChanged.connect(self._on_publication_selected)
         self.publication_list.setAlternatingRowColors(True)
 
-        # Set custom delegate for rendering items with bold titles
-        self.publication_item_delegate = PublicationItemDelegate()
+        # Set custom delegate for rendering items with source icons and bold titles
+        self.publication_item_delegate = PublicationItemDelegate(self.publication_list)
         self.publication_list.setItemDelegate(self.publication_item_delegate)
+
+        # Set item height to accommodate icons
+        self.publication_list.setIconSize(QSize(16, 16))
 
         self.publication_list.setStyleSheet("""
             QListWidget {
