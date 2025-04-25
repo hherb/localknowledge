@@ -528,6 +528,7 @@ class MainWindow(QMainWindow):
     def handle_login(self):
         """Show login dialog and handle authentication."""
         from localknowledge.ui.login_dialog import LoginDialog
+        from localknowledge.context import get_context, CURRENT_USER
 
         dialog = LoginDialog(self)
 
@@ -535,8 +536,8 @@ class MainWindow(QMainWindow):
         dialog.loginSuccessful.connect(self.on_login_successful)
 
         if dialog.exec() == QDialog.Accepted:
-            # Login successful, load plugins
-            self.current_user = dialog.get_current_user()
+            # Login successful, get user from context
+            self.current_user = get_context(CURRENT_USER)
 
             # Update window title to show logged-in user
             if self.current_user:
@@ -551,8 +552,12 @@ class MainWindow(QMainWindow):
     @Slot(dict)
     def on_login_successful(self, user_data):
         """Handle successful login."""
-        self.current_user = user_data
-        self.statusBar().showMessage(f"Welcome, {user_data['firstname']} {user_data['surname']}")
+        from localknowledge.context import get_context, CURRENT_USER
+
+        # Get user from context (should be set by login dialog)
+        self.current_user = get_context(CURRENT_USER)
+        if self.current_user:
+            self.statusBar().showMessage(f"Welcome, {self.current_user['firstname']} {self.current_user['surname']}")
 
         # Restore window state after login if not already done
         if not self.window_state_restored:
@@ -1224,7 +1229,13 @@ class MainWindow(QMainWindow):
 
     def logout(self):
         """Log out the current user and show the login dialog."""
-        # Clear current user
+        from localknowledge.context import set_context, CURRENT_USER, CURRENT_PROJECT
+
+        # Clear current user in context
+        set_context(CURRENT_USER, None)
+        set_context(CURRENT_PROJECT, None)
+
+        # Clear current user in main window
         self.current_user = None
 
         # Close all plugins

@@ -29,30 +29,40 @@ try:
 except ImportError:
     MARKDOWN_AVAILABLE = False
 
-from localknowledge.db.medrxiv import MedRxivDatabaseManager
+from localknowledge.db.document import DocumentDatabaseManager
 from localknowledge.db.reading_tracker import ReadingTrackerManager
+from localknowledge.db.reading_suggestions import ReadingSuggestionsManager
+from localknowledge.document import DocumentClient
 
 
 class SummaryItem(QListWidgetItem):
-    """List widget item to display publication summary details with read/unread status."""
+    """List widget item to display document details with read/unread status and suggestion info."""
 
-    def __init__(self, publication: Dict[str, Any], summary: Dict[str, Any], is_read: bool = False):
+    def __init__(self, document: Dict[str, Any], is_read: bool = False, suggestion: Optional[Dict[str, Any]] = None):
         """
-        Initialize a summary list item.
+        Initialize a document list item.
 
         Args:
-            publication: Dictionary containing publication details
-            summary: Dictionary containing summary details
-            is_read: Whether the summary has been read
+            document: Dictionary containing document details
+            is_read: Whether the document has been read
+            suggestion: Optional dictionary with suggestion details
         """
-        self.publication = publication
-        self.summary = summary
+        self.document = document
         self.is_read = is_read
+        self.suggestion = suggestion
 
         # Get display data
-        title = publication.get('title', 'No Title')
-        date = publication.get('date_posted', '')
-        evaluation = "✓" if summary.get('evaluation', False) else "✗"
+        title = document.get('title', 'No Title')
+        date = document.get('publication_date', '')
+        source = document.get('source_name', '').capitalize()
+
+        # Add suggestion strength indicator if available
+        suggestion_indicator = ""
+        if suggestion:
+            strength = suggestion.get('recommendation_strength', 0)
+            # Use stars to indicate strength (★)
+            stars = "★" * strength
+            suggestion_indicator = f" • Recommended: {stars}"
 
         # Format title with HTML - handle long titles
         if len(title) > 80:
@@ -60,9 +70,9 @@ class SummaryItem(QListWidgetItem):
 
         # Set display text based on read status
         if not is_read:
-            display_text = f"<b>{title}</b>\n{date} • Relevance: {evaluation}"
+            display_text = f"<b>{title}</b>\n{date} • Source: {source}{suggestion_indicator}"
         else:
-            display_text = f"{title}\n{date} • Relevance: {evaluation}"
+            display_text = f"{title}\n{date} • Source: {source}{suggestion_indicator}"
 
         # Initialize the item with display text
         super().__init__(display_text)
@@ -70,10 +80,18 @@ class SummaryItem(QListWidgetItem):
         # Make the item slightly taller for better readability
         self.setSizeHint(QSize(self.sizeHint().width(), self.sizeHint().height() + 10))
 
-        # Set tooltip to show full title on hover
-        self.setToolTip(f"{publication.get('title', 'No Title')}")
+        # Set tooltip to show full title and suggestion details on hover
+        tooltip = f"{document.get('title', 'No Title')}"
+        if suggestion:
+            evaluator = suggestion.get('evaluator_name', 'Unknown')
+            comment = suggestion.get('comment', '')
+            if comment:
+                tooltip += f"\n\nRecommended by: {evaluator}\nComment: {comment}"
+            else:
+                tooltip += f"\n\nRecommended by: {evaluator}"
+        self.setToolTip(tooltip)
 
-        # Apply different styling based on read status
+        # Apply different styling based on read status and suggestion strength
         self.update_read_status(is_read)
 
     def update_read_status(self, is_read: bool = True):
@@ -85,13 +103,32 @@ class SummaryItem(QListWidgetItem):
         """
         self.is_read = is_read
 
-        # Apply different background color based on read status
+        # Get suggestion strength if available
+        suggestion_strength = 0
+        suggestion_indicator = ""
+        if self.suggestion:
+            suggestion_strength = self.suggestion.get('recommendation_strength', 0)
+            # Use stars to indicate strength (★)
+            stars = "★" * suggestion_strength
+            suggestion_indicator = f" • Recommended: {stars}"
+
+        # Apply different background color based on read status and suggestion strength
         if not is_read:
-            # Unread items are bold and have a light blue background
+            # Unread items are bold
             font = self.font()
             font.setBold(True)
             self.setFont(font)
-            self.setBackground(QColor(240, 248, 255))  # Light blue
+
+            # Apply background color based on suggestion strength
+            if suggestion_strength >= 4:
+                # Strong recommendations get a light green background
+                self.setBackground(QColor(230, 255, 230))  # Light green
+            elif suggestion_strength >= 2:
+                # Medium recommendations get a light yellow background
+                self.setBackground(QColor(255, 255, 230))  # Light yellow
+            else:
+                # No or weak recommendations get a light blue background
+                self.setBackground(QColor(240, 248, 255))  # Light blue
         else:
             # Read items have normal font and white background
             font = self.font()
@@ -100,23 +137,23 @@ class SummaryItem(QListWidgetItem):
             self.setBackground(QColor(255, 255, 255))  # White
 
         # Update the text to reflect read status - without using HTML tags
-        title = self.publication.get('title', 'No Title')
+        title = self.document.get('title', 'No Title')
         if len(title) > 80:
             title = title[:77] + "..."
 
-        date = self.publication.get('date_posted', '')
-        evaluation = "✓" if self.summary.get('evaluation', False) else "✗"
+        date = self.document.get('publication_date', '')
+        source = self.document.get('source_name', '').capitalize()
 
         # Don't use HTML tags in setText() since QListWidgetItem doesn't render HTML
         # The bold font is already set with setFont() above
-        self.setText(f"{title}\n{date} • Relevance: {evaluation}")
+        self.setText(f"{title}\n{date} • Source: {source}{suggestion_indicator}")
 
 
 class NewsBrowser(QWidget):
     """A PySide6 widget for browsing publication summaries like an email client."""
 
-    # Signal emitted when a publication is selected
-    summarySelected = Signal(dict, dict)
+    # Signal emitted when a document is selected
+    summarySelected = Signal(dict)
 
     def __init__(self, parent=None):
         """
@@ -127,11 +164,16 @@ class NewsBrowser(QWidget):
         """
         super().__init__(parent)
 
-        self.db_manager = MedRxivDatabaseManager()
+        self.db_manager = DocumentDatabaseManager()
+        self.doc_client = DocumentClient()
         # Initialize reading tracker for persistent read/unread status
         self.reading_tracker = ReadingTrackerManager()
-        self.current_publication = None
-        self.current_summary = None
+        # Initialize reading suggestions manager
+        self.suggestions_manager = ReadingSuggestionsManager()
+        self.current_document = None
+        self.current_suggestion = None
+        # Default user ID - in a real app, this would come from user authentication
+        self.user_id = 1
         self.pdf_base_dir = self._get_pdf_base_dir()
         self.read_summaries = set()  # Local cache of read summaries for performance
 
@@ -165,9 +207,11 @@ class NewsBrowser(QWidget):
         toolbar.addWidget(self.filter_label)
 
         self.filter_combo = QComboBox()
-        self.filter_combo.addItem("All Summaries")
+        self.filter_combo.addItem("All Documents")
         self.filter_combo.addItem("Unread Only")
-        self.filter_combo.addItem("Relevant Only")
+        self.filter_combo.addItem("Recommended")
+        self.filter_combo.addItem("MedRxiv Only")
+        self.filter_combo.addItem("PubMed Only")
         self.filter_combo.addItem("Emergency Medicine")
         self.filter_combo.addItem("Rural Medicine")
         self.filter_combo.addItem("AI in Medicine")
@@ -266,8 +310,29 @@ class NewsBrowser(QWidget):
         self.notes_btn = QPushButton("Edit Notes")
         self.notes_btn.clicked.connect(self._show_notes_dialog)
 
+        # Create recommendation feedback buttons
+        self.recommendation_group = QWidget()
+        recommendation_layout = QHBoxLayout(self.recommendation_group)
+        recommendation_layout.setContentsMargins(0, 0, 0, 0)
+
+        recommendation_label = QLabel("Recommendation:")
+        self.agree_btn = QPushButton("👍 Agree")
+        self.agree_btn.setToolTip("Agree with this recommendation")
+        self.agree_btn.clicked.connect(self._agree_with_recommendation)
+        self.agree_btn.setEnabled(False)  # Disabled by default
+
+        self.disagree_btn = QPushButton("👎 Disagree")
+        self.disagree_btn.setToolTip("Disagree with this recommendation")
+        self.disagree_btn.clicked.connect(self._disagree_with_recommendation)
+        self.disagree_btn.setEnabled(False)  # Disabled by default
+
+        recommendation_layout.addWidget(recommendation_label)
+        recommendation_layout.addWidget(self.agree_btn)
+        recommendation_layout.addWidget(self.disagree_btn)
+
         # Add to interaction panel
         interaction_panel_layout.addWidget(rating_group)
+        interaction_panel_layout.addWidget(self.recommendation_group)
         interaction_panel_layout.addStretch(1)
         interaction_panel_layout.addWidget(self.notes_btn)
 
@@ -344,222 +409,148 @@ class NewsBrowser(QWidget):
         return pdf_path
 
     def _load_summaries(self):
-        """Load publication summaries from the database."""
-        self.status_bar.showMessage("Loading summaries...")
+        """Load documents from the database."""
+        self.status_bar.showMessage("Loading documents...")
         self.summary_list.clear()
 
         # Refresh the read status cache from the database
         self._refresh_read_status_cache()
 
-        # Get all summaries with their publication data
-        # This assumes we have a method to get this combined data
         try:
             # Get the current filter
             filter_idx = self.filter_combo.currentIndex()
             filter_text = self.filter_combo.currentText()
 
-            if filter_idx == 0:  # All Summaries
-                summaries = self._get_all_summaries()
+            # Get documents based on filter
+            documents = []
+            suggestions_map = {}  # Map of document_id to suggestion
+
+            if filter_idx == 0:  # All Documents
+                # Get documents from all sources using search with empty query
+                documents = self.db_manager.search_documents("", limit=100)
+
+                # Get suggestions for these documents
+                if documents:
+                    doc_ids = [doc['id'] for doc in documents]
+                    self._load_suggestions_for_documents(doc_ids, suggestions_map)
+
             elif filter_idx == 1:  # Unread Only
-                summaries = self._get_all_summaries()
-                # Filter for unread using the read_summaries set
-                summaries = [s for s in summaries if s['summary']['id'] not in self.read_summaries]
-            elif filter_idx == 2:  # Relevant Only
-                summaries = self._get_relevant_summaries()
-            else:  # Filter by interest
-                interest = filter_text.lower()
-                summaries = self._get_summaries_by_interest(interest)
+                # Get all documents and filter for unread
+                all_docs = self.db_manager.search_documents("", limit=100)
+                # Filter for unread using the read_documents set
+                documents = [doc for doc in all_docs if doc['id'] not in self.read_summaries]
 
-            for summary_data in summaries:
-                publication = summary_data['publication']
-                summary = summary_data['summary']
+                # Get suggestions for these documents
+                if documents:
+                    doc_ids = [doc['id'] for doc in documents]
+                    self._load_suggestions_for_documents(doc_ids, suggestions_map)
 
-                # Check if this summary is in the read set (cached from database)
-                is_read = summary['id'] in self.read_summaries
+            elif filter_idx == 2:  # Recommended
+                # Get reading suggestions for the current user
+                suggestions = self.suggestions_manager.get_reading_suggestions(
+                    user_id=self.user_id,
+                    include_read=False,
+                    min_strength=1,
+                    limit=100
+                )
 
-                # Create list item
-                item = SummaryItem(publication, summary, is_read)
+                # Extract documents from suggestions
+                if suggestions:
+                    documents = []
+                    for suggestion in suggestions:
+                        # Create a document dictionary with all the fields from the suggestion
+                        doc = {k: v for k, v in suggestion.items() if k not in ['id', 'user_id', 'evaluator_id', 'recommendation_strength', 'confidence_level', 'comment', 'user_agreement', 'created_at', 'updated_at', 'evaluator_name']}
+                        documents.append(doc)
+
+                        # Store the suggestion in the map
+                        suggestions_map[doc['id']] = {
+                            'id': suggestion['id'],
+                            'recommendation_strength': suggestion['recommendation_strength'],
+                            'confidence_level': suggestion['confidence_level'],
+                            'comment': suggestion['comment'],
+                            'user_agreement': suggestion['user_agreement'],
+                            'evaluator_name': suggestion['evaluator_name']
+                        }
+
+            elif filter_idx == 3:  # MedRxiv Only
+                # Get documents from medrxiv source
+                source_id = self.db_manager.get_source_id('medrxiv')
+                if source_id:
+                    documents = self.db_manager.search_documents("", limit=100, source_id=source_id)
+
+                    # Get suggestions for these documents
+                    if documents:
+                        doc_ids = [doc['id'] for doc in documents]
+                        self._load_suggestions_for_documents(doc_ids, suggestions_map)
+                else:
+                    documents = []
+
+            elif filter_idx == 4:  # PubMed Only
+                # Get documents from pubmed source
+                source_id = self.db_manager.get_source_id('pubmed')
+                if source_id:
+                    documents = self.db_manager.search_documents("", limit=100, source_id=source_id)
+
+                    # Get suggestions for these documents
+                    if documents:
+                        doc_ids = [doc['id'] for doc in documents]
+                        self._load_suggestions_for_documents(doc_ids, suggestions_map)
+                else:
+                    documents = []
+            else:  # Filter by keyword search
+                # Use the filter text as a search query
+                documents = self.db_manager.search_documents(filter_text, limit=100)
+
+                # Get suggestions for these documents
+                if documents:
+                    doc_ids = [doc['id'] for doc in documents]
+                    self._load_suggestions_for_documents(doc_ids, suggestions_map)
+
+            # Add documents to the list
+            for document in documents:
+                # Check if this document is in the read set (cached from database)
+                is_read = document['id'] in self.read_summaries
+
+                # Get suggestion for this document if available
+                suggestion = suggestions_map.get(document['id'])
+
+                # Create list item with suggestion info
+                item = SummaryItem(document, is_read, suggestion)
                 self.summary_list.addItem(item)
 
-            if not summaries:
-                self.summary_list.addItem("No summaries found")
+            if not documents:
+                self.summary_list.addItem("No documents found")
 
-            self.status_bar.showMessage(f"Loaded {len(summaries)} summaries")
+            self.status_bar.showMessage(f"Loaded {len(documents)} documents")
 
         except Exception as e:
             self.status_bar.showMessage(f"Error: {str(e)}")
-            print(f"Error loading summaries: {str(e)}")
+            print(f"Error loading documents: {str(e)}")
             traceback.print_exc()
 
-    def _get_all_summaries(self):
-        """
-        Get all summaries with their publication data.
 
-        Returns:
-            List of dictionaries containing publication and summary data
-        """
-        # This is a custom query that joins the summaries and publications tables
-        query = """
-        SELECT
-            s.id, s.summary, s.evaluation, s.reason, s.interests, s.created_at,
-            p.doi, p.title, p.authors, p.date_posted, p.category, p.pdf_url, p.local_pdf_path
-        FROM
-            summaries s
-        JOIN
-            preprints p ON s.publication_id = p.doi
-        ORDER BY
-            s.created_at DESC
-        """
-
-        results = self.db_manager.execute(query)
-
-        # Format the results into the expected structure
-        formatted_results = []
-        for row in results:
-            formatted_results.append({
-                'publication': {
-                    'doi': row['doi'],
-                    'title': row['title'],
-                    'authors': row['authors'],
-                    'date_posted': row['date_posted'],
-                    'category': row['category'],
-                    'pdf_url': row['pdf_url'],
-                    'local_pdf_path': row['local_pdf_path']
-                },
-                'summary': {
-                    'id': row['id'],
-                    'summary': row['summary'],
-                    'evaluation': row['evaluation'],
-                    'reason': row['reason'],
-                    'interests': row['interests'],
-                    'created_at': row['created_at']
-                }
-            })
-
-        return formatted_results
-
-    def _get_relevant_summaries(self):
-        """
-        Get summaries that were evaluated as relevant.
-
-        Returns:
-            List of dictionaries containing publication and summary data
-        """
-        # This is a custom query that joins the summaries and publications tables
-        query = """
-        SELECT
-            s.id, s.summary, s.evaluation, s.reason, s.interests, s.created_at,
-            p.doi, p.title, p.authors, p.date_posted, p.category, p.pdf_url, p.local_pdf_path
-        FROM
-            summaries s
-        JOIN
-            preprints p ON s.publication_id = p.doi
-        WHERE
-            s.evaluation = true
-        ORDER BY
-            s.created_at DESC
-        """
-
-        results = self.db_manager.execute(query)
-
-        # Format the results into the expected structure
-        formatted_results = []
-        for row in results:
-            formatted_results.append({
-                'publication': {
-                    'doi': row['doi'],
-                    'title': row['title'],
-                    'authors': row['authors'],
-                    'date_posted': row['date_posted'],
-                    'category': row['category'],
-                    'pdf_url': row['pdf_url'],
-                    'local_pdf_path': row['local_pdf_path']
-                },
-                'summary': {
-                    'id': row['id'],
-                    'summary': row['summary'],
-                    'evaluation': row['evaluation'],
-                    'reason': row['reason'],
-                    'interests': row['interests'],
-                    'created_at': row['created_at']
-                }
-            })
-
-        return formatted_results
-
-    def _get_summaries_by_interest(self, interest):
-        """
-        Get summaries that match a specific interest.
-
-        Args:
-            interest: Interest string to match
-
-        Returns:
-            List of dictionaries containing publication and summary data
-        """
-        # This is a custom query that joins the summaries and publications tables
-        query = """
-        SELECT
-            s.id, s.summary, s.evaluation, s.reason, s.interests, s.created_at,
-            p.doi, p.title, p.authors, p.date_posted, p.category, p.pdf_url, p.local_pdf_path
-        FROM
-            summaries s
-        JOIN
-            preprints p ON s.publication_id = p.doi
-        WHERE
-            %s = ANY(s.interests)
-        ORDER BY
-            s.created_at DESC
-        """
-
-        results = self.db_manager.execute(query, (interest,))
-
-        # Format the results into the expected structure
-        formatted_results = []
-        for row in results:
-            formatted_results.append({
-                'publication': {
-                    'doi': row['doi'],
-                    'title': row['title'],
-                    'authors': row['authors'],
-                    'date_posted': row['date_posted'],
-                    'category': row['category'],
-                    'pdf_url': row['pdf_url'],
-                    'local_pdf_path': row['local_pdf_path']
-                },
-                'summary': {
-                    'id': row['id'],
-                    'summary': row['summary'],
-                    'evaluation': row['evaluation'],
-                    'reason': row['reason'],
-                    'interests': row['interests'],
-                    'created_at': row['created_at']
-                }
-            })
-
-        return formatted_results
 
     @Slot(QListWidgetItem, QListWidgetItem)
-    def _on_summary_selected(self, current, previous):
+    def _on_summary_selected(self, current, _):
         """
-        Handle summary selection in the list.
+        Handle document selection in the list.
 
         Args:
             current: Currently selected item
-            previous: Previously selected item
+            _: Previously selected item (unused)
         """
         if not current or not isinstance(current, SummaryItem):
             # Clear the summary view
             self.summary_view.clear()
-            self.pdf_document.close()
+            if hasattr(self, 'pdf_viewer'):
+                self.pdf_viewer.close_pdf()
             return
 
-        # Get the summary and publication data
-        self.current_publication = current.publication
-        self.current_summary = current.summary
+        # Get the document data
+        self.current_document = current.document
 
-        # Emit the signal with the selected publication and summary
-        self.summarySelected.emit(self.current_publication, self.current_summary)
+        # Emit the signal with the selected document
+        self.summarySelected.emit(self.current_document)
 
         # Mark as read when selected
         self._mark_current_as_read()
@@ -567,53 +558,84 @@ class NewsBrowser(QWidget):
         # Load the reading record to get rating and notes
         self._load_reading_record()
 
-        # Display the summary in the summary view
+        # Display the document in the summary view
         self._display_summary()
 
         # Load the PDF if available
         self._load_pdf()
 
     def _display_summary(self):
-        """Display the selected summary in the summary view."""
-        if not self.current_summary or not self.current_publication:
+        """Display the selected document in the summary view."""
+        if not self.current_document:
             return
 
-        # Get summary data
-        title = self.current_publication.get('title', 'No Title')
-        authors = self.current_publication.get('authors', 'Unknown Authors')
-        date_posted = self.current_publication.get('date_posted', '')
-        category = self.current_publication.get('category', '')
-        doi = self.current_publication.get('doi', '')
+        # Get document data
+        title = self.current_document.get('title', 'No Title')
+        authors = self.current_document.get('authors', [])
+        authors_text = ', '.join(authors) if authors else 'Unknown Authors'
+        publication_date = self.current_document.get('publication_date', '')
+        source = self.current_document.get('source_name', '').capitalize()
+        doi = self.current_document.get('doi', '')
+        abstract = self.current_document.get('abstract', 'No abstract available')
+        keywords = self.current_document.get('keywords', [])
+        journal = self.current_document.get('journal', '')
+        url = self.current_document.get('url', '')
 
-        summary_text = self.current_summary.get('summary', 'No summary available')
-        evaluation = self.current_summary.get('evaluation', False)
-        reason = self.current_summary.get('reason', '')
-        interests = self.current_summary.get('interests', [])
-        created_at = self.current_summary.get('created_at', '')
+        # Format keywords as a list
+        keywords_text = ', '.join(keywords) if keywords else 'None'
 
-        # Format evaluation as text
-        evaluation_text = 'Relevant' if evaluation else 'Not Relevant'
-        evaluation_color = 'green' if evaluation else 'red'
+        # Get suggestion for this document if available
+        document_id = self.current_document.get('id')
+        self.current_suggestion = None
+        if document_id:
+            self.current_suggestion = self.suggestions_manager.get_suggestion_by_document(document_id, self.user_id)
 
-        # Format interests as a list
-        interests_text = ', '.join(interests) if interests else 'None'
+        # Add suggestion information if available
+        suggestion_html = ""
+        if self.current_suggestion:
+            strength = self.current_suggestion.get('recommendation_strength', 0)
+            evaluator = self.current_suggestion.get('evaluator_name', 'Unknown')
+            comment = self.current_suggestion.get('comment', '')
+            confidence = self.current_suggestion.get('confidence_level', 0)
+            user_agreement = self.current_suggestion.get('user_agreement')
 
-        # Format the summary as HTML
+            # Format stars for strength
+            stars = "★" * strength + "☆" * (5 - strength)
+
+            # Format user agreement
+            agreement_text = ""
+            if user_agreement is True:
+                agreement_text = "<span style='color: green;'>You agreed with this recommendation</span>"
+            elif user_agreement is False:
+                agreement_text = "<span style='color: red;'>You disagreed with this recommendation</span>"
+
+            suggestion_html = f"""
+            <div style="background-color: #f8f8f8; padding: 10px; border-radius: 5px; margin-bottom: 15px;">
+                <h3>Recommendation</h3>
+                <p><b>Strength:</b> {stars} ({strength}/5)</p>
+                <p><b>Recommended by:</b> {evaluator}</p>
+                <p><b>Confidence:</b> {confidence:.2f if confidence else 'N/A'}</p>
+                {f"<p><b>Comment:</b> {comment}</p>" if comment else ""}
+                <p>{agreement_text}</p>
+            </div>
+            """
+
+        # Format the document as HTML
         html_content = f"""
         <div style="padding: 10px;">
             <h2>{title}</h2>
-            <p><b>Authors:</b> {authors}</p>
-            <p><b>Date Posted:</b> {date_posted}</p>
-            <p><b>Category:</b> {category}</p>
+            {suggestion_html}
+            <p><b>Authors:</b> {authors_text}</p>
+            <p><b>Date:</b> {publication_date}</p>
+            <p><b>Source:</b> {source}</p>
+            <p><b>Journal:</b> {journal}</p>
             <p><b>DOI:</b> <a href="https://doi.org/{doi}">{doi}</a></p>
+            <p><b>URL:</b> <a href="{url}">{url}</a></p>
             <hr>
-            <p><b>Evaluation:</b> <span style="color: {evaluation_color};">{evaluation_text}</span></p>
-            <p><b>Reason:</b> {reason}</p>
-            <p><b>Relevant Topics:</b> {interests_text}</p>
-            <p><b>Summary Generated:</b> {created_at}</p>
+            <p><b>Keywords:</b> {keywords_text}</p>
             <hr>
-            <h3>Summary</h3>
-            <p>{summary_text}</p>
+            <h3>Abstract</h3>
+            <p>{abstract}</p>
         </div>
         """
 
@@ -621,17 +643,18 @@ class NewsBrowser(QWidget):
         self.summary_view.setHtml(html_content)
 
     def _load_pdf(self):
-        """Load the selected publication's PDF into the PDF view."""
-        if not self.current_publication:
+        """Load the selected document's PDF into the PDF view."""
+        if not self.current_document:
             return
 
         # Get the local PDF path
-        local_pdf_path = self.current_publication.get('local_pdf_path', '')
+        local_pdf_path = self.current_document.get('local_file_path', '')
+        pdf_filename = self.current_document.get('pdf_filename', '')
 
         # Try to load PDF
         pdf_found = False
 
-        # First case: We have a local_pdf_path in the database
+        # First case: We have a local_file_path in the document
         if local_pdf_path:
             # Convert to string and ensure proper path handling
             if isinstance(self.pdf_base_dir, Path):
@@ -650,9 +673,28 @@ class NewsBrowser(QWidget):
                 else:
                     print(f"Error loading PDF: {pdf_path}")
 
-        # Second case: No path in database, but we have DOI - try to find by filename pattern
-        if not pdf_found and 'doi' in self.current_publication:
-            doi = self.current_publication['doi']
+        # Second case: We have a pdf_filename in the document
+        if not pdf_found and pdf_filename:
+            # Convert to string and ensure proper path handling
+            if isinstance(self.pdf_base_dir, Path):
+                full_pdf_path = self.pdf_base_dir / pdf_filename
+            else:
+                # If pdf_base_dir is a string, create a path object
+                full_pdf_path = Path(os.path.join(self.pdf_base_dir, pdf_filename))
+
+            if full_pdf_path.exists():
+                # Load the PDF using our PDFViewer widget
+                pdf_path = str(full_pdf_path)
+                if self.pdf_viewer.load_pdf(pdf_path):
+                    # Store the current PDF path
+                    self.current_pdf_path = pdf_path
+                    pdf_found = True
+                else:
+                    print(f"Error loading PDF: {pdf_path}")
+
+        # Third case: No path in database, but we have DOI - try to find by filename pattern
+        if not pdf_found and 'doi' in self.current_document and self.current_document['doi']:
+            doi = self.current_document['doi']
             print(f"Trying to find PDF by DOI: {doi}")
 
             # Format variations to try
@@ -680,12 +722,18 @@ class NewsBrowser(QWidget):
 
                     # Update the database with the correct path
                     try:
-                        self.db_manager.update_pdf_path(
-                            doi,
-                            filename,
-                            self.current_publication.get('full_text', '')
-                        )
-                        print(f"Updated database with path: {filename}")
+                        # Get source_id and document_id for the update
+                        source_name = self.current_document.get('source_name', '')
+                        external_id = self.current_document.get('external_id', '')
+
+                        if source_name and external_id:
+                            # Update the document with the correct PDF path
+                            self.db_manager.update_document_pdf_path(
+                                source_name,
+                                external_id,
+                                filename
+                            )
+                            print(f"Updated database with path: {filename}")
                     except Exception as e:
                         print(f"Failed to update database: {e}")
 
@@ -713,106 +761,160 @@ class NewsBrowser(QWidget):
             self.status_bar.showMessage("No matches found")
 
     def _mark_current_as_read(self):
-        """Mark the currently selected summary as read."""
+        """Mark the currently selected document as read."""
         current_item = self.summary_list.currentItem()
         if current_item and isinstance(current_item, SummaryItem) and not current_item.is_read:
-            summary_id = current_item.summary['id']
+            document_id = current_item.document['id']
 
             try:
                 # Record in the database
-                self.reading_tracker.mark_as_read(
-                    source_type='medrxiv',
-                    content_id=str(summary_id),
-                    # We're not using user_id for now, can add if multi-user support is needed
-                )
+                # First check if a record already exists
+                check_query = """
+                SELECT id FROM reading_records
+                WHERE document_id = %s
+                """
+                existing = self.db_manager.execute(check_query, (document_id,))
+
+                if existing:
+                    # Update existing record
+                    update_query = """
+                    UPDATE reading_records
+                    SET read_timestamp = NOW()
+                    WHERE document_id = %s
+                    """
+                    self.db_manager.execute(update_query, (document_id,), commit=True)
+                else:
+                    # Insert new record
+                    insert_query = """
+                    INSERT INTO reading_records (document_id, read_timestamp)
+                    VALUES (%s, NOW())
+                    """
+                    self.db_manager.execute(insert_query, (document_id,), commit=True)
 
                 # Update local cache
-                self.read_summaries.add(summary_id)
+                self.read_summaries.add(document_id)
 
                 # Update the UI
                 current_item.update_read_status(True)
 
                 # Update the status bar
-                self.status_bar.showMessage(f"Marked as read: {current_item.publication.get('title', 'Unknown')}")
+                self.status_bar.showMessage(f"Marked as read: {current_item.document.get('title', 'Unknown')}")
             except Exception as e:
                 print(f"Error marking as read: {e}")
                 traceback.print_exc()
 
     def _mark_as_read(self):
-        """Mark the selected summary as read."""
+        """Mark the selected document as read."""
         current_item = self.summary_list.currentItem()
         if current_item and isinstance(current_item, SummaryItem) and not current_item.is_read:
-            summary_id = current_item.summary['id']
+            document_id = current_item.document['id']
 
             try:
                 # Record in the database
-                self.reading_tracker.mark_as_read(
-                    source_type='medrxiv',
-                    content_id=str(summary_id),
-                    # We're not using user_id for now, can add if multi-user support is needed
-                )
+                # First check if a record already exists
+                check_query = """
+                SELECT id FROM reading_records
+                WHERE document_id = %s
+                """
+                existing = self.db_manager.execute(check_query, (document_id,))
+
+                if existing:
+                    # Update existing record
+                    update_query = """
+                    UPDATE reading_records
+                    SET read_timestamp = NOW()
+                    WHERE document_id = %s
+                    """
+                    self.db_manager.execute(update_query, (document_id,), commit=True)
+                else:
+                    # Insert new record
+                    insert_query = """
+                    INSERT INTO reading_records (document_id, read_timestamp)
+                    VALUES (%s, NOW())
+                    """
+                    self.db_manager.execute(insert_query, (document_id,), commit=True)
 
                 # Update local cache
-                self.read_summaries.add(summary_id)
+                self.read_summaries.add(document_id)
 
                 # Update the UI
                 current_item.update_read_status(True)
 
                 # Update the status bar
-                self.status_bar.showMessage(f"Marked as read: {current_item.publication.get('title', 'Unknown')}")
+                self.status_bar.showMessage(f"Marked as read: {current_item.document.get('title', 'Unknown')}")
             except Exception as e:
                 print(f"Error marking as read: {e}")
                 traceback.print_exc()
 
     def _mark_as_unread(self):
-        """Mark the selected summary as unread."""
+        """Mark the selected document as unread."""
         current_item = self.summary_list.currentItem()
         if current_item and isinstance(current_item, SummaryItem) and current_item.is_read:
-            summary_id = current_item.summary['id']
+            document_id = current_item.document['id']
 
             try:
                 # Delete the reading record from the database
-                self.reading_tracker.delete_reading_record(
-                    source_type='medrxiv',
-                    content_id=str(summary_id)
-                )
+                query = """
+                DELETE FROM reading_records
+                WHERE document_id = %s
+                """
+                self.db_manager.execute(query, (document_id,), commit=True)
 
                 # Remove from local cache
-                self.read_summaries.discard(summary_id)
+                self.read_summaries.discard(document_id)
 
                 # Update the UI
                 current_item.update_read_status(False)
 
                 # Update the status bar
-                self.status_bar.showMessage(f"Marked as unread: {current_item.publication.get('title', 'Unknown')}")
+                self.status_bar.showMessage(f"Marked as unread: {current_item.document.get('title', 'Unknown')}")
             except Exception as e:
                 print(f"Error marking as unread: {e}")
                 traceback.print_exc()
 
     def _refresh_read_status_cache(self):
         """
-        Refresh the in-memory cache of read summaries from the database.
+        Refresh the in-memory cache of read documents from the database.
         This helps improve performance by avoiding database lookups for each item.
         """
         try:
-            # Get recent read records for medrxiv articles
-            read_records = self.reading_tracker.get_recent_reads(
-                limit=1000,  # Fetch up to 1000 recent reads
-                source_type='medrxiv'
-            )
+            # Get recent read records directly from the database
+            query = """
+            SELECT document_id FROM reading_records
+            ORDER BY read_timestamp DESC
+            LIMIT 1000
+            """
+            read_records = self.db_manager.execute(query)
 
             # Clear and update the cache
             self.read_summaries.clear()
             for record in read_records:
-                # Store the content_id (which corresponds to summary id) in our cache
-                content_id = record.get('content_id')
-                if content_id and content_id.isdigit():
-                    self.read_summaries.add(int(content_id))
+                # Get the document ID from the reading record
+                document_id = record.get('document_id')
+                if document_id:
+                    self.read_summaries.add(document_id)
 
             print(f"Refreshed read status cache: {len(self.read_summaries)} read items")
         except Exception as e:
             print(f"Error refreshing read status cache: {e}")
             traceback.print_exc()
+
+    def _load_suggestions_for_documents(self, doc_ids: List[int], suggestions_map: Dict[int, Dict[str, Any]]):
+        """
+        Load suggestions for a list of documents.
+
+        Args:
+            doc_ids: List of document IDs
+            suggestions_map: Dictionary to store suggestions, keyed by document ID
+        """
+        if not doc_ids:
+            return
+
+        # Get suggestions for these documents
+        for doc_id in doc_ids:
+            suggestion = self.suggestions_manager.get_suggestion_by_document(doc_id, self.user_id)
+            if suggestion:
+                suggestions_map[doc_id] = suggestion
 
     def _filter_summaries(self):
         """Filter the summaries based on the selected filter."""
@@ -828,71 +930,110 @@ class NewsBrowser(QWidget):
         if hasattr(self, 'reading_tracker'):
             self.reading_tracker.close()
 
+        if hasattr(self, 'suggestions_manager'):
+            self.suggestions_manager.close()
+
         # Close PDF viewer
         if hasattr(self, 'pdf_viewer'):
             self.pdf_viewer.close_pdf()
 
     def _rate_positive(self):
-        """Rate the current article positively (thumbs up)."""
-        if not self.current_summary:
+        """Rate the current document positively (thumbs up)."""
+        if not self.current_document:
             return
 
         try:
-            summary_id = self.current_summary['id']
+            document_id = self.current_document['id']
 
             # Update the rating in the database
-            self.reading_tracker.update_record_rating(
-                source_type='medrxiv',
-                content_id=str(summary_id),
-                rating=1  # +1 for thumbs up
-            )
+            # First check if a record already exists
+            check_query = """
+            SELECT id FROM reading_records
+            WHERE document_id = %s
+            """
+            existing = self.db_manager.execute(check_query, (document_id,))
+
+            if existing:
+                # Update existing record
+                update_query = """
+                UPDATE reading_records
+                SET rating = %s
+                WHERE document_id = %s
+                """
+                self.db_manager.execute(update_query, (1, document_id), commit=True)
+            else:
+                # Insert new record
+                insert_query = """
+                INSERT INTO reading_records (document_id, read_timestamp, rating)
+                VALUES (%s, NOW(), %s)
+                """
+                self.db_manager.execute(insert_query, (document_id, 1), commit=True)
 
             # Update the UI
             self.rating_label.setText("+1")
-            self.status_bar.showMessage("Article rated positively")
+            self.status_bar.showMessage("Document rated positively")
 
         except Exception as e:
-            print(f"Error rating article positively: {e}")
+            print(f"Error rating document positively: {e}")
             traceback.print_exc()
             self.status_bar.showMessage("Error updating rating")
 
     def _rate_negative(self):
-        """Rate the current article negatively (thumbs down)."""
-        if not self.current_summary:
+        """Rate the current document negatively (thumbs down)."""
+        if not self.current_document:
             return
 
         try:
-            summary_id = self.current_summary['id']
+            document_id = self.current_document['id']
 
             # Update the rating in the database
-            self.reading_tracker.update_record_rating(
-                source_type='medrxiv',
-                content_id=str(summary_id),
-                rating=-1  # -1 for thumbs down
-            )
+            # First check if a record already exists
+            check_query = """
+            SELECT id FROM reading_records
+            WHERE document_id = %s
+            """
+            existing = self.db_manager.execute(check_query, (document_id,))
+
+            if existing:
+                # Update existing record
+                update_query = """
+                UPDATE reading_records
+                SET rating = %s
+                WHERE document_id = %s
+                """
+                self.db_manager.execute(update_query, (-1, document_id), commit=True)
+            else:
+                # Insert new record
+                insert_query = """
+                INSERT INTO reading_records (document_id, read_timestamp, rating)
+                VALUES (%s, NOW(), %s)
+                """
+                self.db_manager.execute(insert_query, (document_id, -1), commit=True)
 
             # Update the UI
             self.rating_label.setText("-1")
-            self.status_bar.showMessage("Article rated negatively")
+            self.status_bar.showMessage("Document rated negatively")
 
         except Exception as e:
-            print(f"Error rating article negatively: {e}")
+            print(f"Error rating document negatively: {e}")
             traceback.print_exc()
             self.status_bar.showMessage("Error updating rating")
 
     def _show_notes_dialog(self):
-        """Show a dialog for editing notes for the current article."""
-        if not self.current_summary:
+        """Show a dialog for editing notes for the current document."""
+        if not self.current_document:
             return
 
         try:
-            summary_id = self.current_summary['id']
+            document_id = self.current_document['id']
 
-            # Get existing notes
-            record = self.reading_tracker.get_reading_record(
-                source_type='medrxiv',
-                content_id=str(summary_id)
-            )
+            # Get existing notes directly from the database
+            query = """
+            SELECT notes FROM reading_records
+            WHERE document_id = %s
+            """
+            record = self.db_manager.execute(query, (document_id,))
+            record = record[0] if record else None
 
             existing_notes = record.get('notes', '') if record else ''
 
@@ -924,15 +1065,32 @@ class NewsBrowser(QWidget):
                 notes = notes_edit.toPlainText()
 
                 # Save notes to database
-                self.reading_tracker.update_record_notes(
-                    source_type='medrxiv',
-                    content_id=str(summary_id),
-                    notes=notes
-                )
+                # First check if a record already exists
+                check_query = """
+                SELECT id FROM reading_records
+                WHERE document_id = %s
+                """
+                existing = self.db_manager.execute(check_query, (document_id,))
+
+                if existing:
+                    # Update existing record
+                    update_query = """
+                    UPDATE reading_records
+                    SET notes = %s
+                    WHERE document_id = %s
+                    """
+                    self.db_manager.execute(update_query, (notes, document_id), commit=True)
+                else:
+                    # Insert new record
+                    insert_query = """
+                    INSERT INTO reading_records (document_id, read_timestamp, notes)
+                    VALUES (%s, NOW(), %s)
+                    """
+                    self.db_manager.execute(insert_query, (document_id, notes), commit=True)
 
                 # Mark as read if not already
-                if summary_id not in self.read_summaries:
-                    self.read_summaries.add(summary_id)
+                if document_id not in self.read_summaries:
+                    self.read_summaries.add(document_id)
                     current_item = self.summary_list.currentItem()
                     if current_item and isinstance(current_item, SummaryItem):
                         current_item.update_read_status(True)
@@ -944,19 +1102,77 @@ class NewsBrowser(QWidget):
             traceback.print_exc()
             self.status_bar.showMessage("Error saving notes")
 
-    def _load_reading_record(self):
-        """Load the current article's reading record including rating and notes."""
-        if not self.current_summary:
+    def _agree_with_recommendation(self):
+        """Agree with the current recommendation."""
+        if not self.current_document or not self.current_suggestion:
             return
 
         try:
-            summary_id = self.current_summary['id']
+            suggestion_id = self.current_suggestion.get('id')
+            if suggestion_id:
+                # Update the user agreement in the database
+                self.suggestions_manager.update_user_agreement(suggestion_id, True)
 
-            # Get the reading record
-            record = self.reading_tracker.get_reading_record(
-                source_type='medrxiv',
-                content_id=str(summary_id)
-            )
+                # Update the current suggestion
+                self.current_suggestion['user_agreement'] = True
+
+                # Update the display
+                self._display_summary()
+
+                # Update the status bar
+                self.status_bar.showMessage("You agreed with this recommendation")
+
+                # Disable the agree button and enable the disagree button
+                self.agree_btn.setEnabled(False)
+                self.disagree_btn.setEnabled(True)
+        except Exception as e:
+            print(f"Error agreeing with recommendation: {e}")
+            traceback.print_exc()
+            self.status_bar.showMessage("Error updating recommendation feedback")
+
+    def _disagree_with_recommendation(self):
+        """Disagree with the current recommendation."""
+        if not self.current_document or not self.current_suggestion:
+            return
+
+        try:
+            suggestion_id = self.current_suggestion.get('id')
+            if suggestion_id:
+                # Update the user agreement in the database
+                self.suggestions_manager.update_user_agreement(suggestion_id, False)
+
+                # Update the current suggestion
+                self.current_suggestion['user_agreement'] = False
+
+                # Update the display
+                self._display_summary()
+
+                # Update the status bar
+                self.status_bar.showMessage("You disagreed with this recommendation")
+
+                # Enable the agree button and disable the disagree button
+                self.agree_btn.setEnabled(True)
+                self.disagree_btn.setEnabled(False)
+        except Exception as e:
+            print(f"Error disagreeing with recommendation: {e}")
+            traceback.print_exc()
+            self.status_bar.showMessage("Error updating recommendation feedback")
+
+    def _load_reading_record(self):
+        """Load the current document's reading record including rating and notes."""
+        if not self.current_document:
+            return
+
+        try:
+            document_id = self.current_document['id']
+
+            # Get the reading record directly from the database
+            query = """
+            SELECT rating, notes FROM reading_records
+            WHERE document_id = %s
+            """
+            record = self.db_manager.execute(query, (document_id,))
+            record = record[0] if record else None
 
             if record:
                 # Update rating display
@@ -975,11 +1191,34 @@ class NewsBrowser(QWidget):
                 self.rating_label.setText("0")
                 self.notes_btn.setText("Edit Notes")
 
+            # Update recommendation buttons based on current suggestion
+            if self.current_suggestion:
+                user_agreement = self.current_suggestion.get('user_agreement')
+                if user_agreement is True:
+                    # User agreed with this recommendation
+                    self.agree_btn.setEnabled(False)
+                    self.disagree_btn.setEnabled(True)
+                elif user_agreement is False:
+                    # User disagreed with this recommendation
+                    self.agree_btn.setEnabled(True)
+                    self.disagree_btn.setEnabled(False)
+                else:
+                    # User hasn't provided feedback yet
+                    self.agree_btn.setEnabled(True)
+                    self.disagree_btn.setEnabled(True)
+
+                # Show the recommendation buttons
+                self.recommendation_group.setVisible(True)
+            else:
+                # No recommendation, hide the buttons
+                self.recommendation_group.setVisible(False)
+
         except Exception as e:
             print(f"Error loading reading record: {e}")
             traceback.print_exc()
             self.rating_label.setText("?")
             self.notes_btn.setText("Edit Notes")
+            self.recommendation_group.setVisible(False)
 
 
 class NewsBrowserWindow(QMainWindow):

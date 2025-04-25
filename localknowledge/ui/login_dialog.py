@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
 )
 
 from localknowledge.db.user import UserDatabaseManager
+from localknowledge.context import set_context, CURRENT_USER
 
 
 class LoginDialog(QDialog):
@@ -174,6 +175,9 @@ class LoginDialog(QDialog):
 
             # Store the current user
             self.current_user = user
+
+            # Store user in the global context
+            set_context(CURRENT_USER, user)
 
             # Emit signal with user data
             self.loginSuccessful.emit(user)

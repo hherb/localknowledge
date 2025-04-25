@@ -115,12 +115,67 @@ search_results = project_db.search_projects("research", user_id)
 
 ## Integration with UI
 
-The project management functionality integrates with the RWB UI to provide:
+The project management functionality integrates with the RWB UI through the `ProjectManagerPlugin` class in `localknowledge.ui.plugins.project_manager`. This plugin provides:
 
 - Project listing and management
 - Project creation and editing
 - Contributor management
-- Project search
+- Recent projects view
+
+### UI Components
+
+The project management UI consists of several components:
+
+#### Project List Widget
+
+The `ProjectListWidget` class in `localknowledge.ui.project_list` provides a list view of projects with:
+
+- Project title in bold
+- First two lines of the description
+- Metadata (number of contributors, last worked on date)
+- Selection functionality
+
+#### Project Form
+
+The `ProjectForm` class in `localknowledge.ui.project_form` provides a form for creating new projects with:
+
+- Title input field
+- Description text area
+- Contributor selection list
+- Create button
+
+#### Recent Projects Widget
+
+The `RecentProjectsWidget` class in `localknowledge.ui.recent_projects` displays recent projects in a grid layout with:
+
+- Project cards with title and description
+- Last worked on date
+- Click functionality to select a project
+
+### Using the Project Manager
+
+The project manager can be used as a plugin in the RWB or as a standalone application:
+
+```python
+# As a plugin in RWB
+from localknowledge.ui.rwb_main import MainWindow
+
+# Create the main window
+window = MainWindow()
+
+# The project manager will be available in the plugins list
+window.show()
+
+# As a standalone application
+from localknowledge.ui.plugins.project_manager import ProjectManager
+from PySide6.QtWidgets import QApplication
+
+app = QApplication([])
+project_manager = ProjectManager()
+project_manager.set_current_user(user_id)
+project_manager.show()
+app.exec()
+```
 
 ## Best Practices
 
