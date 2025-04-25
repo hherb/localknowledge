@@ -155,6 +155,8 @@ doc_db.close()
 
 ### Searching Documents
 
+#### Using DocumentDatabaseManager (Legacy)
+
 ```python
 from localknowledge.db.document import DocumentDatabaseManager
 
@@ -176,6 +178,232 @@ print(f"Recent documents: {[doc['title'] for doc in recent]}")
 # Close the connection
 doc_db.close()
 ```
+
+#### Using DocumentSearchManager (Recommended)
+
+The `DocumentSearchManager` class in `localknowledge.db.document_search` provides specialized search functions that return generators for memory-efficient processing of large result sets. It supports threadsafe operation, asynchronous mode, and configurable timeouts:
+
+```python
+from localknowledge.db.document_search import DocumentSearchManager
+
+# Create a document search manager
+search_manager = DocumentSearchManager()
+
+# Basic keyword search with included and excluded terms
+# Returns a generator that yields documents in batches
+result_count = 0
+for doc in search_manager.keywords(
+    included=['covid', 'vaccine'],
+    excluded=['children'],
+    limit=10
+):
+    # Process each document as it's retrieved
+    print(f"{doc['title']} ({doc['source_name']})")
+    result_count += 1
+print(f"Found {result_count} documents")
+
+# Keyword search with source filter
+# If you need all results at once, convert to a list
+results = list(search_manager.keywords(
+    included=['covid', 'vaccine'],
+    source_name='pubmed',
+    limit=10
+))
+print(f"Found {len(results)} PubMed documents")
+
+# For very large result sets, use batch_size to control memory usage
+# and set limit=0 for no limit on total results
+for doc in search_manager.keywords(
+    included=['covid'],
+    batch_size=100,  # Fetch 100 documents at a time
+    limit=0  # No limit on total results
+):
+    # Process each document without loading all into memory
+    process_document(doc)
+
+# For long-running queries, use a longer timeout or disable it completely
+for doc in search_manager.keywords(
+    included=['rare', 'disease'],
+    timeout=300,  # 5 minutes timeout
+    limit=1000
+):
+    process_document(doc)
+
+# For unlimited timeout, set timeout to None
+for doc in search_manager.keywords(
+    included=['comprehensive', 'analysis'],
+    timeout=None,  # No timeout
+    limit=1000
+):
+    process_document(doc)
+
+# For asynchronous processing, use async_mode=True
+# Results will be yielded as they become available
+for doc in search_manager.keywords(
+    included=['covid'],
+    limit=1000,
+    async_mode=True  # Run in background thread
+):
+    # Process results as they arrive, even while query is still running
+    process_document(doc)
+
+# Close the connection
+search_manager.close()
+```
+
+The `keywords` method supports the following parameters:
+
+- `included`: List of keywords to include in the search
+- `excluded`: List of keywords to exclude from the search (optional)
+- `source_name`: Filter by source name (optional)
+- `limit`: Maximum number of results to return (use 0 for no limit)
+- `offset`: Number of results to skip
+- `batch_size`: Number of results to fetch in each database query
+- `timeout`: Query timeout in seconds (default: 30, None for no timeout)
+- `async_mode`: Whether to run the query in asynchronous mode (default: False)
+
+#### Semantic Search
+
+The `DocumentSearchManager` also provides semantic search capabilities through the `semantic` method:
+
+```python
+from localknowledge.db.document_search import DocumentSearchManager
+
+# Create a document search manager
+search_manager = DocumentSearchManager()
+
+# Basic semantic search
+for doc in search_manager.semantic(
+    question="What are the long-term effects of COVID-19?",
+    similarity_threshold=0.6,
+    max_results=20
+):
+    print(f"{doc['title']} (Similarity: {doc['similarity']:.4f})")
+
+# Semantic search with source filter
+results = list(search_manager.semantic(
+    question="What are the long-term effects of COVID-19?",
+    source_name='pubmed',
+    max_results=10
+))
+print(f"Found {len(results)} PubMed documents")
+
+# For long-running semantic searches, use a longer timeout or disable it completely
+for doc in search_manager.semantic(
+    question="What is the mechanism of action for remdesivir?",
+    timeout=300,  # 5 minutes timeout
+    max_results=50
+):
+    process_document(doc)
+
+# For asynchronous semantic search, use async_mode=True
+for doc in search_manager.semantic(
+    question="What are the latest treatments for Alzheimer's disease?",
+    max_results=100,
+    async_mode=True  # Run in background thread
+):
+    # Process results as they arrive, even while query is still running
+    process_document(doc)
+
+# Custom reranking function
+def rerank_results(question, results):
+    # Implement custom reranking logic
+    # For example, boost results with certain keywords in the title
+    for result in results:
+        if 'alzheimer' in result['title'].lower():
+            result['similarity'] += 0.1
+
+    # Sort by similarity again
+    return sorted(results, key=lambda x: x['similarity'], reverse=True)
+
+# Semantic search with custom reranker
+for doc in search_manager.semantic(
+    question="What are the latest treatments for Alzheimer's disease?",
+    reranker=rerank_results
+):
+    print(f"{doc['title']} (Similarity: {doc['similarity']:.4f})")
+
+# Close the connection
+search_manager.close()
+```
+
+The `semantic` method supports the following parameters:
+
+- `question`: The question or query to search for
+- `similarity_threshold`: Minimum similarity score (0-1) for results (default: 0.5)
+- `max_results`: Maximum number of results to return (default: 50)
+- `source_name`: Filter by source name (optional)
+- `embed_source`: Embedding source to search (default: 'abstract')
+- `timeout`: Query timeout in seconds (default: 30, None for no timeout)
+- `async_mode`: Whether to run the query in asynchronous mode (default: False)
+- `reranker`: Optional function to rerank results (takes question and results as input)
+
+#### HyDE Search
+
+The `DocumentSearchManager` also provides HyDE (Hypothetical Document Embeddings) search capabilities through the `hyde` method. HyDE improves semantic search by generating a hypothetical document that answers the query, then using that document's embedding for search instead of directly embedding the query:
+
+```python
+from localknowledge.db.document_search import DocumentSearchManager
+
+# Create a document search manager
+search_manager = DocumentSearchManager()
+
+# Basic HyDE search
+for doc in search_manager.hyde(
+    question="What are the long-term effects of COVID-19?",
+    similarity_threshold=0.6,
+    max_results=20
+):
+    print(f"{doc['title']} (Similarity: {doc['similarity']:.4f})")
+    # Each result includes the generated hypothetical document
+    if 'hyde_document' in doc:
+        print(f"HyDE document: {doc['hyde_document'][:100]}...")
+
+# HyDE search with custom model
+for doc in search_manager.hyde(
+    question="What are the latest treatments for Alzheimer's disease?",
+    model_name="llama3.2:3b-instruct-q8_0"  # Use a different model for generation
+):
+    process_document(doc)
+
+# HyDE search with pre-generated hypothetical document
+hypothetical_doc = """
+Objective: To evaluate the long-term neurological effects of COVID-19 infection.
+Methods: A prospective cohort study of 1,000 patients with confirmed COVID-19 was conducted with 12-month follow-up.
+Results: Neurological symptoms persisted in 30% of patients, with fatigue, cognitive impairment, and headaches being most common.
+Conclusion: COVID-19 has significant long-term neurological effects that require ongoing monitoring and management.
+"""
+
+for doc in search_manager.hyde(
+    question="What are the neurological effects of COVID-19?",
+    hydeprompt=hypothetical_doc  # Use pre-generated document
+):
+    process_document(doc)
+
+# Asynchronous HyDE search
+for doc in search_manager.hyde(
+    question="What is the mechanism of action for remdesivir?",
+    async_mode=True  # Run in background thread
+):
+    # Process results as they arrive, even while query is still running
+    process_document(doc)
+
+# Close the connection
+search_manager.close()
+```
+
+The `hyde` method supports the following parameters:
+
+- `question`: The question or query to search for
+- `similarity_threshold`: Minimum similarity score (0-1) for results (default: 0.5)
+- `max_results`: Maximum number of results to return (default: 50)
+- `source_name`: Filter by source name (optional)
+- `embed_source`: Embedding source to search (default: 'abstract')
+- `timeout`: Query timeout in seconds (default: 30, None for no timeout)
+- `async_mode`: Whether to run the query in asynchronous mode (default: False)
+- `reranker`: Optional function to rerank results (takes question and results as input)
+- `hydeprompt`: Optional pre-generated hypothetical document (if None, one will be generated)
+- `model_name`: Model to use for generating the hypothetical document (default: gemma3:4b)
 
 ### Working with Tags
 
