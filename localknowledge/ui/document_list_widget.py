@@ -290,7 +290,7 @@ class DocumentListWidget(QWidget):
         layout.addWidget(self.list_widget)
     
     def add_document(self, document: Dict[str, Any], is_read: bool = False, 
-                    suggestion: Optional[Dict[str, Any]] = None):
+                    suggestion: Optional[Dict[str, Any]] = None) -> Optional[DocumentItem]:
         """
         Add a document to the list.
         
@@ -298,10 +298,17 @@ class DocumentListWidget(QWidget):
             document: Dictionary containing document details
             is_read: Whether the document has been read
             suggestion: Optional dictionary with suggestion details
+            
+        Returns:
+            The created DocumentItem or None if creation failed
         """
-        item = DocumentItem(document, is_read, suggestion)
-        self.list_widget.addItem(item)
-        return item
+        try:
+            item = DocumentItem(document, is_read, suggestion)
+            self.list_widget.addItem(item)
+            return item
+        except Exception as e:
+            logger.error(f"Failed to add document: {str(e)}")
+            return None
     
     def clear(self):
         """Clear all items from the list."""
@@ -330,24 +337,49 @@ class DocumentListWidget(QWidget):
             read_ids: Optional list of IDs of documents that have been read
             suggestions: Optional dictionary mapping document IDs to suggestion details
         """
+        print("\n=== Debug: DocumentListWidget.set_documents ===")
+        print(f"Received {len(documents)} documents")
+        print(f"Read IDs: {read_ids}")
+        print(f"Suggestions map contains {len(suggestions) if suggestions else 0} items")
+        
         self.clear()
         
         if not documents:
-            self.list_widget.addItem("No documents found")
+            print("No documents to display")
+            no_docs_item = QListWidgetItem("No documents found")
+            no_docs_item.setFlags(no_docs_item.flags() & ~Qt.ItemIsEnabled)
+            self.list_widget.addItem(no_docs_item)
+            print("=== End Debug ===\n")
             return
         
         read_ids = read_ids or set()
         suggestions = suggestions or {}
         
-        for document in documents:
+        for idx, document in enumerate(documents):
+            doc_id = document.get('id')
+            print(f"\nProcessing document {idx + 1}:")
+            print(f"ID: {doc_id}")
+            print(f"Title: {document.get('title', 'No Title')}")
+            
             # Check if this document is in the read set
-            is_read = document['id'] in read_ids
+            is_read = doc_id in read_ids
+            print(f"Is read: {is_read}")
             
             # Get suggestion for this document if available
-            suggestion = suggestions.get(document['id'])
+            suggestion = suggestions.get(doc_id)
+            print(f"Has suggestion: {bool(suggestion)}")
+            if suggestion:
+                print(f"Suggestion strength: {suggestion.get('recommendation_strength')}")
             
             # Add the document to the list
-            self.add_document(document, is_read, suggestion)
+            item = self.add_document(document, is_read, suggestion)
+            if item:
+                print("Document item added successfully")
+            else:
+                print("Failed to add document item")
+
+        print(f"\nFinal list widget item count: {self.list_widget.count()}")
+        print("=== End Debug ===\n")
     
     def _on_document_selected(self, current, previous):
         """

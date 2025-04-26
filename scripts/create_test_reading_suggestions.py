@@ -1,91 +1,128 @@
 #!/usr/bin/env python3
-"""
-Script to create test data for the reading suggestions system.
-
-This script creates a test evaluator and adds reading suggestions
-for recent documents.
-"""
+"""Create test data for reading suggestions."""
 
 import logging
-import sys
-from pathlib import Path
-
-# Add parent directory to path to allow imports
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import json
+from typing import List, Dict, Any
 
 from localknowledge.db.reading_suggestions import ReadingSuggestionsManager
 from localknowledge.db.document import DocumentDatabaseManager
 
 # Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+def create_test_evaluator(suggestions_manager: ReadingSuggestionsManager) -> int:
+    """Create a test evaluator and return its ID."""
+    parameters = {
+        "temperature": 0.7,
+        "max_tokens": 150,
+        "top_p": 0.9
+    }
+    
+    evaluator_id = suggestions_manager.add_evaluator(
+        name="GPT-4 Test Evaluator",
+        model_id="gpt-4",
+        parameters=json.dumps(parameters),
+        prompt="Evaluate if this document is relevant for emergency medicine research."
+    )
+    
+    if not evaluator_id:
+        raise Exception("Failed to create evaluator")
+        
+    logger.info(f"Created evaluator with ID: {evaluator_id}")
+    return evaluator_id
+
+def get_test_documents(doc_manager: DocumentDatabaseManager, limit: int = 10) -> List[Dict[str, Any]]:
+    """Get test documents from the database."""
+    documents = doc_manager.search_documents("", limit=limit)
+    if not documents:
+        raise Exception("No documents found in database")
+    
+    logger.info(f"Found {len(documents)} documents for testing")
+    return documents
+
+def create_test_suggestions(suggestions_manager: ReadingSuggestionsManager, 
+                          documents: List[Dict[str, Any]], 
+                          evaluator_id: int,
+                          user_id: int = 2) -> List[int]:
+    """Create test suggestions for the given documents."""
+    suggestion_ids = []
+    
+    for i, doc in enumerate(documents):
+        # Vary the recommendation strength (1-5)
+        strength = (i % 5) + 1
+        confidence = 0.7 + (i * 0.02)  # Vary confidence between 0.7 and 0.88
+        
+        suggestion_id = suggestions_manager.add_reading_suggestion(
+            document_id=doc['id'],
+            user_id=user_id,
+            evaluator_id=evaluator_id,
+            recommendation_strength=strength,
+            confidence_level=confidence,
+            comment=f"Test suggestion for document {doc['id']}. Relevance score: {strength}/5"
+        )
+        
+        if suggestion_id:
+            suggestion_ids.append(suggestion_id)
+            logger.info(f"Created suggestion {suggestion_id} for document {doc['id']} "
+                       f"with strength {strength}/5")
+        else:
+            logger.error(f"Failed to create suggestion for document {doc['id']}")
+    
+    return suggestion_ids
+
+def verify_suggestions(suggestions_manager: ReadingSuggestionsManager, user_id: int) -> None:
+    """Verify that suggestions were created correctly."""
+    suggestions = suggestions_manager.get_reading_suggestions(
+        user_id=user_id,
+        include_read=True,  # Include all suggestions for verification
+        min_strength=0
+    )
+    
+    logger.info(f"Verification: Found {len(suggestions)} suggestions for user {user_id}")
+    
+    if suggestions:
+        logger.info("Sample suggestion details:")
+        sample = suggestions[0]
+        logger.info(f"Document ID: {sample.get('document_id')}")
+        logger.info(f"Strength: {sample.get('recommendation_strength')}/5")
+        logger.info(f"Confidence: {sample.get('confidence_level'):.2f}")
+    else:
+        logger.error("No suggestions found during verification!")
 
 def main():
     """Create test data for reading suggestions."""
-    # Create managers
     suggestions_manager = ReadingSuggestionsManager()
     doc_manager = DocumentDatabaseManager()
-
+    
     try:
-        # Create a test evaluator (LLM)
-        # Convert the parameters dict to JSON string
-        import json
-        parameters_json = json.dumps({"temperature": 0.7})
-
-        evaluator_id = suggestions_manager.add_evaluator(
-            name="GPT-4 Evaluator",
-            model_id="gpt-4",
-            parameters=parameters_json,
-            prompt="Evaluate if this document is relevant for emergency medicine research."
+        # Create test evaluator
+        evaluator_id = create_test_evaluator(suggestions_manager)
+        
+        # Get test documents
+        documents = get_test_documents(doc_manager)
+        
+        # Create test suggestions
+        user_id = 2  # Test user ID (hherb)
+        suggestion_ids = create_test_suggestions(
+            suggestions_manager, 
+            documents, 
+            evaluator_id,
+            user_id
         )
-
-        logger.info(f"Created evaluator with ID: {evaluator_id}")
-
-        # Get some recent documents
-        documents = doc_manager.search_documents("", limit=10)
-
-        # Create recommendations for these documents
-        user_id = 2  # Use existing user ID (hherb)
-        for i, doc in enumerate(documents):
-            # Vary the recommendation strength
-            strength = (i % 5) + 1  # 1-5
-
-            # Add a suggestion with user_id
-            query = """
-            INSERT INTO reading_suggestions
-            (document_id, user_id, evaluator_id, recommendation_strength, confidence_level, comment)
-            VALUES (%s, %s, %s, %s, %s, %s)
-            RETURNING id
-            """
-            result = suggestions_manager.execute(
-                query,
-                (
-                    doc['id'],
-                    user_id,
-                    evaluator_id,
-                    strength,
-                    0.7 + (i * 0.02),  # Vary confidence
-                    f"This document appears to be relevant for emergency medicine research. Strength: {strength}/5"
-                ),
-                commit=True
-            )
-
-            suggestion_id = result[0]['id'] if result else None
-
-            logger.info(f"Created suggestion with ID: {suggestion_id} for document: {doc['title'][:50]}...")
-
-        logger.info(f"Created {len(documents)} test recommendations")
+        
+        logger.info(f"Created {len(suggestion_ids)} test suggestions")
+        
+        # Verify the suggestions were created
+        verify_suggestions(suggestions_manager, user_id)
+        
+    except Exception as e:
+        logger.error(f"Error creating test data: {e}")
+        raise
     finally:
-        # Close database connections
         suggestions_manager.close()
         doc_manager.close()
 
-    return 0
-
-
 if __name__ == "__main__":
-    sys.exit(main())
+    main()

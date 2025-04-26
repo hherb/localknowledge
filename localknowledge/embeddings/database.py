@@ -358,46 +358,47 @@ class EmbeddingDatabaseManager(DatabaseManager):
 
         # First try searching in the unified_multiembeddings table (new structure)
         try:
-            # Build the query for unified_multiembeddings
+            # Build a more optimized query for unified_multiembeddings
+            # Use a subquery to first filter by similarity threshold before joining
             query = """
-            SELECT e.id, e.document_id, e.embed_source_id, s.name as embed_source,
-                   e.chunk_no, e.page_no, e.text, e.keywords, e.model_name,
-                   1 - (e.embedding <=> %s::vector) AS similarity,
-                   d.title, d.abstract
-            FROM unified_multiembeddings e
-            JOIN embedding_source s ON e.embed_source_id = s.id
-            JOIN document d ON e.document_id = d.id
+            WITH similar_embeddings AS (
+                SELECT e.id, e.document_id, e.embed_source_id, e.chunk_no, e.page_no,
+                       e.text, e.keywords, e.model_name,
+                       1 - (e.embedding <=> %s::vector) AS similarity
+                FROM unified_multiembeddings e
+                WHERE 1 - (e.embedding <=> %s::vector) > %s
+                ORDER BY similarity DESC
+                LIMIT %s
+            )
+            SELECT se.id, se.document_id, se.embed_source_id, s.name as embed_source,
+                   se.chunk_no, se.page_no, se.text, se.keywords, se.model_name,
+                   se.similarity, d.title, d.abstract
+            FROM similar_embeddings se
+            JOIN embedding_source s ON se.embed_source_id = s.id
+            JOIN document d ON se.document_id = d.id
+            ORDER BY se.similarity DESC
             """
 
-            # Start building the WHERE clause
-            where_clauses = []
-            params = [embedding_str]
+            # Parameters for the optimized query
+            params = [embedding_str, embedding_str, threshold, limit * 2]  # Double the limit for better results
 
             # Add source_id filter if provided
             if source_id:
                 # If source_id is a string, we need to join with the sources table
                 if isinstance(source_id, str):
-                    query += " JOIN sources src ON d.source_id = src.id"
-                    where_clauses.append("src.name = %s")
+                    query += " WHERE s.name = %s"
                     params.append(source_id)
                 else:
                     # If source_id is an integer, use it directly
-                    where_clauses.append("d.source_id = %s")
+                    query += " WHERE d.source_id = %s"
                     params.append(source_id)
 
-            # Add similarity threshold
-            where_clauses.append(f"1 - (e.embedding <=> %s::vector) > {threshold}")
-            # Add embedding_str again because we're using it twice in the query
-            params.append(embedding_str)
-
-            # Combine WHERE clauses
-            if where_clauses:
-                query += " WHERE " + " AND ".join(where_clauses)
-            query += " ORDER BY similarity DESC"
-            query += f" LIMIT {limit}"
+            # Note: We've already included the threshold and limit in the subquery
+            # No need to add additional WHERE clauses or LIMIT
 
             start_time = time.time()
-            results = self.execute(query, tuple(params))
+            # Use a longer timeout (60 seconds) for vector searches
+            results = self.execute(query, tuple(params), timeout=60)
             execution_time = time.time() - start_time
 
             if results:
@@ -417,7 +418,7 @@ class EmbeddingDatabaseManager(DatabaseManager):
 
                     # Modify the query with a lower threshold
                     modified_query = query.replace(f"> {threshold}", f"> {low_threshold}")
-                    modified_results = self.execute(modified_query, tuple(params))
+                    modified_results = self.execute(modified_query, tuple(params), timeout=60)
 
                     if modified_results:
                         print(f"Database: Found {len(modified_results)} results with threshold {low_threshold}")

@@ -236,18 +236,27 @@ class ReadingSuggestionsManager(DatabaseManager):
             AND NOT EXISTS (
                 SELECT 1 FROM reading_records rr
                 WHERE rr.document_id = rs.document_id
+                AND rr.user_id = rs.user_id
             )
             """
 
         # Add ordering and limit
         query += """
-        ORDER BY rs.recommendation_strength DESC, rs.created_at DESC
+        ORDER BY rs.recommendation_strength DESC, d.publication_date DESC
         LIMIT %s OFFSET %s
         """
         params.extend([limit, offset])
 
+        print("\n=== Debug: Reading Suggestions Query ===")
+        print(f"Query: {query}")
+        print(f"Params: {params}")
+
         try:
             result = self.execute(query, tuple(params))
+            print(f"Query returned {len(result) if result else 0} rows")
+            if result and len(result) > 0:
+                print(f"First row keys: {result[0].keys()}")
+            print("=== End Debug ===\n")
             return result or []
         except Exception as e:
             logger.error(f"Error getting reading suggestions: {e}")

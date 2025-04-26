@@ -1421,8 +1421,6 @@ class KnowledgeBrowser(QWidget):
 
 
 
-
-
 class WorkerSignals(QObject):
     """
     Defines signals available from a running worker thread.
@@ -1430,6 +1428,8 @@ class WorkerSignals(QObject):
     finished = Signal()
     error = Signal(str, str)  # (error message, traceback)
     result = Signal(object)
+    progress = Signal(int, int)  # current count, total count
+    status = Signal(str)  # status message
 
 
 class KeywordSearchWorker(QRunnable):

@@ -343,29 +343,33 @@ class DocumentDisplayWidget(QWidget):
 
         try:
             # Check personal bookmark
-            is_personal_bookmarked = self.db_manager.is_bookmarked(
+            personal_bookmark_type = self.db_manager.is_bookmarked(
                 source_name=source_name,
                 external_id=external_id,
                 user_id=self.current_user_id,
                 project_id=None
             )
+            # Convert to boolean - is_bookmarked returns bookmark type or None
+            is_personal_bookmarked = personal_bookmark_type is not None
 
             # Check project bookmark if a project is selected
             is_project_bookmarked = False
             if self.current_project_id:
-                is_project_bookmarked = self.db_manager.is_bookmarked(
+                project_bookmark_type = self.db_manager.is_bookmarked(
                     source_name=source_name,
                     external_id=external_id,
                     user_id=self.current_user_id,
                     project_id=self.current_project_id
                 )
+                is_project_bookmarked = project_bookmark_type is not None
 
             # Update checkboxes without triggering signals
             self.personal_bookmark_cb.blockSignals(True)
             self.project_bookmark_cb.blockSignals(True)
 
-            self.personal_bookmark_cb.setChecked(is_personal_bookmarked)
-            self.project_bookmark_cb.setChecked(is_project_bookmarked)
+            # Convert to boolean values for setChecked
+            self.personal_bookmark_cb.setChecked(bool(is_personal_bookmarked))
+            self.project_bookmark_cb.setChecked(bool(is_project_bookmarked))
 
             self.personal_bookmark_cb.blockSignals(False)
             self.project_bookmark_cb.blockSignals(False)

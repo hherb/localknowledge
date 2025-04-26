@@ -68,10 +68,11 @@ class NewsBrowser(QWidget):
         self.current_document = None
         self.current_suggestion = None
 
-        # For testing purposes, use user_id 2 instead of getting from context manager
-        # In a real implementation, we would get these from the context manager
-        self.user_id = 2  # Use user_id 2 for testing
-        print(f"Using test user_id={self.user_id}")
+        # Get user_id from context manager
+        from localknowledge.context import get_current_user
+        user = get_current_user()
+        self.user_id = user.get('id', 1) if user else 1  # Default to user_id 1
+        print(f"Using user_id={self.user_id}")
 
         self.pdf_base_dir = self._get_pdf_base_dir()
         self.read_summaries = set()  # Local cache of read summaries for performance
@@ -179,9 +180,12 @@ class NewsBrowser(QWidget):
         self.document_display.documentBookmarked.connect(self._on_document_bookmarked)
 
         # Create recommendation feedback buttons
-        self.recommendation_group = QWidget()
+        self.recommendation_group = QFrame()
+        self.recommendation_group.setFrameShape(QFrame.StyledPanel)
+        self.recommendation_group.setFrameShadow(QFrame.Raised)
+        self.recommendation_group.setLineWidth(1)
         recommendation_layout = QHBoxLayout(self.recommendation_group)
-        recommendation_layout.setContentsMargins(0, 0, 0, 0)
+        recommendation_layout.setContentsMargins(10, 5, 10, 5)
 
         recommendation_label = QLabel("Recommendation:")
         self.agree_btn = QPushButton("👍 Agree")
@@ -198,14 +202,35 @@ class NewsBrowser(QWidget):
         recommendation_layout.addWidget(self.agree_btn)
         recommendation_layout.addWidget(self.disagree_btn)
 
+        # Add a stretch to push the notes button to the right
+        recommendation_layout.addStretch(1)
+
         # Notes button
         self.notes_btn = QPushButton("Edit Notes")
+        self.notes_btn.setToolTip("Edit notes for this document")
         self.notes_btn.clicked.connect(self._show_notes_dialog)
         recommendation_layout.addWidget(self.notes_btn)
 
         # Add widgets to main splitter
         self.main_splitter.addWidget(self.summary_list)
-        self.main_splitter.addWidget(self.document_display)
+
+        # Create a container for the document display and recommendation widgets
+        doc_container = QWidget()
+        doc_layout = QVBoxLayout(doc_container)
+        doc_layout.setContentsMargins(0, 0, 0, 0)
+        doc_layout.setSpacing(5)
+
+        # Add document display to the container
+        doc_layout.addWidget(self.document_display)
+
+        # Add recommendation group below the document display
+        doc_layout.addWidget(self.recommendation_group)
+
+        # Initially hide the recommendation group until a document with a recommendation is selected
+        self.recommendation_group.setVisible(False)
+
+        # Add the document container to the splitter
+        self.main_splitter.addWidget(doc_container)
 
         # Set initial sizes for main splitter (40% for list, 60% for tabs)
         self.main_splitter.setSizes([400, 600])
@@ -254,10 +279,11 @@ class NewsBrowser(QWidget):
                 max_results = 25  # Default if invalid input
                 self.max_results_input.setText(str(max_results))
 
-            # For testing purposes, use user_id 2 instead of getting from context manager
-            # In a real implementation, we would get these from the context manager
-            self.user_id = 2  # Use user_id 2 for testing
-            print(f"Using test user_id={self.user_id}")
+            # Get user_id from context manager
+            from localknowledge.context import get_current_user
+            user = get_current_user()
+            self.user_id = user.get('id', 1) if user else 1  # Default to user_id 1
+            print(f"Using user_id={self.user_id}")
 
             # Get current project from context (or use None for testing)
             # from localknowledge.context import get_current_project
@@ -412,12 +438,12 @@ class NewsBrowser(QWidget):
             # First try to get suggestion for the current user
             self.current_suggestion = self.suggestions_manager.get_suggestion_by_document(document_id, self.user_id)
 
-            # If no suggestion found for current user and current user is not user_id=2,
-            # try to get suggestion for user_id=2 (for demo purposes)
-            if not self.current_suggestion and self.user_id != 2:
-                self.current_suggestion = self.suggestions_manager.get_suggestion_by_document(document_id, 2)
+            # If no suggestion found for current user and current user is not user_id=1,
+            # try to get suggestion for user_id=1 (for demo purposes)
+            if not self.current_suggestion and self.user_id != 1:
+                self.current_suggestion = self.suggestions_manager.get_suggestion_by_document(document_id, 1)
                 if self.current_suggestion:
-                    print(f"Using suggestion from user_id=2 for display")
+                    print(f"Using suggestion from user_id=1 for display")
 
         # Update recommendation buttons based on current suggestion
         if self.current_suggestion:
@@ -623,12 +649,12 @@ class NewsBrowser(QWidget):
             # First try to get suggestion for the current user
             suggestion = self.suggestions_manager.get_suggestion_by_document(doc_id, self.user_id)
 
-            # If no suggestion found for current user and current user is not user_id=2,
-            # try to get suggestion for user_id=2 (for demo purposes)
-            if not suggestion and self.user_id != 2:
-                suggestion = self.suggestions_manager.get_suggestion_by_document(doc_id, 2)
+            # If no suggestion found for current user and current user is not user_id=1,
+            # try to get suggestion for user_id=1 (for demo purposes)
+            if not suggestion and self.user_id != 1:
+                suggestion = self.suggestions_manager.get_suggestion_by_document(doc_id, 1)
                 if suggestion:
-                    print(f"Found suggestion for document_id={doc_id} from user_id=2: {suggestion.get('recommendation_strength', 0)}/5")
+                    print(f"Found suggestion for document_id={doc_id} from user_id=1: {suggestion.get('recommendation_strength', 0)}/5")
 
             if suggestion:
                 print(f"Found suggestion for document_id={doc_id}: {suggestion.get('recommendation_strength', 0)}/5")

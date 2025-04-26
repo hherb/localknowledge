@@ -258,7 +258,8 @@ class DocumentDatabaseManager(DatabaseManager):
                         source_name: Optional[str] = None,
                         limit: int = 100,
                         offset: int = 0,
-                        exclude_terms: Optional[List[str]] = None) -> List[Dict[str, Any]]:
+                        exclude_terms: Optional[List[str]] = None,
+                        timeout: int = 30) -> List[Dict[str, Any]]:
         """
         Search for documents using the all_keywords column with GIN index.
 
@@ -271,6 +272,7 @@ class DocumentDatabaseManager(DatabaseManager):
             limit: Maximum number of results to return
             offset: Number of results to skip
             exclude_terms: Terms to exclude from search results (optional)
+            timeout: Query timeout in seconds (default: 30)
 
         Returns:
             List of matching documents
@@ -323,63 +325,68 @@ class DocumentDatabaseManager(DatabaseManager):
 
             has_all_keywords = bool(result)
 
+            # Initialize parameters list
+            params = []
+
             if has_all_keywords:
                 # Use the all_keywords column with the efficient array operator pattern
-                # Convert include_terms to a string representation for the ARRAY constructor
-                include_array_str = "ARRAY[" + ", ".join(f"'{term}'" for term in include_terms) + "]"
-
-                query = f"""
+                query = """
                 SELECT d.*, s.name as source_name, c.name as category_name
                 FROM document d
                 JOIN sources s ON d.source_id = s.id
                 LEFT JOIN categories c ON d.category_id = c.id
-                WHERE d.all_keywords && {include_array_str}
+                WHERE d.all_keywords && %s
                 """
+
+                # Add include terms as a parameter
+                params.append(include_terms)
 
                 # Add exclusion terms if provided
                 if exclude_terms and len(exclude_terms) > 0:
                     logger.debug(f"DocumentDatabaseManager.search_documents: Exclude terms: {exclude_terms}")
                     exclude_terms = [term.lower() for term in exclude_terms]
 
-                    # Convert exclude_terms to a string representation for the ARRAY constructor
-                    exclude_array_str = "ARRAY[" + ", ".join(f"'{term}'" for term in exclude_terms) + "]"
-
-                    query += f"""
-                    AND NOT (d.all_keywords && {exclude_array_str})
+                    query += """
+                    AND NOT (d.all_keywords && %s)
                     """
+
+                    # Add exclude terms as a parameter
+                    params.append(exclude_terms)
 
                 logger.debug(f"DocumentDatabaseManager.search_documents: Using all_keywords column with GIN index")
             else:
                 # Fall back to the original pattern with keywords and mesh_terms
-                # Convert include_terms to a string representation for the ARRAY constructor
-                include_array_str = "ARRAY[" + ", ".join(f"'{term}'" for term in include_terms) + "]"
-
-                query = f"""
+                query = """
                 SELECT d.*, s.name as source_name, c.name as category_name
                 FROM document d
                 JOIN sources s ON d.source_id = s.id
                 LEFT JOIN categories c ON d.category_id = c.id
                 WHERE
                   (
-                    (d.keywords && {include_array_str})
-                    OR (d.mesh_terms && {include_array_str})
+                    (d.keywords && %s)
+                    OR (d.mesh_terms && %s)
                   )
                 """
+
+                # Add include terms as parameters (twice - once for keywords, once for mesh_terms)
+                params.append(include_terms)
+                params.append(include_terms)
 
                 # Add exclusion terms if provided
                 if exclude_terms and len(exclude_terms) > 0:
                     logger.debug(f"DocumentDatabaseManager.search_documents: Exclude terms: {exclude_terms}")
                     exclude_terms = [term.lower() for term in exclude_terms]
 
-                    # Convert exclude_terms to a string representation for the ARRAY constructor
-                    exclude_array_str = "ARRAY[" + ", ".join(f"'{term}'" for term in exclude_terms) + "]"
-
-                    query += f"""
+                    query += """
                     AND NOT (
-                        (d.keywords && {exclude_array_str})
-                        OR (d.mesh_terms && {exclude_array_str})
+                        (d.keywords && %s)
+                        OR (d.mesh_terms && %s)
                     )
                     """
+
+                    # Add exclude terms as parameters (twice - once for keywords, once for mesh_terms)
+                    params.append(exclude_terms)
+                    params.append(exclude_terms)
 
                 logger.debug(f"DocumentDatabaseManager.search_documents: Using keywords and mesh_terms columns")
 
@@ -388,16 +395,24 @@ class DocumentDatabaseManager(DatabaseManager):
                 source_id = self.get_source_id(source_name)
                 logger.debug(f"DocumentDatabaseManager.search_documents: Source ID for {source_name}: {source_id}")
                 if source_id:
-                    query += f" AND d.source_id = {source_id}"
+                    query += " AND d.source_id = %s"
+                    params.append(source_id)
 
-            # Add ordering and limit
-            query += f" ORDER BY d.publication_date DESC NULLS LAST LIMIT {limit} OFFSET {offset}"
+            # Add ordering and limit with parameters instead of string formatting
+            query += " ORDER BY d.publication_date DESC NULLS LAST LIMIT %s OFFSET %s"
+
+            # Add limit and offset to parameters
+            params.extend([limit, offset])
+
+            # Convert to tuple for execution
+            params = tuple(params)
 
             logger.debug(f"DocumentDatabaseManager.search_documents: Executing array operator query")
             logger.debug(f"DocumentDatabaseManager.search_documents: SQL Query: {query}")
+            logger.debug(f"DocumentDatabaseManager.search_documents: Parameters: {params}")
 
-            # Execute the query with a longer timeout
-            results = self.execute(query, (), timeout=30) or []
+            # Execute the query with the specified timeout and proper parameters
+            results = self.execute(query, params, timeout=timeout) or []
             logger.debug(f"DocumentDatabaseManager.search_documents: Array search completed, found {len(results)} results")
 
             # If we got results, return them
@@ -411,27 +426,34 @@ class DocumentDatabaseManager(DatabaseManager):
             # Use the first term for the title search
             search_term = f"%{include_terms[0]}%"
 
-            query = f"""
+            query = """
             SELECT d.*, s.name as source_name, c.name as category_name
             FROM document d
             JOIN sources s ON d.source_id = s.id
             LEFT JOIN categories c ON d.category_id = c.id
-            WHERE d.title ILIKE '{search_term}'
+            WHERE d.title ILIKE %s
             """
+
+            # Initialize parameters list
+            params = [search_term]
 
             # Add source filter if provided
             if source_name:
                 source_id = self.get_source_id(source_name)
                 if source_id:
-                    query += f" AND d.source_id = {source_id}"
+                    query += " AND d.source_id = %s"
+                    params.append(source_id)
 
             # Add ordering and limit
-            query += f" ORDER BY d.publication_date DESC NULLS LAST LIMIT {limit} OFFSET {offset}"
+            query += " ORDER BY d.publication_date DESC NULLS LAST LIMIT %s OFFSET %s"
+            params.extend([limit, offset])
 
             logger.debug(f"DocumentDatabaseManager.search_documents: Executing title search fallback")
+            logger.debug(f"DocumentDatabaseManager.search_documents: SQL Query: {query}")
+            logger.debug(f"DocumentDatabaseManager.search_documents: Parameters: {params}")
 
-            # Execute with a longer timeout
-            results = self.execute(query, (), timeout=15) or []
+            # Execute with the specified timeout and proper parameters
+            results = self.execute(query, tuple(params), timeout=timeout) or []
             logger.debug(f"DocumentDatabaseManager.search_documents: Title search completed, found {len(results)} results")
 
             return results
@@ -816,3 +838,90 @@ class DocumentDatabaseManager(DatabaseManager):
         params.extend([limit, offset])
 
         return self.execute(query, tuple(params)) or []
+
+    def get_user_rating(self,
+                       source_name: str,
+                       external_id: str,
+                       user_id: int) -> Optional[int]:
+        """
+        Get a user's rating for a document.
+
+        Args:
+            source_name: Name of the source (e.g., 'pubmed', 'medrxiv')
+            external_id: External identifier (e.g., DOI, PMID)
+            user_id: User ID
+
+        Returns:
+            Rating value (integer) or None if not rated
+        """
+        # Get document ID
+        document = self.get_document_by_external_id(source_name, external_id)
+        if not document:
+            logger.error(f"Document not found: {source_name}/{external_id}")
+            return None
+
+        document_id = document['id']
+
+        # Get rating from reading_records table
+        query = """
+        SELECT rating
+        FROM reading_records
+        WHERE document_id = %s AND user_id = %s
+        """
+
+        result = self.execute(query, (document_id, user_id))
+        return result[0]['rating'] if result and result[0]['rating'] is not None else None
+
+    def set_user_rating(self,
+                       source_name: str,
+                       external_id: str,
+                       user_id: int,
+                       rating: int) -> bool:
+        """
+        Set a user's rating for a document.
+
+        Args:
+            source_name: Name of the source (e.g., 'pubmed', 'medrxiv')
+            external_id: External identifier (e.g., DOI, PMID)
+            user_id: User ID
+            rating: Rating value (integer)
+
+        Returns:
+            True if successful, False otherwise
+        """
+        # Get document ID
+        document = self.get_document_by_external_id(source_name, external_id)
+        if not document:
+            logger.error(f"Document not found: {source_name}/{external_id}")
+            return False
+
+        document_id = document['id']
+
+        try:
+            # Check if a record already exists
+            check_query = """
+            SELECT id FROM reading_records
+            WHERE document_id = %s AND user_id = %s
+            """
+            existing = self.execute(check_query, (document_id, user_id))
+
+            if existing:
+                # Update existing record
+                update_query = """
+                UPDATE reading_records
+                SET rating = %s
+                WHERE document_id = %s AND user_id = %s
+                """
+                self.execute(update_query, (rating, document_id, user_id), commit=True)
+            else:
+                # Insert new record
+                insert_query = """
+                INSERT INTO reading_records (document_id, user_id, read_timestamp, rating)
+                VALUES (%s, %s, NOW(), %s)
+                """
+                self.execute(insert_query, (document_id, user_id, rating), commit=True)
+
+            return True
+        except Exception as e:
+            logger.error(f"Error setting user rating: {e}")
+            return False
