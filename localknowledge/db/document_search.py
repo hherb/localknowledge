@@ -104,7 +104,7 @@ class DocumentSearchManager(DatabaseManager):
             logger.warning("No include terms provided for keyword search")
             return
 
-        logger.info(f"DocumentSearchManager.keywords: Include terms: {included}")
+        logger.debug(f"DocumentSearchManager.keywords: Include terms: {included}")
 
         # Convert include_terms to a string representation for the ARRAY constructor
         include_array_str = "ARRAY[" + ", ".join(f"'{term}'" for term in included) + "]"
@@ -121,7 +121,7 @@ class DocumentSearchManager(DatabaseManager):
         # Add exclusion terms if provided
         if excluded and len(excluded) > 0:
             excluded = [term.lower() for term in excluded]
-            logger.info(f"DocumentSearchManager.keywords: Exclude terms: {excluded}")
+            logger.debug(f"DocumentSearchManager.keywords: Exclude terms: {excluded}")
 
             # Convert exclude_terms to a string representation for the ARRAY constructor
             exclude_array_str = "ARRAY[" + ", ".join(f"'{term}'" for term in excluded) + "]"
@@ -167,7 +167,7 @@ class DocumentSearchManager(DatabaseManager):
 
                         batch_query = f"{query} LIMIT {current_batch_size} OFFSET {current_offset}"
 
-                        logger.info(f"DocumentSearchManager.keywords: Executing batch query (offset={current_offset}, limit={current_batch_size})")
+                        logger.debug(f"DocumentSearchManager.keywords: Executing batch query (offset={current_offset}, limit={current_batch_size})")
                         logger.debug(f"DocumentSearchManager.keywords: SQL Query: {batch_query}")
 
                         # Execute the query directly with cursor to avoid loading all results at once
@@ -179,7 +179,7 @@ class DocumentSearchManager(DatabaseManager):
 
                             # Get the number of rows in this batch
                             row_count = cursor.rowcount
-                            logger.info(f"DocumentSearchManager.keywords: Batch returned {row_count} results")
+                            logger.debug(f"DocumentSearchManager.keywords: Batch returned {row_count} results")
 
                             # No more results
                             if row_count == 0:
@@ -197,7 +197,7 @@ class DocumentSearchManager(DatabaseManager):
                             if row_count < current_batch_size or (limit > 0 and total_fetched >= limit):
                                 break
 
-                    logger.info(f"DocumentSearchManager.keywords: Search completed, fetched {total_fetched} results")
+                    logger.debug(f"DocumentSearchManager.keywords: Search completed, fetched {total_fetched} results")
 
             except Exception as e:
                 logger.error(f"DocumentSearchManager.keywords: Error during search: {e}")
@@ -289,7 +289,7 @@ class DocumentSearchManager(DatabaseManager):
         Returns:
             Generator yielding matching documents with similarity scores
         """
-        logger.info(f"DocumentSearchManager.semantic: Query: {question}")
+        logger.debug(f"DocumentSearchManager.semantic: Query: {question}")
 
         # Create a result queue for asynchronous mode
         result_queue = []
@@ -326,7 +326,7 @@ class DocumentSearchManager(DatabaseManager):
                         timeout_cursor.execute(f"SET statement_timeout = {timeout * 1000};")  # Convert to milliseconds
 
                 # Search for similar documents
-                logger.info(f"Searching for similar documents with threshold={similarity_threshold}")
+                logger.debug(f"Searching for similar documents with threshold={similarity_threshold}")
 
                 # Get the embed_source_id
                 embed_source_record = embedding_source_db.get_embedding_source_by_name(embed_source)
@@ -346,20 +346,20 @@ class DocumentSearchManager(DatabaseManager):
                     threshold=similarity_threshold
                 )
 
-                logger.info(f"Search returned {len(search_results)} results")
+                logger.debug(f"Search returned {len(search_results)} results")
 
                 # Apply reranking if provided
                 if reranker and search_results:
                     try:
                         search_results = reranker(question, search_results)
-                        logger.info(f"Reranking applied, now have {len(search_results)} results")
+                        logger.debug(f"Reranking applied, now have {len(search_results)} results")
                     except Exception as e:
                         logger.error(f"Error during reranking: {e}")
 
                 # Filter by source if needed
                 if source_id:
                     search_results = [r for r in search_results if r.get('source_id') == source_id]
-                    logger.info(f"After source filtering: {len(search_results)} results")
+                    logger.debug(f"After source filtering: {len(search_results)} results")
 
                 # Add results to the queue
                 result_queue.extend(search_results)
@@ -459,7 +459,7 @@ class DocumentSearchManager(DatabaseManager):
         Returns:
             Generator yielding matching documents with similarity scores
         """
-        logger.info(f"DocumentSearchManager.hyde: Query: {question}")
+        logger.debug(f"DocumentSearchManager.hyde: Query: {question}")
 
         # Create a result queue for asynchronous mode
         result_queue = []
@@ -479,7 +479,7 @@ class DocumentSearchManager(DatabaseManager):
                 if hydeprompt is None:
                     # Use default model if none specified
                     generation_model = model_name or "gemma3:4b"
-                    logger.info(f"Generating hypothetical document using model: {generation_model}")
+                    logger.debug(f"Generating hypothetical document using model: {generation_model}")
 
                     # Generate the hypothetical document
                     hypothetical_doc = generate_hypothetical_abstract(question, model=generation_model)
@@ -489,15 +489,15 @@ class DocumentSearchManager(DatabaseManager):
                         error_info[0] = (ValueError("Failed to generate hypothetical document"), "")
                         return
 
-                    logger.info(f"Generated hypothetical document ({len(hypothetical_doc)} chars)")
+                    logger.debug(f"Generated hypothetical document ({len(hypothetical_doc)} chars)")
                 else:
                     # Use the provided hypothetical document
                     hypothetical_doc = hydeprompt
-                    logger.info(f"Using provided hypothetical document ({len(hypothetical_doc)} chars)")
+                    logger.debug(f"Using provided hypothetical document ({len(hypothetical_doc)} chars)")
 
                 # Create embedding for the hypothetical document
                 embedding_model = self.embedding_model
-                logger.info(f"Creating embedding using model: {embedding_model}")
+                logger.debug(f"Creating embedding using model: {embedding_model}")
 
                 hyde_embedding = get_embedding_from_text(hypothetical_doc, model=embedding_model)
 
@@ -519,7 +519,7 @@ class DocumentSearchManager(DatabaseManager):
                         timeout_cursor.execute(f"SET statement_timeout = {timeout * 1000};")  # Convert to milliseconds
 
                 # Search for similar documents
-                logger.info(f"Searching for similar documents with threshold={similarity_threshold}")
+                logger.debug(f"Searching for similar documents with threshold={similarity_threshold}")
 
                 # Get the embed_source_id
                 embed_source_record = embedding_source_db.get_embedding_source_by_name(embed_source)
@@ -539,7 +539,7 @@ class DocumentSearchManager(DatabaseManager):
                     threshold=similarity_threshold
                 )
 
-                logger.info(f"Search returned {len(search_results)} results")
+                logger.debug(f"Search returned {len(search_results)} results")
 
                 # Add the hypothetical document to the results for reference
                 for result in search_results:
@@ -549,14 +549,14 @@ class DocumentSearchManager(DatabaseManager):
                 if reranker and search_results:
                     try:
                         search_results = reranker(question, search_results)
-                        logger.info(f"Reranking applied, now have {len(search_results)} results")
+                        logger.debug(f"Reranking applied, now have {len(search_results)} results")
                     except Exception as e:
                         logger.error(f"Error during reranking: {e}")
 
                 # Filter by source if needed
                 if source_id:
                     search_results = [r for r in search_results if r.get('source_id') == source_id]
-                    logger.info(f"After source filtering: {len(search_results)} results")
+                    logger.debug(f"After source filtering: {len(search_results)} results")
 
                 # Add results to the queue
                 result_queue.extend(search_results)

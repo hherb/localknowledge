@@ -275,9 +275,9 @@ class DocumentDatabaseManager(DatabaseManager):
         Returns:
             List of matching documents
         """
-        print(f"DocumentDatabaseManager.search_documents: Starting search with text: {search_text}")
-        print(f"DocumentDatabaseManager.search_documents: Source filter: {source_name}")
-        print(f"DocumentDatabaseManager.search_documents: Limit: {limit}, Offset: {offset}")
+        logger.debug(f"DocumentDatabaseManager.search_documents: Starting search with text: {search_text}")
+        logger.debug(f"DocumentDatabaseManager.search_documents: Source filter: {source_name}")
+        logger.debug(f"DocumentDatabaseManager.search_documents: Limit: {limit}, Offset: {offset}")
 
         try:
             # Parse the search text into an array of terms
@@ -312,7 +312,7 @@ class DocumentDatabaseManager(DatabaseManager):
             if not include_terms:
                 include_terms = [search_text.lower()]
 
-            print(f"DocumentDatabaseManager.search_documents: Include terms: {include_terms}")
+            logger.debug(f"DocumentDatabaseManager.search_documents: Include terms: {include_terms}")
 
             # Check if all_keywords column exists
             result = self.execute("""
@@ -338,7 +338,7 @@ class DocumentDatabaseManager(DatabaseManager):
 
                 # Add exclusion terms if provided
                 if exclude_terms and len(exclude_terms) > 0:
-                    print(f"DocumentDatabaseManager.search_documents: Exclude terms: {exclude_terms}")
+                    logger.debug(f"DocumentDatabaseManager.search_documents: Exclude terms: {exclude_terms}")
                     exclude_terms = [term.lower() for term in exclude_terms]
 
                     # Convert exclude_terms to a string representation for the ARRAY constructor
@@ -348,7 +348,7 @@ class DocumentDatabaseManager(DatabaseManager):
                     AND NOT (d.all_keywords && {exclude_array_str})
                     """
 
-                print(f"DocumentDatabaseManager.search_documents: Using all_keywords column with GIN index")
+                logger.debug(f"DocumentDatabaseManager.search_documents: Using all_keywords column with GIN index")
             else:
                 # Fall back to the original pattern with keywords and mesh_terms
                 # Convert include_terms to a string representation for the ARRAY constructor
@@ -368,7 +368,7 @@ class DocumentDatabaseManager(DatabaseManager):
 
                 # Add exclusion terms if provided
                 if exclude_terms and len(exclude_terms) > 0:
-                    print(f"DocumentDatabaseManager.search_documents: Exclude terms: {exclude_terms}")
+                    logger.debug(f"DocumentDatabaseManager.search_documents: Exclude terms: {exclude_terms}")
                     exclude_terms = [term.lower() for term in exclude_terms]
 
                     # Convert exclude_terms to a string representation for the ARRAY constructor
@@ -381,31 +381,31 @@ class DocumentDatabaseManager(DatabaseManager):
                     )
                     """
 
-                print(f"DocumentDatabaseManager.search_documents: Using keywords and mesh_terms columns")
+                logger.debug(f"DocumentDatabaseManager.search_documents: Using keywords and mesh_terms columns")
 
             # Add source filter if provided
             if source_name:
                 source_id = self.get_source_id(source_name)
-                print(f"DocumentDatabaseManager.search_documents: Source ID for {source_name}: {source_id}")
+                logger.debug(f"DocumentDatabaseManager.search_documents: Source ID for {source_name}: {source_id}")
                 if source_id:
                     query += f" AND d.source_id = {source_id}"
 
             # Add ordering and limit
             query += f" ORDER BY d.publication_date DESC NULLS LAST LIMIT {limit} OFFSET {offset}"
 
-            print(f"DocumentDatabaseManager.search_documents: Executing array operator query")
-            print(f"DocumentDatabaseManager.search_documents: SQL Query: {query}")
+            logger.debug(f"DocumentDatabaseManager.search_documents: Executing array operator query")
+            logger.debug(f"DocumentDatabaseManager.search_documents: SQL Query: {query}")
 
             # Execute the query with a longer timeout
             results = self.execute(query, (), timeout=30) or []
-            print(f"DocumentDatabaseManager.search_documents: Array search completed, found {len(results)} results")
+            logger.debug(f"DocumentDatabaseManager.search_documents: Array search completed, found {len(results)} results")
 
             # If we got results, return them
             if results:
                 return results
 
             # If no results from array search, try a simple title search as fallback
-            print("DocumentDatabaseManager.search_documents: No results from array search, trying title search")
+            logger.debug("DocumentDatabaseManager.search_documents: No results from array search, trying title search")
 
             # Simple title search with ILIKE
             # Use the first term for the title search
@@ -428,22 +428,22 @@ class DocumentDatabaseManager(DatabaseManager):
             # Add ordering and limit
             query += f" ORDER BY d.publication_date DESC NULLS LAST LIMIT {limit} OFFSET {offset}"
 
-            print(f"DocumentDatabaseManager.search_documents: Executing title search fallback")
+            logger.debug(f"DocumentDatabaseManager.search_documents: Executing title search fallback")
 
             # Execute with a longer timeout
             results = self.execute(query, (), timeout=15) or []
-            print(f"DocumentDatabaseManager.search_documents: Title search completed, found {len(results)} results")
+            logger.debug(f"DocumentDatabaseManager.search_documents: Title search completed, found {len(results)} results")
 
             return results
 
         except TimeoutError as e:
-            print(f"DocumentDatabaseManager.search_documents: Search timed out: {e}")
+            logger.debug(f"DocumentDatabaseManager.search_documents: Search timed out: {e}")
             # Return an empty result set on timeout
             return []
         except Exception as e:
-            print(f"DocumentDatabaseManager.search_documents: Error during search: {e}")
+            logger.warning(f"DocumentDatabaseManager.search_documents: Error during search: {e}")
             import traceback
-            print(traceback.format_exc())
+            logger.warning(traceback.format_exc())
             return []
 
     def get_recent_documents(self,

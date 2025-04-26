@@ -27,15 +27,8 @@ BOOK_ICON_PATH = "localknowledge/ui/icons/book.png"
 from PySide6.QtWebEngineWidgets import QWebEngineView
 import pymupdf4llm
 
-# Import our custom PDFViewer widget
-from localknowledge.ui.pdfviewer import PDFViewer
-
-# Import optional dependencies
-try:
-    import markdown
-    MARKDOWN_AVAILABLE = True
-except ImportError:
-    MARKDOWN_AVAILABLE = False
+# Import our custom document display widget
+from localknowledge.ui.document_display_widget import DocumentDisplayWidget
 
 # Try to import remove_line_numbers
 try:
@@ -49,6 +42,7 @@ except ImportError:
 
 from localknowledge.db.document import DocumentDatabaseManager
 from localknowledge.embeddings.embedding_manager import EmbeddingManager
+from localknowledge.context import set_current_project
 
 # Try to import rerankers
 try:
@@ -439,60 +433,21 @@ class KnowledgeBrowser(QWidget):
             }
         """)
 
-        # Right side - tabbed view
-        self.tab_widget = QTabWidget()
+        # Right side - document display widget
+        self.document_display = DocumentDisplayWidget(
+            parent=self,
+            status_bar=self.status_bar,
+            db_manager=self.db_manager,
+            pdf_base_dir=self.pdf_base_dir
+        )
 
-        # PDF tab - use our custom PDFViewer widget with status bar for search results
-        self.pdf_viewer = PDFViewer(self, self.status_bar)
-
-        # Create a container widget for the PDF view
-        pdf_container = QWidget()
-        pdf_layout = QVBoxLayout(pdf_container)
-        pdf_layout.setContentsMargins(0, 0, 0, 0)
-        pdf_layout.addWidget(self.pdf_viewer)
-
-        # Connect signals from the PDF viewer
-        self.pdf_viewer.searchCompleted.connect(self._on_search_completed)
-
-        # Add the container to the tab
-        self.tab_widget.addTab(pdf_container, "PDF")
-
-        # Markdown tab
-        self.markdown_view = QWebEngineView()
-        self.tab_widget.addTab(self.markdown_view, "Extracted Text")
-
-        # Create a container for the right side with tabs and bookmark controls
-        right_container = QWidget()
-        right_layout = QVBoxLayout(right_container)
-        right_layout.setContentsMargins(0, 0, 0, 0)
-
-        # Add bookmark controls
-        bookmark_container = QWidget()
-        bookmark_layout = QHBoxLayout(bookmark_container)
-        bookmark_layout.setContentsMargins(5, 5, 5, 5)
-
-        bookmark_label = QLabel("Bookmark:")
-        self.personal_bookmark_cb = QCheckBox("Personal")
-        self.personal_bookmark_cb.setToolTip("Add to personal bookmarks")
-        self.personal_bookmark_cb.stateChanged.connect(self._toggle_personal_bookmark)
-
-        self.project_bookmark_cb = QCheckBox("Project")
-        self.project_bookmark_cb.setToolTip("Add to project bookmarks")
-        self.project_bookmark_cb.setEnabled(self.current_project_id is not None)
-        self.project_bookmark_cb.stateChanged.connect(self._toggle_project_bookmark)
-
-        bookmark_layout.addWidget(bookmark_label)
-        bookmark_layout.addWidget(self.personal_bookmark_cb)
-        bookmark_layout.addWidget(self.project_bookmark_cb)
-        bookmark_layout.addStretch(1)
-
-        # Add tab widget and bookmark controls to right container
-        right_layout.addWidget(bookmark_container)
-        right_layout.addWidget(self.tab_widget)
+        # Connect signals from the document display widget
+        self.document_display.documentRated.connect(self._on_document_rated)
+        self.document_display.documentBookmarked.connect(self._on_document_bookmarked)
 
         # Add widgets to splitter
         self.splitter.addWidget(self.publication_list)
-        self.splitter.addWidget(right_container)
+        self.splitter.addWidget(self.document_display)
 
         # Set initial sizes (40% for list, 60% for document)
         self.splitter.setSizes([400, 600])
@@ -1016,15 +971,8 @@ class KnowledgeBrowser(QWidget):
         else:
             self.status_bar.showMessage(f"Publication: {title}")
 
-        # If this is a semantic search result with matched text, show it
-        if 'matched_text' in self.current_publication:
-            self._display_matched_text(self.current_publication['matched_text'])
-
-        # Check bookmark status
-        self._check_bookmark_status()
-
-        # Load the PDF if available
-        self._load_publication_content()
+        # Display the publication in the document display widget
+        self.document_display.display_document(self.current_publication)
 
     def _load_publication_content(self):
         """Load the selected publication's PDF and markdown content into the tabs."""
@@ -1365,182 +1313,51 @@ class KnowledgeBrowser(QWidget):
 
     def _check_bookmark_status(self):
         """Check if the current publication is bookmarked."""
-        if not self.current_publication:
-            return
-
-        source_name = self.current_publication.get('source_name')
-        external_id = self.current_publication.get('external_id')
-
-        if not source_name or not external_id:
-            return
-
-        try:
-            # Always ensure the project checkbox is enabled/disabled based on current project
-            # This needs to be done regardless of the current publication
-            self.project_bookmark_cb.setEnabled(self.current_project_id is not None)
-
-            # Check personal bookmark
-            personal_bookmark = self.db_manager.is_bookmarked(
-                source_name,
-                external_id,
-                self.user_id
-            )
-
-            # Check project bookmark if a project is selected
-            project_bookmark = None
-            if self.current_project_id:
-                project_bookmark = self.db_manager.is_bookmarked(
-                    source_name,
-                    external_id,
-                    self.user_id,
-                    self.current_project_id
-                )
-
-            # Update checkboxes without triggering signals
-            self.personal_bookmark_cb.blockSignals(True)
-            self.project_bookmark_cb.blockSignals(True)
-
-            # Set checkbox states
-            is_personal = personal_bookmark == 'personal' or personal_bookmark == 'both'
-            self.personal_bookmark_cb.setChecked(is_personal)
-
-            # Set project checkbox state
-            if self.current_project_id:
-                is_project = project_bookmark == 'project' or project_bookmark == 'both'
-                self.project_bookmark_cb.setChecked(is_project)
-            else:
-                self.project_bookmark_cb.setChecked(False)
-
-            # Unblock signals
-            self.personal_bookmark_cb.blockSignals(False)
-            self.project_bookmark_cb.blockSignals(False)
-
-            # Debug output
-            print(f"Bookmark status for {source_name}/{external_id}: Personal={is_personal}, Project={self.project_bookmark_cb.isChecked()}, Project enabled={self.project_bookmark_cb.isEnabled()}")
-
-        except Exception as e:
-            print(f"Error checking bookmark status: {e}")
-            traceback.print_exc()
+        # This method is now handled by the document display widget
+        pass
 
     def _toggle_personal_bookmark(self, state):
         """Toggle personal bookmark for the current publication."""
-        if not self.current_publication:
-            return
-
-        source_name = self.current_publication.get('source_name')
-        external_id = self.current_publication.get('external_id')
-
-        if not source_name or not external_id:
-            return
-
-        try:
-            # Check if there's also a project bookmark
-            project_bookmark = False
-            if self.current_project_id:
-                project_bookmark_type = self.db_manager.is_bookmarked(
-                    source_name,
-                    external_id,
-                    self.user_id,
-                    self.current_project_id
-                )
-                project_bookmark = project_bookmark_type is not None
-
-            if state:  # Checked
-                # Add personal bookmark
-                bookmark_type = 'both' if project_bookmark else 'personal'
-                self.db_manager.add_bookmark(
-                    source_name,
-                    external_id,
-                    self.user_id,
-                    bookmark_type,
-                    self.current_project_id if project_bookmark else None
-                )
-                self.status_bar.showMessage("Added to personal bookmarks")
-            else:  # Unchecked
-                if project_bookmark:
-                    # Change to project-only bookmark
-                    self.db_manager.add_bookmark(
-                        source_name,
-                        external_id,
-                        self.user_id,
-                        'project',
-                        self.current_project_id
-                    )
-                else:
-                    # Remove personal bookmark
-                    self.db_manager.remove_bookmark(
-                        source_name,
-                        external_id,
-                        self.user_id
-                    )
-                self.status_bar.showMessage("Removed from personal bookmarks")
-
-        except Exception as e:
-            print(f"Error toggling personal bookmark: {e}")
-            traceback.print_exc()
-            self.status_bar.showMessage("Error updating bookmark")
+        # This method is now handled by the document display widget
+        pass
 
     def _toggle_project_bookmark(self, state):
         """Toggle project bookmark for the current publication."""
-        if not self.current_publication or not self.current_project_id:
-            return
+        # This method is now handled by the document display widget
+        pass
 
-        source_name = self.current_publication.get('source_name')
-        external_id = self.current_publication.get('external_id')
+    def _on_document_rated(self, document, rating):
+        """
+        Handle document rating from the document display widget.
 
-        if not source_name or not external_id:
-            return
+        Args:
+            document: Document data dictionary
+            rating: Rating value (1 for positive, -1 for negative)
+        """
+        # The document display widget already handles the database update,
+        # so we just need to update the UI if needed
+        self.status_bar.showMessage(f"Document rated {'positively' if rating > 0 else 'negatively'}")
 
-        try:
-            # Check if there's also a personal bookmark
-            personal_bookmark_type = self.db_manager.is_bookmarked(
-                source_name,
-                external_id,
-                self.user_id
-            )
-            personal_bookmark = personal_bookmark_type is not None and personal_bookmark_type != 'project'
+    def _on_document_bookmarked(self, document, bookmark_type, is_bookmarked):
+        """
+        Handle document bookmarking from the document display widget.
 
-            if state:  # Checked
-                # Add project bookmark
-                bookmark_type = 'both' if personal_bookmark else 'project'
-                self.db_manager.add_bookmark(
-                    source_name,
-                    external_id,
-                    self.user_id,
-                    bookmark_type,
-                    self.current_project_id
-                )
-                self.status_bar.showMessage("Added to project bookmarks")
-            else:  # Unchecked
-                if personal_bookmark:
-                    # Change to personal-only bookmark
-                    self.db_manager.add_bookmark(
-                        source_name,
-                        external_id,
-                        self.user_id,
-                        'personal'
-                    )
-                else:
-                    # Remove project bookmark
-                    self.db_manager.remove_bookmark(
-                        source_name,
-                        external_id,
-                        self.user_id,
-                        self.current_project_id
-                    )
-                self.status_bar.showMessage("Removed from project bookmarks")
-
-        except Exception as e:
-            print(f"Error toggling project bookmark: {e}")
-            traceback.print_exc()
-            self.status_bar.showMessage("Error updating bookmark")
+        Args:
+            document: Document data dictionary
+            bookmark_type: Type of bookmark ("personal" or "project")
+            is_bookmarked: Whether the document was bookmarked or unbookmarked
+        """
+        # The document display widget already handles the database update,
+        # so we just need to update the UI if needed
+        action = "bookmarked" if is_bookmarked else "unbookmarked"
+        self.status_bar.showMessage(f"Document {action} as {bookmark_type}")
 
     def set_current_project(self, project_id):
         """Set the current project ID for project bookmarks."""
         self.current_project_id = project_id
 
-        # Update project bookmark checkbox state
-        self.project_bookmark_cb.setEnabled(project_id is not None)
+        # Update context with the new project ID
+        set_current_project(project_id)
 
         # Print debug info
         print(f"Setting current project to {project_id}, checkbox enabled: {self.project_bookmark_cb.isEnabled()}")

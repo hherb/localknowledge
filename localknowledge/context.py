@@ -8,6 +8,8 @@ subscription system for notifications when values change.
 import threading
 import logging
 import traceback
+import os
+from pathlib import Path
 from typing import Dict, Any, Optional, List, Set, Callable
 from PySide6.QtCore import QObject, Signal, QThread, QTimer, QCoreApplication
 
@@ -292,3 +294,55 @@ def get_current_project_name():
 CURRENT_USER = "current_user"
 CURRENT_PROJECT = "current_project"
 DB_CONNECTION_PARAMS = "db_connection_params"
+PDF_BASE_DIR = "pdf_base_dir"
+
+
+def get_pdf_base_dir() -> Path:
+    """
+    Get the base directory for PDF files from the context.
+    If not set in the context, retrieves from environment variable or uses default,
+    then sets it in the context for future use.
+
+    Returns:
+        Path: Path to the PDF storage directory
+    """
+    # First try to get from context
+    pdf_base_dir = get_context(PDF_BASE_DIR)
+
+    # If not in context, get from environment or use default
+    if pdf_base_dir is None:
+        # Get PDF directory from environment variable or use default
+        pdf_base_dir_str = os.environ.get('PDF_BASE_DIR')
+
+        if not pdf_base_dir_str:
+            home_dir = os.path.expanduser("~")
+            pdf_base_dir_str = os.path.join(home_dir, "knowledgebase", "pdf")
+        else:
+            # Expand the tilde if it exists in the path
+            pdf_base_dir_str = os.path.expanduser(pdf_base_dir_str)
+
+        # Convert to Path object
+        pdf_base_dir = Path(pdf_base_dir_str)
+
+        # Store in context for future use
+        set_context(PDF_BASE_DIR, pdf_base_dir)
+
+        # Print debug info about the PDF directory
+        if not pdf_base_dir.exists():
+            logger.warning(f"PDF directory {pdf_base_dir} does not exist")
+
+    return pdf_base_dir
+
+
+def set_pdf_base_dir(path: str or Path):
+    """
+    Set the PDF base directory in the context.
+
+    Args:
+        path: Path to the PDF storage directory (string or Path object)
+    """
+    if isinstance(path, str):
+        # Convert string to Path and expand user directory if needed
+        path = Path(os.path.expanduser(path))
+
+    set_context(PDF_BASE_DIR, path)
