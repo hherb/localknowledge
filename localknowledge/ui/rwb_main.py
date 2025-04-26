@@ -509,8 +509,12 @@ class MainWindow(QMainWindow):
         # Print settings file location for debugging
         print(f"Settings file location: {self.settings.fileName()}")
 
-        # Current logged-in user
-        self.current_user = None
+        # Import context management
+        from localknowledge.context import register_context_listener, CURRENT_USER, CURRENT_PROJECT
+
+        # Register listeners for user and project changes
+        register_context_listener(CURRENT_USER, self._on_user_changed)
+        register_context_listener(CURRENT_PROJECT, self._on_project_changed)
 
         # Set up plugin manager
         self.plugin_manager = PluginManager()
@@ -539,9 +543,7 @@ class MainWindow(QMainWindow):
             # Login successful, get user from context
             self.current_user = get_context(CURRENT_USER)
 
-            # Update window title to show logged-in user
-            if self.current_user:
-                self.setWindowTitle(f"RWB - Researcher's Workbench - {self.current_user['firstname']} {self.current_user['surname']}")
+            # Update window title is handled in on_login_successful
 
             # Auto-load discovered plugins
             self.load_discovered_plugins()
@@ -552,12 +554,15 @@ class MainWindow(QMainWindow):
     @Slot(dict)
     def on_login_successful(self, user_data):
         """Handle successful login."""
-        from localknowledge.context import get_context, CURRENT_USER
+        from localknowledge.context import get_current_user
 
         # Get user from context (should be set by login dialog)
-        self.current_user = get_context(CURRENT_USER)
-        if self.current_user:
-            self.statusBar().showMessage(f"Welcome, {self.current_user['firstname']} {self.current_user['surname']}")
+        current_user = get_current_user()
+        if current_user:
+            self.statusBar().showMessage(f"Welcome, {current_user['firstname']} {current_user['surname']}")
+
+        # Update window title with user and project info
+        self._update_window_title()
 
         # Restore window state after login if not already done
         if not self.window_state_restored:
@@ -1227,16 +1232,52 @@ class MainWindow(QMainWindow):
             print(f"Auto-loading plugin: {plugin_name}")
             self.load_plugin(plugin_name)
 
+    def _on_user_changed(self, _):
+        """
+        Handle user change from context system.
+
+        Args:
+            _: User information dictionary (unused)
+        """
+        # Update window title when user changes
+        self._update_window_title()
+
+    def _on_project_changed(self, _):
+        """
+        Handle project change from context system.
+
+        Args:
+            _: Project ID (unused)
+        """
+        # Update window title when project changes
+        self._update_window_title()
+
+    def _update_window_title(self):
+        """Update the window title with current project and user information."""
+        from localknowledge.context import get_current_user, get_current_project_name
+
+        title = "RWB - Researcher's Workbench"
+
+        # Add user name if available
+        current_user = get_current_user()
+        if current_user:
+            user_name = f"{current_user.get('firstname', '')} {current_user.get('surname', '')}"
+            title += f" - {user_name}"
+
+        # Add project name if available
+        project_name = get_current_project_name()
+        if project_name:
+            title += f" - Project: {project_name}"
+
+        self.setWindowTitle(title)
+
     def logout(self):
         """Log out the current user and show the login dialog."""
-        from localknowledge.context import set_context, CURRENT_USER, CURRENT_PROJECT
+        from localknowledge.context import set_current_user, set_current_project
 
-        # Clear current user in context
-        set_context(CURRENT_USER, None)
-        set_context(CURRENT_PROJECT, None)
-
-        # Clear current user in main window
-        self.current_user = None
+        # Clear current user and project in context
+        set_current_user(None)
+        set_current_project(None)
 
         # Close all plugins
         for plugin_name in list(self.plugin_manager.get_active_plugins().keys()):

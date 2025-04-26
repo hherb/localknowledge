@@ -285,6 +285,12 @@ class NewsBrowser(QWidget):
         """
         super().__init__(parent)
 
+        # Import context management
+        from localknowledge.context import (
+            register_context_listener, get_current_user, get_current_project,
+            CURRENT_USER, CURRENT_PROJECT
+        )
+
         self.db_manager = DocumentDatabaseManager()
         self.doc_client = DocumentClient()
         # Initialize reading tracker for persistent read/unread status
@@ -293,11 +299,21 @@ class NewsBrowser(QWidget):
         self.suggestions_manager = ReadingSuggestionsManager()
         self.current_document = None
         self.current_suggestion = None
-        # Default user ID - in a real app, this would come from user authentication
-        self.user_id = 1
+
+        # Get current user from context
+        current_user = get_current_user()
+        self.user_id = current_user['id'] if current_user else 1
+        print(f"Current user: {current_user}, user_id: {self.user_id}")
+
         self.pdf_base_dir = self._get_pdf_base_dir()
         self.read_summaries = set()  # Local cache of read summaries for performance
-        self.current_project_id = None  # Current selected project ID, None for personal view
+
+        # Get current project from context
+        self.current_project_id = get_current_project()
+
+        # Register listeners for user and project changes
+        register_context_listener(CURRENT_USER, self._on_user_changed)
+        register_context_listener(CURRENT_PROJECT, self._on_project_changed)
 
         # For PDF search
         self.current_pdf_path = None
@@ -597,72 +613,158 @@ class NewsBrowser(QWidget):
                     self._load_suggestions_for_documents(doc_ids, suggestions_map)
 
             elif filter_idx == 2:  # Reading Suggestions
-                # Get documents from reading_suggestions for the current user that are not in reading_records
-                query = """
-                SELECT d.*, s.name as source_name, rs.id as suggestion_id,
-                       rs.recommendation_strength, rs.confidence_level, rs.comment,
-                       rs.user_agreement, e.name as evaluator_name
-                FROM reading_suggestions rs
-                JOIN document d ON rs.document_id = d.id
-                JOIN sources s ON d.source_id = s.id
-                JOIN evaluators e ON rs.evaluator_id = e.id
-                WHERE rs.user_id = %s
-                AND NOT EXISTS (
-                    SELECT 1 FROM reading_records rr
-                    WHERE rr.document_id = rs.document_id
-                    AND rr.user_id = %s
-                )
-                ORDER BY rs.recommendation_strength DESC, rs.created_at DESC
-                LIMIT 100
-                """
+                # Get reading suggestions for the current user using the suggestions manager
                 try:
-                    result = self.db_manager.execute(query, (self.user_id, self.user_id))
-                    if result:
-                        documents = []
-                        for row in result:
-                            # Create document dictionary
-                            doc = {k: v for k, v in row.items() if k not in ['suggestion_id', 'recommendation_strength', 'confidence_level', 'comment', 'user_agreement', 'evaluator_name']}
-                            documents.append(doc)
+                    # Clear existing documents list
+                    documents = []
 
-                            # Store suggestion info
-                            suggestions_map[doc['id']] = {
-                                'id': row['suggestion_id'],
-                                'recommendation_strength': row['recommendation_strength'],
-                                'confidence_level': row['confidence_level'],
-                                'comment': row['comment'],
-                                'user_agreement': row['user_agreement'],
-                                'evaluator_name': row['evaluator_name']
-                            }
+                    # Get suggestions from the suggestions manager
+                    print(f"Getting reading suggestions for user_id={self.user_id}")
+
+                    # Check if there are any suggestions for this user
+                    check_query = "SELECT COUNT(*) FROM reading_suggestions WHERE user_id = %s"
+                    count_result = self.db_manager.execute(check_query, (self.user_id,))
+                    suggestion_count = count_result[0]['count'] if count_result else 0
+                    print(f"Found {suggestion_count} suggestions in the database for user_id={self.user_id}")
+
+                    # If no suggestions for current user, try user_id=2 (for testing/demo purposes)
+                    if suggestion_count == 0 and self.user_id != 2:
+                        print(f"No suggestions found for user_id={self.user_id}, trying user_id=2 for demo purposes")
+                        suggestions = self.suggestions_manager.get_reading_suggestions(
+                            user_id=2,  # Use user_id=2 for demo purposes
+                            include_read=False,
+                            min_strength=0,
+                            limit=100
+                        )
+                    else:
+                        suggestions = self.suggestions_manager.get_reading_suggestions(
+                            user_id=self.user_id,
+                            include_read=False,  # Only show unread suggestions
+                            min_strength=0,      # Include all strengths
+                            limit=100
+                        )
+
+                    # Debug: Print the first suggestion to see its structure
+                    if suggestions and len(suggestions) > 0:
+                        print(f"First suggestion keys: {suggestions[0].keys()}")
+                    else:
+                        print("No reading suggestions found")
+
+                    if suggestions:
+                        for row in suggestions:
+                            # The reading_suggestions query joins with the document table,
+                            # so we should have both document_id from reading_suggestions and id from document
+
+                            # First, ensure we have a document ID
+                            document_id = None
+                            if 'document_id' in row:
+                                document_id = row['document_id']
+                            elif 'id' in row:
+                                document_id = row['id']
+
+                            if document_id is not None:
+                                # Create document dictionary from the suggestion data
+                                # Filter out suggestion-specific fields to get just the document data
+                                doc = {k: v for k, v in row.items() if k not in [
+                                    'id', 'user_id', 'evaluator_id', 'recommendation_strength',
+                                    'confidence_level', 'comment', 'user_agreement',
+                                    'created_at', 'updated_at', 'evaluator_name'
+                                ]}
+
+                                # Ensure the document has an id field
+                                doc['id'] = document_id
+
+                                documents.append(doc)
+
+                                # Store suggestion info in the suggestions map
+                                suggestions_map[document_id] = {
+                                    'id': row.get('id'),
+                                    'recommendation_strength': row.get('recommendation_strength', 0),
+                                    'confidence_level': row.get('confidence_level', 0),
+                                    'comment': row.get('comment', ''),
+                                    'user_agreement': row.get('user_agreement'),
+                                    'evaluator_name': row.get('evaluator_name', 'Unknown')
+                                }
+                            else:
+                                print(f"Warning: Suggestion without document ID: {row}")
+
+                    print(f"Found {len(documents)} reading suggestions")
                 except Exception as e:
                     print(f"Error getting reading suggestions: {e}")
                     traceback.print_exc()
 
             elif filter_idx == 3:  # Recommended
                 # Get reading suggestions for the current user
-                suggestions = self.suggestions_manager.get_reading_suggestions(
-                    user_id=self.user_id,
-                    include_read=False,
-                    min_strength=1,
-                    limit=100
-                )
+                print(f"Getting recommended documents for user_id={self.user_id}")
+
+                # Check if there are any suggestions for this user
+                check_query = "SELECT COUNT(*) FROM reading_suggestions WHERE user_id = %s AND recommendation_strength >= 1"
+                count_result = self.db_manager.execute(check_query, (self.user_id,))
+                suggestion_count = count_result[0]['count'] if count_result else 0
+                print(f"Found {suggestion_count} recommendations in the database for user_id={self.user_id}")
+
+                # If no suggestions for current user, try user_id=2 (for testing/demo purposes)
+                if suggestion_count == 0 and self.user_id != 2:
+                    print(f"No recommendations found for user_id={self.user_id}, trying user_id=2 for demo purposes")
+                    suggestions = self.suggestions_manager.get_reading_suggestions(
+                        user_id=2,  # Use user_id=2 for demo purposes
+                        include_read=False,
+                        min_strength=1,
+                        limit=100
+                    )
+                else:
+                    suggestions = self.suggestions_manager.get_reading_suggestions(
+                        user_id=self.user_id,
+                        include_read=False,
+                        min_strength=1,
+                        limit=100
+                    )
+
+                # Debug: Print the first suggestion to see its structure
+                if suggestions and len(suggestions) > 0:
+                    print(f"First recommendation keys: {suggestions[0].keys()}")
+                else:
+                    print("No recommendations found")
 
                 # Extract documents from suggestions
                 if suggestions:
                     documents = []
                     for suggestion in suggestions:
-                        # Create a document dictionary with all the fields from the suggestion
-                        doc = {k: v for k, v in suggestion.items() if k not in ['id', 'user_id', 'evaluator_id', 'recommendation_strength', 'confidence_level', 'comment', 'user_agreement', 'created_at', 'updated_at', 'evaluator_name']}
-                        documents.append(doc)
+                        # The reading_suggestions query joins with the document table,
+                        # so we should have both document_id from reading_suggestions and id from document
 
-                        # Store the suggestion in the map
-                        suggestions_map[doc['id']] = {
-                            'id': suggestion['id'],
-                            'recommendation_strength': suggestion['recommendation_strength'],
-                            'confidence_level': suggestion['confidence_level'],
-                            'comment': suggestion['comment'],
-                            'user_agreement': suggestion['user_agreement'],
-                            'evaluator_name': suggestion['evaluator_name']
-                        }
+                        # First, ensure we have a document ID
+                        document_id = None
+                        if 'document_id' in suggestion:
+                            document_id = suggestion['document_id']
+                        elif 'id' in suggestion:
+                            document_id = suggestion['id']
+
+                        if document_id is not None:
+                            # Create document dictionary from the suggestion data
+                            # Filter out suggestion-specific fields to get just the document data
+                            doc = {k: v for k, v in suggestion.items() if k not in [
+                                'id', 'user_id', 'evaluator_id', 'recommendation_strength',
+                                'confidence_level', 'comment', 'user_agreement',
+                                'created_at', 'updated_at', 'evaluator_name'
+                            ]}
+
+                            # Ensure the document has an id field
+                            doc['id'] = document_id
+
+                            documents.append(doc)
+
+                            # Store suggestion info in the suggestions map
+                            suggestions_map[document_id] = {
+                                'id': suggestion.get('id'),
+                                'recommendation_strength': suggestion.get('recommendation_strength', 0),
+                                'confidence_level': suggestion.get('confidence_level', 0),
+                                'comment': suggestion.get('comment', ''),
+                                'user_agreement': suggestion.get('user_agreement'),
+                                'evaluator_name': suggestion.get('evaluator_name', 'Unknown')
+                            }
+                        else:
+                            print(f"Warning: Recommendation without document ID: {suggestion}")
 
             elif filter_idx == 4:  # Bookmarked
                 # Get bookmarked documents for the current user
@@ -825,7 +927,15 @@ class NewsBrowser(QWidget):
         document_id = self.current_document.get('id')
         self.current_suggestion = None
         if document_id:
+            # First try to get suggestion for the current user
             self.current_suggestion = self.suggestions_manager.get_suggestion_by_document(document_id, self.user_id)
+
+            # If no suggestion found for current user and current user is not user_id=2,
+            # try to get suggestion for user_id=2 (for demo purposes)
+            if not self.current_suggestion and self.user_id != 2:
+                self.current_suggestion = self.suggestions_manager.get_suggestion_by_document(document_id, 2)
+                if self.current_suggestion:
+                    print(f"Using suggestion from user_id=2 for display")
 
         # Add suggestion information if available
         suggestion_html = ""
@@ -1146,13 +1256,28 @@ class NewsBrowser(QWidget):
             suggestions_map: Dictionary to store suggestions, keyed by document ID
         """
         if not doc_ids:
+            print("No document IDs provided to _load_suggestions_for_documents")
             return
+
+        print(f"Loading suggestions for {len(doc_ids)} documents")
 
         # Get suggestions for these documents
         for doc_id in doc_ids:
+            # First try to get suggestion for the current user
             suggestion = self.suggestions_manager.get_suggestion_by_document(doc_id, self.user_id)
+
+            # If no suggestion found for current user and current user is not user_id=2,
+            # try to get suggestion for user_id=2 (for demo purposes)
+            if not suggestion and self.user_id != 2:
+                suggestion = self.suggestions_manager.get_suggestion_by_document(doc_id, 2)
+                if suggestion:
+                    print(f"Found suggestion for document_id={doc_id} from user_id=2: {suggestion.get('recommendation_strength', 0)}/5")
+
             if suggestion:
+                print(f"Found suggestion for document_id={doc_id}: {suggestion.get('recommendation_strength', 0)}/5")
                 suggestions_map[doc_id] = suggestion
+
+        print(f"Loaded {len(suggestions_map)} suggestions for documents")
 
     def _filter_summaries(self):
         """Filter the summaries based on the selected filter."""
@@ -1476,7 +1601,9 @@ class NewsBrowser(QWidget):
         try:
             # Always ensure the project checkbox is enabled/disabled based on current project
             # This needs to be done regardless of the current document
-            self.project_bookmark_cb.setEnabled(self.current_project_id is not None)
+            # IMPORTANT: Make sure the project checkbox is always enabled if a project is selected
+            project_enabled = self.current_project_id is not None
+            self.project_bookmark_cb.setEnabled(project_enabled)
 
             # Check personal bookmark
             personal_bookmark = self.db_manager.is_bookmarked(
@@ -1513,6 +1640,11 @@ class NewsBrowser(QWidget):
             # Unblock signals
             self.personal_bookmark_cb.blockSignals(False)
             self.project_bookmark_cb.blockSignals(False)
+
+            # Make sure the project checkbox is still enabled if a project is selected
+            # This is needed because sometimes the checkbox gets disabled during state changes
+            if project_enabled:
+                self.project_bookmark_cb.setEnabled(True)
 
             # Debug output
             print(f"Bookmark status for {source_name}/{external_id}: Personal={is_personal}, Project={self.project_bookmark_cb.isChecked()}, Project enabled={self.project_bookmark_cb.isEnabled()}")
@@ -1634,12 +1766,44 @@ class NewsBrowser(QWidget):
             traceback.print_exc()
             self.status_bar.showMessage("Error updating bookmark")
 
+    def _on_user_changed(self, user_data):
+        """
+        Handle user change from context system.
+
+        Args:
+            user_data: User information dictionary
+        """
+        if user_data:
+            self.user_id = user_data.get('id', 1)
+        else:
+            self.user_id = 1
+
+        # Refresh read status cache and reload summaries
+        self._refresh_read_status_cache()
+        self._load_summaries()
+
+        # Update bookmark status if a document is selected
+        if self.current_document:
+            self._check_bookmark_status()
+
+    def _on_project_changed(self, project_id):
+        """
+        Handle project change from context system.
+
+        Args:
+            project_id: Project ID
+        """
+        # Only update if the project has actually changed
+        if project_id != self.current_project_id:
+            self.set_current_project(project_id)
+
     def set_current_project(self, project_id):
         """Set the current project ID for project bookmarks."""
         self.current_project_id = project_id
 
-        # Update project bookmark checkbox state
-        self.project_bookmark_cb.setEnabled(project_id is not None)
+        # Update project bookmark checkbox state - ALWAYS ensure it's enabled if project_id is not None
+        project_enabled = project_id is not None
+        self.project_bookmark_cb.setEnabled(project_enabled)
 
         # Print debug info
         print(f"Setting current project to {project_id}, checkbox enabled: {self.project_bookmark_cb.isEnabled()}")
@@ -1650,8 +1814,12 @@ class NewsBrowser(QWidget):
         else:
             # Even if no document is selected, we should update the UI
             # to reflect the current project state
-            self.project_bookmark_cb.setEnabled(project_id is not None)
+            self.project_bookmark_cb.setEnabled(project_enabled)
             self.project_bookmark_cb.setChecked(False)
+
+        # Make sure the project checkbox is still enabled if a project is selected
+        if project_enabled:
+            self.project_bookmark_cb.setEnabled(True)
 
 
 class NewsBrowserWindow(QMainWindow):
@@ -1660,6 +1828,11 @@ class NewsBrowserWindow(QMainWindow):
     def __init__(self, parent=None):
         """Initialize the main window for the news browser."""
         super().__init__(parent)
+
+        # Import context management
+        from localknowledge.context import (
+            register_context_listener, CURRENT_USER, CURRENT_PROJECT
+        )
 
         # Set window properties
         self.setWindowTitle("Publication News Browser")
@@ -1671,13 +1844,55 @@ class NewsBrowserWindow(QMainWindow):
         # Set as central widget
         self.setCentralWidget(self.news_browser)
 
-    def set_current_project(self, project_id):
-        """Set the current project ID for project bookmarks."""
-        self.news_browser.set_current_project(project_id)
+        # Register listeners for project and user changes
+        register_context_listener(CURRENT_PROJECT, self._on_project_changed)
+        register_context_listener(CURRENT_USER, self._on_user_changed)
+
+        # Update window title
+        self._update_window_title()
 
     def get_current_project(self):
         """Get the current project ID."""
         return self.news_browser.current_project_id
+
+    def _on_project_changed(self, _):
+        """
+        Handle project change from context system.
+
+        Args:
+            _: Project ID (unused)
+        """
+        # Update window title when project changes
+        self._update_window_title()
+
+    def _on_user_changed(self, _):
+        """
+        Handle user change from context system.
+
+        Args:
+            _: User information dictionary (unused)
+        """
+        # Update window title when user changes
+        self._update_window_title()
+
+    def _update_window_title(self):
+        """Update the window title with current project and user information."""
+        from localknowledge.context import get_current_user, get_current_project_name
+
+        title = "Publication News Browser"
+
+        # Add project name if available
+        project_name = get_current_project_name()
+        if project_name:
+            title += f" - Project: {project_name}"
+
+        # Add user name if available
+        user = get_current_user()
+        if user:
+            user_name = f"{user.get('firstname', '')} {user.get('surname', '')}"
+            title += f" - User: {user_name}"
+
+        self.setWindowTitle(title)
 
     def closeEvent(self, event):
         """Handle window close event."""

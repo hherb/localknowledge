@@ -22,6 +22,8 @@ from PySide6.QtWidgets import (
 # Path to icons
 PUBMED_ICON_PATH = "localknowledge/ui/icons/pubmed_tag.png"
 MEDRXIV_ICON_PATH = "localknowledge/ui/icons/medrxiv_tag.png"
+USER_ICON_PATH = "localknowledge/ui/icons/user.png"
+BOOK_ICON_PATH = "localknowledge/ui/icons/book.png"
 from PySide6.QtWebEngineWidgets import QWebEngineView
 import pymupdf4llm
 
@@ -68,6 +70,10 @@ class PublicationItemDelegate(QStyledItemDelegate):
         # Load icons
         self.pubmed_icon = QIcon(PUBMED_ICON_PATH)
         self.medrxiv_icon = QIcon(MEDRXIV_ICON_PATH)
+
+        # Load bookmark icons
+        self.personal_bookmark_icon = QIcon(USER_ICON_PATH)
+        self.project_bookmark_icon = QIcon(BOOK_ICON_PATH)
 
     def paint(self, painter, option, index):
         """Paint the item with custom formatting."""
@@ -127,8 +133,36 @@ class PublicationItemDelegate(QStyledItemDelegate):
         elif source_id == 2:  # medRxiv
             self.medrxiv_icon.paint(painter, icon_rect)
 
-        # Calculate text position (after the icon)
+        # Draw bookmark icons if this is a bookmarked publication
+        bookmark_type = item.publication.get('bookmark_type')
+        if bookmark_type:
+            # Calculate position for bookmark icons (to the right of the source icon)
+            bookmark_icon_rect = QRect(icon_rect.right() + 4, icon_rect.top(),
+                                      icon_size.width(), icon_size.height())
+
+            # Draw personal bookmark icon (user emoji)
+            if bookmark_type in ('personal', 'both'):
+                self.personal_bookmark_icon.paint(painter, bookmark_icon_rect)
+
+            # Draw project bookmark icon (book icon)
+            if bookmark_type in ('project', 'both'):
+                # If we already drew a personal bookmark icon, move this one to the right
+                if bookmark_type == 'both':
+                    bookmark_icon_rect = QRect(bookmark_icon_rect.right() + 4, bookmark_icon_rect.top(),
+                                             icon_size.width(), icon_size.height())
+                self.project_bookmark_icon.paint(painter, bookmark_icon_rect)
+
+        # Calculate text position (after the icons)
         text_left = icon_rect.right() + 8
+
+        # If we have bookmark icons, adjust the text position
+        bookmark_type = item.publication.get('bookmark_type')
+        if bookmark_type:
+            # Add space for one or two bookmark icons
+            if bookmark_type == 'both':
+                text_left += (icon_size.width() + 4) * 2  # Space for two icons
+            else:
+                text_left += icon_size.width() + 4  # Space for one icon
 
         # Calculate text rectangles with adjusted left position
         title_height = painter.fontMetrics().height() + 2
@@ -220,8 +254,20 @@ class PublicationItem(QListWidgetItem):
         # Make the item slightly taller for better readability
         self.setSizeHint(QSize(self.sizeHint().width(), self.sizeHint().height() + 10))
 
-        # Set tooltip to show full title and authors on hover
-        self.setToolTip(f"{publication.get('title', 'No Title')}\n{authors_str}")
+        # Set tooltip to show full title, authors, and bookmark status on hover
+        tooltip = f"{publication.get('title', 'No Title')}\n{authors_str}"
+
+        # Add bookmark information to tooltip if available
+        bookmark_type = publication.get('bookmark_type')
+        if bookmark_type:
+            if bookmark_type == 'personal':
+                tooltip += "\n\nPersonal bookmark"
+            elif bookmark_type == 'project':
+                tooltip += "\n\nProject bookmark"
+            elif bookmark_type == 'both':
+                tooltip += "\n\nPersonal and project bookmark"
+
+        self.setToolTip(tooltip)
 
 
 class KnowledgeBrowser(QWidget):
@@ -346,8 +392,8 @@ class KnowledgeBrowser(QWidget):
                 item = model.item(hybrid_index)
                 item.setEnabled(False)
 
-        # When search mode changes, update the placeholder text
-        self.search_mode.currentIndexChanged.connect(self._update_search_placeholder)
+        # When search mode changes, update the placeholder text and trigger search for bookmarks
+        self.search_mode.currentIndexChanged.connect(self._on_search_mode_changed)
 
         # Search button
         self.search_button = QPushButton("Search")
@@ -461,7 +507,19 @@ class KnowledgeBrowser(QWidget):
         self.resize(1200, 800)
 
     @Slot(int)
-    def _update_search_placeholder(self, _):
+    def _on_search_mode_changed(self, _):
+        """Handle search mode changes."""
+        # Update placeholder text
+        self._update_search_placeholder()
+
+        # If bookmarked mode is selected, immediately show all bookmarks
+        search_mode = self.search_mode.currentData()
+        if search_mode == "bookmarked":
+            print("Bookmarked mode selected - automatically showing all bookmarked items")
+            QApplication.processEvents()  # Process any pending events before starting the search
+            self._perform_bookmarked_search()
+
+    def _update_search_placeholder(self):
         """Update the search input placeholder text based on the selected search mode."""
         search_mode = self.search_mode.currentData()
 
@@ -554,12 +612,13 @@ class KnowledgeBrowser(QWidget):
     @Slot()
     def _on_search(self):
         """Handle search button click or Enter key in search input."""
-        search_text = self.search_input.text().strip()
-        if not search_text:
-            return
-
         # Get the current search mode
         search_mode = self.search_mode.currentData()
+        search_text = self.search_input.text().strip()
+
+        # For bookmarked search, we don't require search text
+        if not search_text and search_mode != "bookmarked":
+            return
 
         # Show a message that we're searching
         self.publication_list.clear()
@@ -1497,13 +1556,18 @@ class KnowledgeBrowser(QWidget):
 
     def _perform_bookmarked_search(self, filter_text=None):
         """Perform a search for bookmarked publications."""
+        # Show a loading message
+        self.publication_list.clear()
+        self.publication_list.addItem("Loading bookmarked publications...")
+        QApplication.processEvents()  # Ensure the UI updates
+
         # Create a worker for the bookmarked search
         worker = BookmarkedSearchWorker(
             db_manager=self.db_manager,
             user_id=self.user_id,
             project_id=self.current_project_id,
             filter_text=filter_text,
-            limit=self.search_settings.get('max_results', 20)
+            limit=self.search_settings.get('max_results', 100)  # Increased limit for bookmarks
         )
 
         # Connect signals
@@ -1783,13 +1847,54 @@ class BookmarkedSearchWorker(QRunnable):
             if self.filter_text:
                 print(f"BookmarkedSearchWorker: Text filter: {self.filter_text}")
 
-            # Get bookmarked publications
-            publications = self.db_manager.get_bookmarked_documents(
+            # Get all personal bookmarks
+            print(f"BookmarkedSearchWorker: Getting personal bookmarks for user {self.user_id}")
+            personal_bookmarks = self.db_manager.get_bookmarked_documents(
                 user_id=self.user_id,
-                project_id=self.project_id,
+                project_id=None,
                 limit=self.limit,
                 offset=self.offset
             )
+            print(f"BookmarkedSearchWorker: Found {len(personal_bookmarks)} personal bookmarks")
+
+            # Mark these as personal bookmarks
+            for pub in personal_bookmarks:
+                pub['bookmark_type'] = pub.get('bookmark_type', 'personal')
+
+            # Get project bookmarks if a project is selected
+            project_bookmarks = []
+            if self.project_id:
+                print(f"BookmarkedSearchWorker: Getting project bookmarks for project {self.project_id}")
+                project_bookmarks = self.db_manager.get_bookmarked_documents(
+                    user_id=self.user_id,
+                    project_id=self.project_id,
+                    limit=self.limit,
+                    offset=self.offset
+                )
+                print(f"BookmarkedSearchWorker: Found {len(project_bookmarks)} project bookmarks")
+
+                # Mark these as project bookmarks
+                for pub in project_bookmarks:
+                    pub['bookmark_type'] = pub.get('bookmark_type', 'project')
+
+            # Combine and deduplicate results
+            # We'll use a dictionary to deduplicate by document ID
+            combined_publications = {}
+
+            # Add personal bookmarks
+            for pub in personal_bookmarks:
+                combined_publications[pub['id']] = pub
+
+            # Add project bookmarks, updating bookmark_type to 'both' if already exists
+            for pub in project_bookmarks:
+                if pub['id'] in combined_publications:
+                    # This document is bookmarked both personally and in the project
+                    combined_publications[pub['id']]['bookmark_type'] = 'both'
+                else:
+                    combined_publications[pub['id']] = pub
+
+            # Convert back to list
+            publications = list(combined_publications.values())
 
             # If filter text is provided, filter the results
             if self.filter_text and publications:

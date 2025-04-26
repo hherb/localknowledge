@@ -55,7 +55,10 @@ from localknowledge.ui.project_form import ProjectForm
 from localknowledge.ui.recent_projects import RecentProjectsWidget
 
 # Import context management
-from localknowledge.context import set_context, get_context, CURRENT_USER, CURRENT_PROJECT
+from localknowledge.context import (
+    set_current_user, set_current_project, get_current_user,
+    CURRENT_USER, CURRENT_PROJECT
+)
 
 
 # Register the plugin if the registration function is available
@@ -148,7 +151,7 @@ if REGISTER_PLUGIN_AVAILABLE:
             main_window = self.parent()
             if hasattr(main_window, 'current_user') and main_window.current_user:
                 # Store the user in the context
-                set_context(CURRENT_USER, main_window.current_user)
+                set_current_user(main_window.current_user)
 
             return True
 
@@ -161,7 +164,7 @@ if REGISTER_PLUGIN_AVAILABLE:
                 project_id: ID of the selected project
             """
             # Store the selected project ID in the context
-            set_context(CURRENT_PROJECT, project_id)
+            set_current_project(project_id)
 
             # Enable the Current Project tab
             self.tab_widget.setTabEnabled(1, True)
