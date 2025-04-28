@@ -45,7 +45,9 @@ def load_environment(env_file: str = ENV_FILE) -> Dict[str, Any]:
     load_dotenv(env_file)
 
     # Get database connection parameters
-    dbname = os.environ.get('POSTGRES_DB', 'knowledgebase')  # Default to knowledgebase if not set
+    dbname = os.environ.get('POSTGRES_DB', '') #FIXME - this HAS TO come from the correct .env_xxx file
+    if dbname != 'rwb':
+        raise f"Wrong .env file, dbname found is {dbname}"
     user = os.environ.get('POSTGRES_USER', 'postgres')
     password = os.environ.get('POSTGRES_PASSWORD', '')
     host = os.environ.get('POSTGRES_HOST', 'localhost')

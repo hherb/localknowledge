@@ -10,7 +10,7 @@ import os
 import logging
 import time
 import argparse
-from typing import List, Dict, Any, Tuple, Optional
+from typing import List, Dict, Any, Tuple, Optional, Iterator
 
 import psycopg2
 from psycopg2.extras import DictCursor
@@ -24,6 +24,8 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+# This will be updated after parsing arguments
 
 # Constants
 CHUNK_SIZE = 384  # Size for PubMedBERT chunks when splitting is needed
@@ -259,7 +261,7 @@ class AdaptiveTextChunker:
         return chunks
 
 
-def get_documents_without_chunks(limit: int = 100) -> List[Dict[str, Any]]:
+def get_documents_without_chunks(limit: int = 100) -> Iterator[Dict[str, Any]]:
     """
     Get documents that don't have chunks in the chunks table.
 
@@ -267,23 +269,10 @@ def get_documents_without_chunks(limit: int = 100) -> List[Dict[str, Any]]:
         limit: Maximum number of documents to retrieve
 
     Returns:
-        List of document dictionaries
+        Iterator of document dictionaries
     """
-    documents = []
-
     try:
         with get_cursor() as cursor:
-            # Check if the document table exists
-            cursor.execute("""
-                SELECT EXISTS (
-                    SELECT FROM information_schema.tables
-                    WHERE table_name = 'document'
-                )
-            """)
-            if not cursor.fetchone()[0]:
-                logger.error("Document table does not exist")
-                return []
-
             # Find documents that don't have chunks
             query = """
             SELECT d.id, d.title, d.abstract
@@ -296,13 +285,20 @@ def get_documents_without_chunks(limit: int = 100) -> List[Dict[str, Any]]:
             """
 
             cursor.execute(query, (limit,))
-            documents = cursor.fetchall()
-            logger.info(f"Found {len(documents)} documents without chunks")
+
+            # Count for logging
+            count = 0
+
+            # Yield each document as it's fetched
+            for document in cursor:
+                count += 1
+                yield document
+
+            logger.info(f"Found {count} documents without chunks")
 
     except Exception as e:
         logger.error(f"Error getting documents without chunks: {e}")
-
-    return documents
+        # Generator should not return anything else in case of error
 
 
 def insert_chunks(chunks_data: List[Tuple]) -> int:
@@ -337,26 +333,24 @@ def insert_chunks(chunks_data: List[Tuple]) -> int:
     return inserted
 
 
-def process_documents(documents: List[Dict[str, Any]], chunker: AdaptiveTextChunker) -> int:
+def process_documents(documents: Iterator[Dict[str, Any]], chunker: AdaptiveTextChunker) -> Tuple[int, int]:
     """
     Process documents and create chunks.
 
     Args:
-        documents: List of document dictionaries
+        documents: Iterator of document dictionaries
         chunker: Text chunker instance
 
     Returns:
-        Number of chunks created
+        Tuple of (number of chunks created, number of documents processed)
     """
-    if not documents:
-        logger.info("No documents to process")
-        return 0
-
     chunks_data = []
     single_chunks = 0
     multi_chunks = 0
+    doc_count = 0
 
     for doc in documents:
+        doc_count += 1
         # Skip documents without abstracts
         if not doc['abstract'] or len(doc['abstract'].strip()) == 0:
             continue
@@ -387,14 +381,19 @@ def process_documents(documents: List[Dict[str, Any]], chunker: AdaptiveTextChun
             ))
 
     # Log chunking statistics
+    if doc_count == 0:
+        logger.info("No documents to process")
+        return 0, 0
+
     if single_chunks > 0 or multi_chunks > 0:
         logger.info(f"Chunking statistics: {single_chunks} single chunks, {multi_chunks} multi-chunk documents")
 
     # Insert chunks into database
+    chunks_inserted = 0
     if chunks_data:
-        return insert_chunks(chunks_data)
+        chunks_inserted = insert_chunks(chunks_data)
 
-    return 0
+    return chunks_inserted, doc_count
 
 
 def ensure_chunking_strategy_exists(single_chunk_threshold: int = SINGLE_CHUNK_THRESHOLD,
@@ -605,28 +604,33 @@ def main(total_limit: int = 1000,
         # Get documents without chunks
         remaining = total_limit - processed_total
         current_batch_size = min(batch_size, remaining)
-        documents = get_documents_without_chunks(limit=current_batch_size)
 
-        if not documents:
-            logger.info("No more documents to process")
-            break
+        # Get iterator for documents without chunks
+        documents_iterator = get_documents_without_chunks(limit=current_batch_size)
 
         # Process the batch
         batch_start_time = time.time()
-        processed = process_documents(documents, chunker)
+        chunks_processed, docs_processed = process_documents(documents_iterator, chunker)
         batch_end_time = time.time()
 
-        if processed == 0:
-            logger.warning("Failed to process batch, stopping")
+        # If no documents were processed, we're done
+        if docs_processed == 0:
+            logger.warning("No documents processed in this batch, stopping")
             break
 
         # Update counters and log progress
-        processed_total += len(documents)
-        chunks_total += processed
+        processed_total += docs_processed
+        chunks_total += chunks_processed
         batch_time = batch_end_time - batch_start_time
-        logger.info(f"Processed batch of {len(documents)} documents in {batch_time:.2f}s " +
-                   f"({len(documents)/batch_time:.2f} docs/s)")
-        logger.info(f"Created {processed} chunks for {len(documents)} documents")
+
+        # Log progress
+        if batch_time > 0:
+            logger.info(f"Processed batch of {docs_processed} documents in {batch_time:.2f}s " +
+                       f"({docs_processed/batch_time:.2f} docs/s)")
+        else:
+            logger.info(f"Processed batch of {docs_processed} documents")
+
+        logger.info(f"Created {chunks_processed} chunks in this batch")
         logger.info(f"Total processed: {processed_total}/{total_limit}")
 
     # Log summary
@@ -657,10 +661,19 @@ if __name__ == "__main__":
                         help="Minimum size of a chunk to be considered valid (default: 100)")
     parser.add_argument("--analyze", action="store_true",
                         help="Analyze abstract lengths in the database without chunking")
+    parser.add_argument("--log-level", type=str, default="WARNING",
+                        choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
+                        help="Set the logging level")
     args = parser.parse_args()
 
     # Load environment variables
     load_environment()
+
+    # Set logging level based on argument
+    log_level = getattr(logging, args.log_level)
+    logging.getLogger().setLevel(log_level)
+    logger.setLevel(log_level)
+    logger.info(f"Log level set to {args.log_level}")
 
     # If analyze mode, analyze abstract lengths
     if args.analyze:

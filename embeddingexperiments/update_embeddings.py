@@ -34,6 +34,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# This will be updated after parsing arguments
+
 # Constants
 MODEL_ID = 3  # PubMedBERT model ID in the database
 BATCH_SIZE = 10000  # Number of documents to process in a batch
@@ -927,10 +929,19 @@ if __name__ == "__main__":
                         help="Timeout in seconds for database operations (default: 600)")
     parser.add_argument("--force-exit", action="store_true",
                         help="Force immediate exit on keyboard interrupt (SIGINT)")
+    parser.add_argument("--log-level", type=str, default="WARNING",
+                        choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
+                        help="Set the logging level")
     args = parser.parse_args()
 
     # Load environment variables
     load_environment()
+
+    # Set logging level based on argument
+    log_level = getattr(logging, args.log_level)
+    logging.getLogger().setLevel(log_level)
+    logger.setLevel(log_level)
+    logger.info(f"Log level set to {args.log_level}")
 
     # If analyze mode, analyze abstract lengths and exit
     if args.analyze:
