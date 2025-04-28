@@ -8,6 +8,11 @@ from pathlib import Path
 from typing import Dict, List, Optional, Any
 import sys
 import traceback
+try:
+    import markdown
+    MARKDOWN_AVAILABLE = True
+except ImportError:
+    MARKDOWN_AVAILABLE = False
 
 from PySide6.QtCore import Qt, Signal, Slot, QUrl, QSize, QPointF, QObject, QRunnable, QThreadPool, QRect
 from PySide6.QtGui import QColor, QFont, QPainter, QTextDocument, QAbstractTextDocumentLayout, QIcon
