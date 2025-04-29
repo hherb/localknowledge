@@ -77,11 +77,11 @@ class NewsBrowser(QWidget):
         self.pdf_base_dir = self._get_pdf_base_dir()
         self.read_summaries = set()  # Local cache of read summaries for performance
 
-        # Get current project from context (or use None for testing)
-        # from localknowledge.context import get_current_project
-        # self.current_project_id = get_current_project()
-        self.current_project_id = None
-        print(f"Using test project_id={self.current_project_id}")
+        # Get current project from context
+        from localknowledge.context import get_current_project
+        project = get_current_project()
+        self.current_project_id = project.get('id') if project else None
+        print(f"Using project_id={self.current_project_id}")
 
         # Register listeners for user and project changes
         register_context_listener(CURRENT_USER, self._on_user_changed)
@@ -285,10 +285,10 @@ class NewsBrowser(QWidget):
             self.user_id = user.get('id', 1) if user else 1  # Default to user_id 1
             print(f"Using user_id={self.user_id}")
 
-            # Get current project from context (or use None for testing)
-            # from localknowledge.context import get_current_project
-            # self.current_project_id = get_current_project()
-            self.current_project_id = None
+            # Get current project from context
+            from localknowledge.context import get_current_project
+            project = get_current_project()
+            self.current_project_id = project.get('id') if project else None
 
             print(f"Loading documents for user_id={self.user_id}, project_id={self.current_project_id}")
 
@@ -680,12 +680,12 @@ class NewsBrowser(QWidget):
         # so we just need to update the UI if needed
         self.status_bar.showMessage(f"Document rated {'positively' if rating > 0 else 'negatively'}")
 
-    def _on_document_bookmarked(self, _, bookmark_type, is_bookmarked):
+    def _on_document_bookmarked(self, document, bookmark_type, is_bookmarked):
         """
         Handle document bookmarking from the document display widget.
 
         Args:
-            _: Document data dictionary (unused)
+            document: Document data dictionary
             bookmark_type: Type of bookmark ("personal" or "project")
             is_bookmarked: Whether the document was bookmarked or unbookmarked
         """
@@ -693,6 +693,13 @@ class NewsBrowser(QWidget):
         # so we just need to update the UI if needed
         action = "bookmarked" if is_bookmarked else "unbookmarked"
         self.status_bar.showMessage(f"Document {action} as {bookmark_type}")
+
+        # If we're currently viewing bookmarked documents, refresh the list
+        if self.filter_combo.currentIndex() == 1:  # Bookmarked
+            print(f"Refreshing bookmarked documents list after {action} action")
+            self._load_summaries()
+        else:
+            print(f"Not refreshing list since we're not in bookmarked view")
 
     def close_database(self):
         """Close the database connections."""

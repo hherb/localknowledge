@@ -61,6 +61,15 @@ CREATE TABLE embedding_models (
     model_parameters JSONB
 );
 
+insert into embedding_models (provider_id, model_name)
+VALUES (1, 'snowflake-arctic-embed2:latest');
+
+insert into embedding_models (provider_id, model_name)
+VALUES (2, 'microsoft/BiomedNLP-PubMedBERT-base-uncased-abstract-fulltext');
+
+insert into embedding_models (provider_id, model_name)
+VALUES (2, 'pritamdeka/BioBERT-mnli-snli-scinli-scitail-mednli-stsb');
+
 -- DROP TABLE IF EXISTS embedding_base;
 CREATE TABLE embedding_base (
     id SERIAL PRIMARY KEY,

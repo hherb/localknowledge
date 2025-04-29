@@ -674,6 +674,9 @@ class DocumentDatabaseManager(DatabaseManager):
         Returns:
             True if successful, False otherwise
         """
+        logger.info(f"Adding bookmark: source={source_name}, id={external_id}, " +
+                   f"user={user_id}, type={bookmark_type}, project={project_id}")
+
         # Validate bookmark type
         if bookmark_type not in ('personal', 'project', 'both'):
             logger.error(f"Invalid bookmark type: {bookmark_type}")
@@ -691,6 +694,7 @@ class DocumentDatabaseManager(DatabaseManager):
             return False
 
         document_id = document['id']
+        logger.info(f"Found document with ID: {document_id}")
 
         # Add bookmark
         query = """
@@ -701,7 +705,12 @@ class DocumentDatabaseManager(DatabaseManager):
         """
 
         try:
+            logger.info(f"Executing bookmark insert query with params: " +
+                       f"document_id={document_id}, user_id={user_id}, " +
+                       f"project_id={project_id}, bookmark_type={bookmark_type}")
+
             self.execute(query, (document_id, user_id, project_id, bookmark_type, bookmark_type), commit=True)
+            logger.info("Bookmark added successfully")
             return True
         except Exception as e:
             logger.error(f"Error adding bookmark: {e}")
@@ -724,6 +733,9 @@ class DocumentDatabaseManager(DatabaseManager):
         Returns:
             True if successful, False otherwise
         """
+        logger.info(f"Removing bookmark: source={source_name}, id={external_id}, " +
+                   f"user={user_id}, project={project_id}")
+
         # Get document ID
         document = self.get_document_by_external_id(source_name, external_id)
         if not document:
@@ -731,6 +743,7 @@ class DocumentDatabaseManager(DatabaseManager):
             return False
 
         document_id = document['id']
+        logger.info(f"Found document with ID: {document_id}")
 
         # Remove bookmark
         query = """
@@ -748,8 +761,31 @@ class DocumentDatabaseManager(DatabaseManager):
             query += " AND project_id IS NULL"
 
         try:
+            logger.info(f"Executing bookmark delete query: {query} with params: {params}")
             self.execute(query, tuple(params), commit=True)
-            return True
+            # The execute method doesn't return affected rows for DELETE queries
+            # We can check if the bookmark exists after deletion to confirm it was removed
+            check_query = """
+            SELECT COUNT(*) as count
+            FROM bookmarks
+            WHERE document_id = %s AND user_id = %s
+            """
+            check_params = [document_id, user_id]
+            if project_id is not None:
+                check_query += " AND project_id = %s"
+                check_params.append(project_id)
+            else:
+                check_query += " AND project_id IS NULL"
+
+            result = self.execute(check_query, tuple(check_params))
+            count = result[0]['count'] if result else 0
+
+            if count == 0:
+                logger.info("Bookmark removed successfully. Confirmed by checking count.")
+                return True
+            else:
+                logger.warning(f"Bookmark may not have been removed. Count after deletion: {count}")
+                return False
         except Exception as e:
             logger.error(f"Error removing bookmark: {e}")
             return False
@@ -771,6 +807,9 @@ class DocumentDatabaseManager(DatabaseManager):
         Returns:
             Bookmark type ('personal', 'project', or 'both') if bookmarked, None otherwise
         """
+        logger.info(f"Checking if document is bookmarked: source={source_name}, id={external_id}, " +
+                   f"user={user_id}, project={project_id}")
+
         # Get document ID
         document = self.get_document_by_external_id(source_name, external_id)
         if not document:
@@ -778,6 +817,7 @@ class DocumentDatabaseManager(DatabaseManager):
             return None
 
         document_id = document['id']
+        logger.info(f"Found document with ID: {document_id}")
 
         # Check for bookmark
         query = """
@@ -795,8 +835,16 @@ class DocumentDatabaseManager(DatabaseManager):
         else:
             query += " AND project_id IS NULL"
 
+        logger.info(f"Executing bookmark query: {query} with params: {params}")
         result = self.execute(query, tuple(params))
-        return result[0]['bookmark_type'] if result else None
+
+        if result:
+            bookmark_type = result[0]['bookmark_type']
+            logger.info(f"Document is bookmarked with type: {bookmark_type}")
+            return bookmark_type
+        else:
+            logger.info("Document is not bookmarked")
+            return None
 
     def get_bookmarked_documents(self,
                                 user_id: int,

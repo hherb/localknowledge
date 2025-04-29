@@ -1,9 +1,3 @@
-CREATE TABLE public.categories (
-    id integer NOT NULL,
-    name text NOT NULL,
-    description text
-);
-
 CREATE TABLE public.chunking_strategies (
     id integer NOT NULL,
     strategy_name text NOT NULL,
@@ -29,32 +23,6 @@ CREATE TABLE public.chunks (
 CREATE TABLE public.chunktypes (
     id integer NOT NULL,
     chunktype text NOT NULL
-);
-
-
-CREATE TABLE public.document (
-    id integer NOT NULL,
-    source_id integer,
-    external_id text NOT NULL,
-    doi text,
-    title text,
-    abstract text,
-    category_id integer,
-    keywords text[],
-    augmented_keywords text[],
-    mesh_terms text[],
-    authors text[],
-    publication text,
-    publication_date date,
-    url text,
-    pdf_url text,
-    pdf_filename text,
-    full_text text,
-    added_date timestamp without time zone DEFAULT CURRENT_TIMESTAMP,
-    updated_date timestamp without time zone DEFAULT CURRENT_TIMESTAMP,
-    withdrawn_date timestamp without time zone,
-    withdrawn_reason text,
-    all_keywords text[]
 );
 
 
@@ -88,22 +56,24 @@ CREATE TABLE public.embedding_provider (
     base_url text
 );
 
+INSERT INTO embedding_provider (provider_name, base_url)
+VALUES 
+('ollama', 'http://localhost:11434'),
+('huggingface', 'https://api-inference.huggingface.co');
 
-CREATE TABLE public.sources (
-    id integer NOT NULL,
-    name text NOT NULL,
-    url text,
-    is_reputable boolean DEFAULT false,
-    is_free boolean DEFAULT true
-);
+insert into embedding_models (provider_id, model_name)
+VALUES (1, 'snowflake-arctic-embed2:latest');
 
-CREATE TABLE public.summaries (
-    id integer NOT NULL,
-    summary text,
-    evaluation boolean,
-    reason text,
-    interests text[],
-    created_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP,
-    document_id integer NOT NULL
-);
+insert into embedding_models (provider_id, model_name)
+VALUES (2, 'microsoft/BiomedNLP-PubMedBERT-base-uncased-abstract-fulltext');
+
+insert into embedding_models (provider_id, model_name)
+VALUES (2, 'pritamdeka/BioBERT-mnli-snli-scinli-scitail-mednli-stsb');
+
+- GIN index for title ILIKE %pattern%
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
+CREATE INDEX idx_document_title_trgm ON public.document USING gin (title gin_trgm_ops);
+CREATE INDEX idx_document_all_keywords ON public.document USING gin (all_keywords);
+
+
 

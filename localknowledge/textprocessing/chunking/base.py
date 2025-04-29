@@ -5,17 +5,22 @@ This module provides a base class for implementing different text chunking strat
 """
 
 from abc import ABC, abstractmethod
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Union
+
+# Import the Chunk dataclass from the database manager
+from localknowledge.db.chunker import Chunk as DBChunk
 
 class Chunk:
     """
     Represents a chunk of text with metadata.
+    This is a lightweight version used during the chunking process.
+    It can be converted to the database Chunk dataclass when needed.
     """
 
     def __init__(self,
                  text: str,
                  metadata: Optional[Dict[str, Any]] = None,
-                 chunk_id: Optional[str] = None):
+                 chunk_id: Optional[Union[str, int]] = None):
         """
         Initialize a chunk.
 
@@ -43,6 +48,46 @@ class Chunk:
             'text': self.text,
             'metadata': self.metadata
         }
+
+    def to_db_chunk(self,
+                   document_id: int,
+                   chunking_strategy_id: int,
+                   chunktype_id: int,
+                   document_title: str = "",
+                   chunk_no: int = 0) -> DBChunk:
+        """
+        Convert this chunk to a database Chunk dataclass.
+
+        Args:
+            document_id: ID of the document this chunk belongs to
+            chunking_strategy_id: ID of the chunking strategy used
+            chunktype_id: ID of the chunk type
+            document_title: Title of the document
+            chunk_no: Position of this chunk in the sequence
+
+        Returns:
+            A database Chunk dataclass instance
+        """
+        # Extract page information from metadata if available
+        page_start = self.metadata.get('page_start', 0)
+        page_end = self.metadata.get('page_end', 0)
+
+        # Use the existing chunk_id if it's an integer, otherwise default to 0
+        chunk_id = self.chunk_id if isinstance(self.chunk_id, int) else 0
+
+        return DBChunk(
+            chunk_id=chunk_id,
+            document_id=document_id,
+            chunking_strategy_id=chunking_strategy_id,
+            chunktype_id=chunktype_id,
+            document_title=document_title,
+            text=self.text,
+            chunklength=len(self.text),
+            chunk_no=chunk_no,
+            page_start=page_start,
+            page_end=page_end,
+            metadata=self.metadata
+        )
 
 class BaseChunker(ABC):
     """

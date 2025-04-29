@@ -78,8 +78,8 @@ class DatabaseManager:
                 self.connection = psycopg2.connect(**connection_params)
             else:
                 # Fallback to direct environment variable access if basic_infrastructure is not available
-                dbname = os.environ.get('POSTGRES_DB')
-                user = os.environ.get('POSTGRES_USER', 'postgres')
+                dbname = os.environ.get('POSTGRES_DB','Postgres DB name not found in env')
+                user = os.environ.get('POSTGRES_USER','Postgres user not found in env')
                 password = os.environ.get('POSTGRES_PASSWORD', '')
                 host = os.environ.get('POSTGRES_HOST', 'localhost')
                 port = os.environ.get('POSTGRES_PORT', '5432')
@@ -112,6 +112,9 @@ class DatabaseManager:
         """
         import threading
         import time
+
+        #FIXME
+        #TODO: refactor with context manager (with connection/cursor ...)
 
         if not self.connection:
             self.connect()
@@ -223,6 +226,9 @@ class DatabaseManager:
         import threading
         import time
 
+        #FIXME
+        #TODO: implement with context manager (with connection/cursor ...)
+
         if not self.connection:
             self.connect()
 
@@ -306,7 +312,7 @@ class DatabaseManager:
 
     def _check_infrastructure(self) -> None:
         """
-        Check database infrastructure.
+        Check database infrastructure. Use sparingly only once at boot-up time
 
         Raises:
             DatabaseInfrastructureError: If infrastructure check fails
@@ -323,21 +329,7 @@ class DatabaseManager:
 
         logger.info(f"Database infrastructure check #{_check_counter} passed")
 
-    def create_tables(self) -> None:
-        """
-        Create database tables if they do not exist.
-
-        This method is deprecated. Tables should be created using create_baseline_db.py
-        and updated using migrations.
-        """
-        logger.warning(
-            "The create_tables() method is deprecated. "
-            "Tables should be created using create_baseline_db.py and updated using migrations."
-        )
-        raise NotImplementedError(
-            "Subclasses should not implement create_tables(). "
-            "Use create_baseline_db.py and migrations instead."
-        )
+    
 
     def execute_without_timeout(self, query: str, params: Optional[Tuple] = None, commit: bool = False) -> Optional[List[Dict[str, Any]]]:
         """
@@ -355,6 +347,10 @@ class DatabaseManager:
         Returns:
             Query results or None
         """
+
+        #FIXME
+        #TODO: implement withcontext manager! (with connectin/cursor ...)
+
         if not self.connection:
             self.connect()
 
