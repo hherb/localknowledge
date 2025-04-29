@@ -30,6 +30,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Silence httpx (used by ollama) INFO logs
+logging.getLogger("httpx").setLevel(logging.WARNING)
+
 
 class AbstractEmbeddingUpdater:
     """Class for updating abstract embeddings for chunks without embeddings."""
@@ -292,6 +295,14 @@ def main():
     if args.verbose:
         logging.getLogger().setLevel(logging.INFO)
         logger.setLevel(logging.INFO)
+        logging.getLogger("localknowledge.db.embeddings").setLevel(logging.INFO)
+        logging.getLogger("localknowledge.db.base").setLevel(logging.INFO)
+        logging.getLogger("localknowledge.db.basic_infrastructure").setLevel(logging.INFO)
+    else:
+        # Silence INFO logs from various modules
+        logging.getLogger("localknowledge.db.embeddings").setLevel(logging.WARNING)
+        logging.getLogger("localknowledge.db.base").setLevel(logging.WARNING)
+        logging.getLogger("localknowledge.db.basic_infrastructure").setLevel(logging.WARNING)
 
     # Choose the embedder based on the argument
     if args.embedder == "ollama":
