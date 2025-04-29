@@ -88,28 +88,6 @@ class EmbeddingsDatabaseManager(DatabaseManager):
         """
         table_exists = self.execute(check_query, (tablename,))
 
-        # Check if embedding_base table exists
-        base_exists_query = """
-        SELECT EXISTS (
-            SELECT FROM information_schema.tables
-            WHERE table_name = 'embedding_base'
-        )
-        """
-        base_exists = self.execute(base_exists_query)
-
-        if not base_exists or not base_exists[0]['exists']:
-            # If the base table doesn't exist, create it
-            self.execute("""
-            CREATE TABLE embedding_base (
-                id SERIAL PRIMARY KEY,
-                chunk_id INTEGER REFERENCES chunks(id),
-                model_id INTEGER REFERENCES embedding_models(id),
-                UNIQUE(chunk_id, model_id)
-            )
-            """, commit=True)
-
-            logger.info("Created base table embedding_base")
-
         if not table_exists or not table_exists[0]['exists']:
             # If the table doesn't exist, create it as inheritance from embedding_base
             self.execute(f"""
@@ -166,34 +144,34 @@ class EmbeddingsDatabaseManager(DatabaseManager):
             # Ensure the table exists
             self.ensure_table_for_vectorsize(vector_size)
 
-            # First check if the embedding already exists
-            check_query = f"""
-            SELECT id FROM {tablename}
-            WHERE chunk_id = %s AND model_id = %s
-            """
+            # # First check if the embedding already exists
+            # check_query = f"""
+            # SELECT id FROM {tablename}
+            # WHERE chunk_id = %s AND model_id = %s
+            # """
 
-            check_result = self.execute(check_query, (chunk_id, model_id))
+            # check_result = self.execute(check_query, (chunk_id, model_id))
 
-            if check_result:
-                embedding_id = check_result[0]['id']
-                logger.info(f"Embedding already exists for chunk {chunk_id}, model {model_id} in table {tablename}")
+            # if check_result:
+                # embedding_id = check_result[0]['id']
+                # logger.info(f"Embedding already exists for chunk {chunk_id}, model {model_id} in table {tablename}")
 
-                # Update the existing embedding
-                update_query = f"""
-                UPDATE {tablename}
-                SET embedding = %s
-                WHERE id = %s
-                RETURNING id;
-                """
+                # # Update the existing embedding
+                # update_query = f"""
+                # UPDATE {tablename}
+                # SET embedding = %s
+                # WHERE id = %s
+                # RETURNING id;
+                # """
 
-                update_result = self.execute(update_query, (embedding, embedding_id), commit=True)
+                # update_result = self.execute(update_query, (embedding, embedding_id), commit=True)
 
-                if update_result:
-                    logger.info(f"Updated embedding for chunk {chunk_id}, model {model_id} in table {tablename}")
-                    return update_result[0]['id']
-                else:
-                    logger.error(f"Failed to update embedding for chunk {chunk_id}, model {model_id} in table {tablename}")
-                    return -1
+                # if update_result:
+                #     logger.info(f"Updated embedding for chunk {chunk_id}, model {model_id} in table {tablename}")
+                #     return update_result[0]['id']
+                # else:
+                #     logger.error(f"Failed to update embedding for chunk {chunk_id}, model {model_id} in table {tablename}")
+                #     return -1
 
             # If the embedding doesn't exist, insert it
             insert_query = f"""
