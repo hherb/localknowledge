@@ -120,6 +120,7 @@ class PubMedDatabaseManager(DatabaseManager):
             Article data or None if not found
         """
         # Use the document database manager to get the document by external_id
+        # This will use execute_without_timeout internally after our updates
         document = self.document_db.get_document_by_external_id('pubmed', pmid)
 
         if document:
@@ -138,7 +139,7 @@ class PubMedDatabaseManager(DatabaseManager):
 
         # Total articles
         query = "SELECT COUNT(*) AS total FROM document WHERE source_id = %s"
-        result = self.execute(query, (self.source_id,))
+        result = self.execute_without_timeout(query, (self.source_id,))
         stats['total_articles'] = result[0]['total'] if result else 0
 
         # Articles by year
@@ -149,12 +150,12 @@ class PubMedDatabaseManager(DatabaseManager):
             GROUP BY publication_year
             ORDER BY publication_year DESC
         """
-        result = self.execute(query, (self.source_id,))
+        result = self.execute_without_timeout(query, (self.source_id,))
         stats['articles_by_year'] = result if result else []
 
         # Latest import date
         query = "SELECT MAX(added_date) AS latest FROM document WHERE source_id = %s"
-        result = self.execute(query, (self.source_id,))
+        result = self.execute_without_timeout(query, (self.source_id,))
         stats['latest_import'] = result[0]['latest'] if result else None
 
         return stats

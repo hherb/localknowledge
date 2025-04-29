@@ -11,8 +11,8 @@ logging.getLogger("sentence_transformers.SentenceTransformer").setLevel(logging.
 
 MODELS = ["microsoft/BiomedNLP-PubMedBERT-base-uncased-abstract-fulltext",
         "pritamdeka/BioBERT-mnli-snli-scinli-scitail-mednli-stsb",
-
-]
+        "NeuML/pubmedbert-base-embeddings"
+        ]
 MODEL = MODELS[0]
 
 # Automatically detect device

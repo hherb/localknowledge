@@ -24,6 +24,42 @@ class DocumentDatabaseManager(DatabaseManager):
         super().__init__()
         # Database creation is done centrally in db.createdb.py by calling create_tables()
 
+    def begin_transaction(self):
+        """Begin a database transaction."""
+        if not self.connection:
+            self.connect()
+        # Check if connection is closed and reconnect if needed
+        if self.connection.closed:
+            logger.warning("Database connection was closed. Reconnecting...")
+            self.connect()
+        logger.debug("Beginning transaction")
+        # Disable statement timeout for this transaction
+        with self.connection.cursor() as timeout_cursor:
+            timeout_cursor.execute("SET statement_timeout = 0;")  # 0 means no timeout
+            self.connection.commit()
+        # PostgreSQL is in autocommit mode by default, so we need to start a transaction explicitly
+        self.connection.autocommit = False
+
+    def commit_transaction(self):
+        """Commit the current transaction."""
+        if not self.connection:
+            logger.warning("No active connection to commit transaction")
+            return
+        logger.debug("Committing transaction")
+        self.connection.commit()
+        # Reset to autocommit mode
+        self.connection.autocommit = True
+
+    def rollback_transaction(self):
+        """Roll back the current transaction."""
+        if not self.connection:
+            logger.warning("No active connection to rollback transaction")
+            return
+        logger.debug("Rolling back transaction")
+        self.connection.rollback()
+        # Reset to autocommit mode
+        self.connection.autocommit = True
+
 
     def get_source_id(self, source_name: str) -> Optional[int]:
         """
@@ -36,7 +72,7 @@ class DocumentDatabaseManager(DatabaseManager):
             Source ID or None if not found
         """
         query = "SELECT id FROM sources WHERE name = %s"
-        result = self.execute(query, (source_name,))
+        result = self.execute_without_timeout(query, (source_name,))
         return result[0]['id'] if result else None
 
     def add_document(self, document_data: Dict[str, Any]) -> Optional[int]:
@@ -81,13 +117,13 @@ class DocumentDatabaseManager(DatabaseManager):
         category_name = document_data.get('category_name')
         if category_name:
             category_query = "SELECT id FROM categories WHERE name = %s"
-            category_result = self.execute(category_query, (category_name,))
+            category_result = self.execute_without_timeout(category_query, (category_name,))
             if category_result:
                 category_id = category_result[0]['id']
             else:
                 # Create category if it doesn't exist
                 insert_category = "INSERT INTO categories (name) VALUES (%s) RETURNING id"
-                category_result = self.execute(insert_category, (category_name,), commit=True)
+                category_result = self.execute_without_timeout(insert_category, (category_name,), commit=True)
                 if category_result:
                     category_id = category_result[0]['id']
 
@@ -144,7 +180,8 @@ class DocumentDatabaseManager(DatabaseManager):
             # Log the parameters for debugging
             logger.debug(f"Adding document with params: {params}")
 
-            result = self.execute(query, params, commit=True)
+            # Use execute_without_timeout for document insertion to prevent timeouts during import
+            result = self.execute_without_timeout(query, params, commit=True)
             if result:
                 document_id = result[0]['id']
                 logger.debug(f"Document added with ID: {document_id}")
@@ -180,7 +217,7 @@ class DocumentDatabaseManager(DatabaseManager):
         try:
             # Insert keywords into keywords table
             for keyword in keywords:
-                self.execute(
+                self.execute_without_timeout(
                     "INSERT INTO keywords (keyword) VALUES (%s) ON CONFLICT (keyword) DO NOTHING",
                     (keyword,),
                     commit=False
@@ -188,7 +225,7 @@ class DocumentDatabaseManager(DatabaseManager):
 
             # Link keywords to document
             for keyword in keywords:
-                self.execute(
+                self.execute_without_timeout(
                     """
                     INSERT INTO document_keywords (document_id, keyword)
                     VALUES (%s, %s)
@@ -229,7 +266,7 @@ class DocumentDatabaseManager(DatabaseManager):
         WHERE d.source_id = %s AND d.external_id = %s
         """
 
-        result = self.execute(query, (source_id, external_id))
+        result = self.execute_without_timeout(query, (source_id, external_id))
         return result[0] if result else None
 
     def get_document_by_doi(self, doi: str) -> Optional[Dict[str, Any]]:

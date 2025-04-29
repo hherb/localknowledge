@@ -3,7 +3,7 @@
 Database functionality for embeddings in the LocalKnowledge library.
 
 This module provides database operations for working with embeddings stored in the
-unified_multiembeddings table. It abstracts all SQL statements and provides a clean
+emb_{vectorsize} tables. It abstracts all SQL statements and provides a clean
 interface for other modules to interact with embeddings data.
 """
 
@@ -22,7 +22,7 @@ class EmbeddingsDatabaseManager(DatabaseManager):
     """Database manager for embeddings operations.
 
     This class provides methods for working with embeddings stored in the
-    unified_multiembeddings table. It does not create any tables or indices,
+    emb_{vectorsize} tables. It does not create any tables or indices,
     as those are handled by the migration system.
     """
 
@@ -31,47 +31,127 @@ class EmbeddingsDatabaseManager(DatabaseManager):
         super().__init__()
         self.embedding_source_db = get_embedding_source_db()
 
+    def get_tablename_for_vectorsize(self, vector_size: int) -> str:
+        """Get the table name for a specific vector size.
+
+        Args:
+            vector_size: Size of the vector
+
+        Returns:
+            Name of the table for the specified vector size
+        """
+        return f"emb_{str(vector_size)}"
+
+    def get_model_id(self, model_name: str) -> int:
+        """Get the ID of a model by name.
+
+        Args:
+            model_name: Name of the model
+
+        Returns:
+            ID of the model or -1 if not found
+        """
+        query = """
+        SELECT id FROM embedding_models
+        WHERE model_name = %s
+        """
+        result = self.execute(query, (model_name,))
+
+        if result and len(result) > 0:
+            return result[0]['id']
+
+        logger.warning(f"Model not found: {model_name}")
+        return -1
+
+    def ensure_table_for_vectorsize(self, vector_size: int) -> str:
+        """Ensure a table exists for a specific vector size.
+        Embedding tables follow a naming pattern depending on vector size.
+        If we use a new embedding model with a previously not used vector size,
+        we have to call this function to create the required table.
+
+        Tables are created as inheritance from embedding_base table.
+
+        Args:
+            vector_size: Size of the vector
+
+        Returns:
+            Name of the table for the specified vector size
+        """
+        tablename = self.get_tablename_for_vectorsize(vector_size)
+
+        # First check if the table already exists
+        check_query = """
+        SELECT EXISTS (
+            SELECT FROM information_schema.tables
+            WHERE table_name = %s
+        )
+        """
+        table_exists = self.execute(check_query, (tablename,))
+
+        # Check if embedding_base table exists
+        base_exists_query = """
+        SELECT EXISTS (
+            SELECT FROM information_schema.tables
+            WHERE table_name = 'embedding_base'
+        )
+        """
+        base_exists = self.execute(base_exists_query)
+
+        if not base_exists or not base_exists[0]['exists']:
+            # If the base table doesn't exist, create it
+            self.execute("""
+            CREATE TABLE embedding_base (
+                id SERIAL PRIMARY KEY,
+                chunk_id INTEGER REFERENCES chunks(id),
+                model_id INTEGER REFERENCES embedding_models(id),
+                UNIQUE(chunk_id, model_id)
+            )
+            """, commit=True)
+
+            logger.info("Created base table embedding_base")
+
+        if not table_exists or not table_exists[0]['exists']:
+            # If the table doesn't exist, create it as inheritance from embedding_base
+            self.execute(f"""
+            CREATE TABLE {tablename} (
+                embedding vector({vector_size})
+            ) INHERITS (embedding_base)
+            """, commit=True)
+
+            # Create index for vector similarity search
+            self.execute(f"""
+            CREATE INDEX IF NOT EXISTS {tablename}_embedding_idx ON {tablename} USING ivfflat (embedding vector_cosine_ops)
+            """, commit=True)
+
+            logger.info(f"Created table {tablename} for vector size {vector_size}")
+
+        return tablename
+
+
     def add_embedding(
         self,
-        document_id: int,
-        embed_source: str,
-        text: str,
-        embedding: List[float],
-        model_name: str,
-        chunk_no: int = 0,
-        page_no: Optional[int] = None,
-        keywords: Optional[List[str]] = None,
-        metadata: Optional[Dict[str, Any]] = None
+        chunk_id: int,
+        model_id: int,
+        embedding: List[float]
     ) -> int:
         """Add a new embedding.
 
         Args:
-            document_id: ID of the document
-            embed_source: Name of the embedding source (e.g., 'abstract', 'full_text')
-            text: Text that was embedded
+            chunk_id: ID of the chunk
+            model_id: ID of the embedding model
             embedding: Embedding vector
-            model_name: Name of the model used to generate the embedding
-            chunk_no: Chunk number (default: 0)
-            page_no: Page number (optional)
-            keywords: List of keywords (optional)
-            metadata: Additional metadata (optional)
 
         Returns:
             ID of the new embedding or -1 if failed
         """
         try:
-            # Get or create the embedding source
-            embed_source_record = self.embedding_source_db.get_embedding_source_by_name(embed_source)
+            # Validate chunk_id
+            if not isinstance(chunk_id, int) or chunk_id <= 0:
+                raise ValueError(f"Invalid chunk_id: {chunk_id}")
 
-            if not embed_source_record:
-                embed_source_id = self.embedding_source_db.add_embedding_source(
-                    embed_source, f"Embeddings from {embed_source}")
-            else:
-                embed_source_id = embed_source_record['id']
-
-            # Validate document_id
-            if not isinstance(document_id, int) or document_id <= 0:
-                raise ValueError(f"Invalid document_id: {document_id}")
+            # Validate model_id
+            if not isinstance(model_id, int) or model_id <= 0:
+                raise ValueError(f"Invalid model_id: {model_id}")
 
             # For pgvector, the embedding can be in various formats
             # PostgreSQL will handle the conversion to the vector type
@@ -79,62 +159,67 @@ class EmbeddingsDatabaseManager(DatabaseManager):
             if embedding is None:
                 raise ValueError("Embedding cannot be None")
 
-            # Truncate text if it's too long (PostgreSQL has a limit on text size)
-            if text and len(text) > 1000000:  # 1MB limit
-                text = text[:1000000]
-                logger.warning(f"Text truncated for document {document_id}, chunk {chunk_no} (too long)")
+            # Get the vector size to determine the table name
+            vector_size = len(embedding)
+            tablename = self.get_tablename_for_vectorsize(vector_size)
 
-            # Convert metadata to JSON
-            try:
-                metadata_json = json.dumps(metadata) if metadata else None
-            except Exception as e:
-                logger.warning(f"Error converting metadata to JSON: {e}. Using None instead.")
-                metadata_json = None
+            # Ensure the table exists
+            self.ensure_table_for_vectorsize(vector_size)
 
-            query = """
-            INSERT INTO unified_multiembeddings (
-                document_id, embed_source_id, chunk_no, page_no, text, keywords, embedding, model_name, metadata
-            )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-            ON CONFLICT (document_id, embed_source_id, chunk_no, page_no, model_name)
-            DO UPDATE SET
-                text = EXCLUDED.text,
-                keywords = EXCLUDED.keywords,
-                embedding = EXCLUDED.embedding,
-                metadata = EXCLUDED.metadata,
-                created_at = CURRENT_TIMESTAMP
-            RETURNING id;
+            # First check if the embedding already exists
+            check_query = f"""
+            SELECT id FROM {tablename}
+            WHERE chunk_id = %s AND model_id = %s
             """
 
-            result = self.execute(
-                query,
-                (document_id, embed_source_id, chunk_no, page_no, text, keywords, embedding, model_name, metadata_json),
-                commit=True
-            )
-
-            if result:
-                embedding_id = result[0]['id']
-                logger.info(f"Added embedding for document {document_id}, source {embed_source}, chunk {chunk_no}")
-                return embedding_id
-
-            # Check if the embedding already exists
-            check_query = """
-            SELECT id FROM unified_multiembeddings
-            WHERE document_id = %s AND embed_source_id = %s AND chunk_no = %s AND page_no = %s AND model_name = %s
-            """
-
-            check_result = self.execute(check_query, (document_id, embed_source_id, chunk_no, page_no, model_name))
+            check_result = self.execute(check_query, (chunk_id, model_id))
 
             if check_result:
                 embedding_id = check_result[0]['id']
-                logger.info(f"Embedding already exists for document {document_id}, source {embed_source}, chunk {chunk_no}")
+                logger.info(f"Embedding already exists for chunk {chunk_id}, model {model_id} in table {tablename}")
+
+                # Update the existing embedding
+                update_query = f"""
+                UPDATE {tablename}
+                SET embedding = %s
+                WHERE id = %s
+                RETURNING id;
+                """
+
+                update_result = self.execute(update_query, (embedding, embedding_id), commit=True)
+
+                if update_result:
+                    logger.info(f"Updated embedding for chunk {chunk_id}, model {model_id} in table {tablename}")
+                    return update_result[0]['id']
+                else:
+                    logger.error(f"Failed to update embedding for chunk {chunk_id}, model {model_id} in table {tablename}")
+                    return -1
+
+            # If the embedding doesn't exist, insert it
+            insert_query = f"""
+            INSERT INTO {tablename} (
+                chunk_id, model_id, embedding
+            )
+            VALUES (%s, %s, %s)
+            RETURNING id;
+            """
+
+            insert_result = self.execute(
+                insert_query,
+                (chunk_id, model_id, embedding),
+                commit=True
+            )
+
+            if insert_result:
+                embedding_id = insert_result[0]['id']
+                logger.info(f"Added embedding for chunk {chunk_id}, model {model_id} to table {tablename}")
                 return embedding_id
 
             # Log at debug level instead of error level
-            logger.debug(f"Failed to add embedding for document {document_id}, source {embed_source}, chunk {chunk_no}")
+            logger.debug(f"Failed to add embedding for chunk {chunk_id}, model {model_id} to table {tablename}")
             return -1
         except Exception as e:
-            logger.error(f"Error adding embedding for document {document_id}, source {embed_source}, chunk {chunk_no}: {e}")
+            logger.error(f"Error adding embedding for chunk {chunk_id}, model {model_id}: {e}")
             raise
 
     def get_documents_without_embeddings(
@@ -157,7 +242,9 @@ class EmbeddingsDatabaseManager(DatabaseManager):
         self,
         embed_source: str,
         limit: int = 100,
-        offset: int = 0
+        offset: int = 0,
+        model_name: Optional[str] = None,
+        vector_size: Optional[int] = None
     ) -> List[Dict[str, Any]]:
         """Get a batch of documents with abstracts that don't have embeddings for a specific source.
 
@@ -165,39 +252,138 @@ class EmbeddingsDatabaseManager(DatabaseManager):
             embed_source: Name of the embedding source (e.g., 'abstract')
             limit: Maximum number of documents to retrieve
             offset: Number of documents to skip
+            model_name: Name of the model (optional)
+            vector_size: Size of the embedding vector (optional)
 
         Returns:
             List of documents without embeddings for the specified source
         """
-        # Get the embedding source ID
-        embed_source_record = self.embedding_source_db.get_embedding_source_by_name(embed_source)
+        # Get model_id if model_name is provided
+        model_id = None
+        if model_name:
+            model_id = self.get_model_id(model_name)
+            if model_id == -1:
+                logger.warning(f"Model '{model_name}' not found in embedding_models table")
+                # If the model doesn't exist, all documents need embeddings
+                query = """
+                SELECT d.id, d.source_id, s.name as source_name, d.external_id, d.title, d.abstract
+                FROM document d
+                JOIN sources s ON d.source_id = s.id
+                WHERE d.abstract IS NOT NULL
+                AND d.abstract != ''
+                ORDER BY d.id
+                """
+                params = []
 
-        if not embed_source_record:
-            # If the embedding source doesn't exist, all documents need embeddings
-            logger.info(f"Embedding source '{embed_source}' not found, all documents need embeddings")
-            # Create the embedding source
-            embed_source_id = self.embedding_source_db.add_embedding_source(
-                embed_source, f"Embeddings from {embed_source}")
+                # Add OFFSET and LIMIT clauses
+                if offset > 0:
+                    query += f" OFFSET {offset}"
+                if limit:
+                    query += f" LIMIT {limit}"
+
+                documents = self.execute(query, params)
+                logger.debug(f"Found {len(documents)} documents with abstracts (model '{model_name}' not found)")
+                return documents or []
+
+        # Determine which table to check based on vector size
+        if vector_size:
+            tablename = self.get_tablename_for_vectorsize(vector_size)
+
+            # Check if the table exists
+            check_table_query = """
+            SELECT EXISTS (
+                SELECT FROM information_schema.tables
+                WHERE table_name = %s
+            )
+            """
+            table_exists = self.execute(check_table_query, (tablename,))
+
+            if not table_exists or not table_exists[0]['exists']:
+                # If the table doesn't exist, all documents need embeddings
+                logger.info(f"Table '{tablename}' doesn't exist, all documents need embeddings")
+                query = """
+                SELECT d.id, d.source_id, s.name as source_name, d.external_id, d.title, d.abstract
+                FROM document d
+                JOIN sources s ON d.source_id = s.id
+                WHERE d.abstract IS NOT NULL
+                AND d.abstract != ''
+                ORDER BY d.id
+                """
+                params = []
+            else:
+                # Query for documents with abstracts that don't have embeddings in this specific table
+                # We need to join with chunks table to get document_id
+                query = f"""
+                SELECT d.id, d.source_id, s.name as source_name, d.external_id, d.title, d.abstract
+                FROM document d
+                JOIN sources s ON d.source_id = s.id
+                LEFT JOIN (
+                    SELECT DISTINCT c.document_id
+                    FROM {tablename} e
+                    JOIN chunks c ON e.chunk_id = c.id
+                    WHERE c.chunktype_id = (SELECT id FROM chunktypes WHERE name = 'abstract')
+                    {f"AND e.model_id = {model_id}" if model_id else ""}
+                ) emb ON d.id = emb.document_id
+                WHERE d.abstract IS NOT NULL
+                AND d.abstract != ''
+                AND emb.document_id IS NULL
+                ORDER BY d.id
+                """
+                params = []
         else:
-            embed_source_id = embed_source_record['id']
+            # Without a vector size, we need to check all possible embedding tables
+            # This is less efficient but necessary if we don't know the vector size
 
-        # Query for documents with abstracts that don't have embeddings
-        query = """
-        SELECT d.id, d.source_id, s.name as source_name, d.external_id, d.title, d.abstract
-        FROM document d
-        JOIN sources s ON d.source_id = s.id
-        LEFT JOIN (
-            SELECT DISTINCT document_id
-            FROM unified_multiembeddings
-            WHERE embed_source_id = %s
-        ) e ON d.id = e.document_id
-        WHERE d.abstract IS NOT NULL
-        AND d.abstract != ''
-        AND e.document_id IS NULL
-        ORDER BY d.id
-        """
+            # Get all embedding tables
+            tables_query = """
+            SELECT table_name
+            FROM information_schema.tables
+            WHERE table_name LIKE 'emb_%'
+            """
+            tables = self.execute(tables_query)
 
-        params = [embed_source_id]
+            if not tables:
+                # If no embedding tables exist, all documents need embeddings
+                logger.info("No embedding tables found, all documents need embeddings")
+                query = """
+                SELECT d.id, d.source_id, s.name as source_name, d.external_id, d.title, d.abstract
+                FROM document d
+                JOIN sources s ON d.source_id = s.id
+                WHERE d.abstract IS NOT NULL
+                AND d.abstract != ''
+                ORDER BY d.id
+                """
+                params = []
+            else:
+                # Build a query that checks all embedding tables
+                table_subqueries = []
+                for table in tables:
+                    tablename = table['table_name']
+                    table_subqueries.append(f"""
+                    SELECT DISTINCT c.document_id
+                    FROM {tablename} e
+                    JOIN chunks c ON e.chunk_id = c.id
+                    WHERE c.chunktype_id = (SELECT id FROM chunktypes WHERE name = 'abstract')
+                    {f"AND e.model_id = {model_id}" if model_id else ""}
+                    """)
+
+                # Combine all subqueries with UNION
+                union_query = " UNION ".join(table_subqueries)
+
+                # Main query
+                query = f"""
+                SELECT d.id, d.source_id, s.name as source_name, d.external_id, d.title, d.abstract
+                FROM document d
+                JOIN sources s ON d.source_id = s.id
+                LEFT JOIN (
+                    {union_query}
+                ) emb ON d.id = emb.document_id
+                WHERE d.abstract IS NOT NULL
+                AND d.abstract != ''
+                AND emb.document_id IS NULL
+                ORDER BY d.id
+                """
+                params = []
 
         # Add OFFSET and LIMIT clauses
         if offset > 0:
@@ -207,14 +393,16 @@ class EmbeddingsDatabaseManager(DatabaseManager):
             query += f" LIMIT {limit}"
 
         documents = self.execute(query, params)
-        logger.debug(f"Found {len(documents)} documents with abstracts that need '{embed_source}' embeddings (offset: {offset}, limit: {limit})")
+        logger.debug(f"Found {len(documents)} documents with abstracts that need embeddings (offset: {offset}, limit: {limit})")
         return documents or []
 
-    def count_documents_without_embeddings(self, embed_source: str) -> int:
+    def count_documents_without_embeddings(self, embed_source: str, model_name: Optional[str] = None, vector_size: Optional[int] = None) -> int:
         """Count documents that don't have embeddings for a specific source.
 
         Args:
             embed_source: Name of the embedding source (e.g., 'abstract')
+            model_name: Name of the model (optional)
+            vector_size: Size of the embedding vector (optional)
 
         Returns:
             Number of documents without embeddings for the specified source
@@ -234,19 +422,97 @@ class EmbeddingsDatabaseManager(DatabaseManager):
             params = []
         else:
             embed_source_id = embed_source_record['id']
-            query = """
-            SELECT COUNT(*) as count
-            FROM document d
-            LEFT JOIN (
-                SELECT DISTINCT document_id
-                FROM unified_multiembeddings
-                WHERE embed_source_id = %s
-            ) e ON d.id = e.document_id
-            WHERE d.abstract IS NOT NULL
-            AND d.abstract != ''
-            AND e.document_id IS NULL
-            """
-            params = [embed_source_id]
+
+            # Determine which table to check based on vector size
+            if vector_size:
+                tablename = self.get_tablename_for_vectorsize(vector_size)
+
+                # Check if the table exists
+                check_table_query = """
+                SELECT EXISTS (
+                    SELECT FROM information_schema.tables
+                    WHERE table_name = %s
+                )
+                """
+                table_exists = self.execute(check_table_query, (tablename,))
+
+                if not table_exists or not table_exists[0]['exists']:
+                    # If the table doesn't exist, all documents need embeddings
+                    logger.info(f"Table '{tablename}' doesn't exist, counting all documents with abstracts")
+                    query = """
+                    SELECT COUNT(*) as count
+                    FROM document
+                    WHERE abstract IS NOT NULL
+                    AND abstract != ''
+                    """
+                    params = []
+                else:
+                    # Count documents with abstracts that don't have embeddings in this specific table
+                    query = f"""
+                    SELECT COUNT(*) as count
+                    FROM document d
+                    LEFT JOIN (
+                        SELECT DISTINCT document_id
+                        FROM {tablename}
+                        WHERE embed_source_id = %s
+                        {f"AND model_name = '{model_name}'" if model_name else ""}
+                    ) e ON d.id = e.document_id
+                    WHERE d.abstract IS NOT NULL
+                    AND d.abstract != ''
+                    AND e.document_id IS NULL
+                    """
+                    params = [embed_source_id]
+            else:
+                # Without a vector size, we need to check all possible embedding tables
+                # This is less efficient but necessary if we don't know the vector size
+
+                # Get all embedding tables
+                tables_query = """
+                SELECT table_name
+                FROM information_schema.tables
+                WHERE table_name LIKE 'emb_%'
+                """
+                tables = self.execute(tables_query)
+
+                if not tables:
+                    # If no embedding tables exist, all documents need embeddings
+                    logger.info("No embedding tables found, counting all documents with abstracts")
+                    query = """
+                    SELECT COUNT(*) as count
+                    FROM document
+                    WHERE abstract IS NOT NULL
+                    AND abstract != ''
+                    """
+                    params = []
+                else:
+                    # Build a query that checks all embedding tables
+                    table_subqueries = []
+                    for table in tables:
+                        tablename = table['table_name']
+                        table_subqueries.append(f"""
+                        SELECT DISTINCT document_id
+                        FROM {tablename}
+                        WHERE embed_source_id = %s
+                        {f"AND model_name = '{model_name}'" if model_name else ""}
+                        """)
+
+                    # Combine all subqueries with UNION
+                    union_query = " UNION ".join(table_subqueries)
+
+                    # Main query
+                    query = f"""
+                    SELECT COUNT(*) as count
+                    FROM document d
+                    LEFT JOIN (
+                        {union_query}
+                    ) e ON d.id = e.document_id
+                    WHERE d.abstract IS NOT NULL
+                    AND d.abstract != ''
+                    AND e.document_id IS NULL
+                    """
+
+                    # For each table in the UNION, we need to add the embed_source_id parameter
+                    params = [embed_source_id] * len(tables)
 
         result = self.execute(query, params)
         count = result[0]['count'] if result else 0
@@ -341,20 +607,37 @@ class EmbeddingsDatabaseManager(DatabaseManager):
             # Return empty results if pgvector is not installed
             return []
 
+        # Get the vector size to determine the table name
+        vector_size = len(embedding)
+        tablename = self.get_tablename_for_vectorsize(vector_size)
+
+        # Check if the table exists
+        check_table_query = """
+        SELECT EXISTS (
+            SELECT FROM information_schema.tables
+            WHERE table_name = %s
+        )
+        """
+        table_exists = self.execute(check_table_query, (tablename,))
+
+        if not table_exists or not table_exists[0]['exists']:
+            logger.warning(f"Table '{tablename}' doesn't exist. Vector search is not available.")
+            return []
+
         # Check if the embedding column is of type vector
-        column_query = """
+        column_query = f"""
         SELECT data_type FROM information_schema.columns
-        WHERE table_name = 'unified_multiembeddings' AND column_name = 'embedding'
+        WHERE table_name = '{tablename}' AND column_name = 'embedding'
         """
         column_result = self.execute(column_query)
 
         if not column_result:
-            logger.warning("Could not determine embedding column type. Vector search is not available.")
+            logger.warning(f"Could not determine embedding column type for table {tablename}. Vector search is not available.")
             return []
 
         # PostgreSQL reports the vector type as 'USER-DEFINED'
         if column_result[0]['data_type'] != 'USER-DEFINED':
-            logger.warning(f"Embedding column is of type {column_result[0]['data_type']}, not vector. Vector search is not available.")
+            logger.warning(f"Embedding column in table {tablename} is of type {column_result[0]['data_type']}, not vector. Vector search is not available.")
             return []
 
         try:
@@ -362,12 +645,12 @@ class EmbeddingsDatabaseManager(DatabaseManager):
             # For pgvector, we need to pass the embedding as a string in the format '[0.1, 0.2, ...]'
             embedding_str = str(embedding)
 
-            query = """
+            query = f"""
             SELECT e.*, s.name as embed_source,
                    (e.embedding <=> vector(%s)) as distance,
                    1 - (e.embedding <=> vector(%s)) as similarity,
                    d.title, d.abstract
-            FROM unified_multiembeddings e
+            FROM {tablename} e
             JOIN embedding_source s ON e.embed_source_id = s.id
             JOIN document d ON e.document_id = d.id
             WHERE e.embed_source_id = %s
@@ -390,7 +673,8 @@ class EmbeddingsDatabaseManager(DatabaseManager):
         self,
         document_id: int,
         embed_source: Optional[str] = None,
-        model_name: Optional[str] = None
+        model_name: Optional[str] = None,
+        vector_size: Optional[int] = None
     ) -> int:
         """Delete embeddings for a document.
 
@@ -398,102 +682,220 @@ class EmbeddingsDatabaseManager(DatabaseManager):
             document_id: ID of the document
             embed_source: Name of the embedding source (optional)
             model_name: Name of the model (optional)
+            vector_size: Size of the embedding vector (optional)
 
         Returns:
             Number of embeddings deleted
         """
-        query = "DELETE FROM unified_multiembeddings WHERE document_id = %s"
-        params = [document_id]
+        total_deleted = 0
 
+        # Get embed_source_id if provided
+        embed_source_id = None
         if embed_source:
-            # Get the embedding source ID
             embed_source_record = self.embedding_source_db.get_embedding_source_by_name(embed_source)
-
             if embed_source_record:
-                query += " AND embed_source_id = %s"
-                params.append(embed_source_record['id'])
+                embed_source_id = embed_source_record['id']
 
-        if model_name:
-            query += " AND model_name = %s"
-            params.append(model_name)
+        # If vector_size is provided, delete from that specific table
+        if vector_size:
+            tablename = self.get_tablename_for_vectorsize(vector_size)
 
-        self.execute(query, tuple(params), commit=True)
+            # Check if the table exists
+            check_table_query = """
+            SELECT EXISTS (
+                SELECT FROM information_schema.tables
+                WHERE table_name = %s
+            )
+            """
+            table_exists = self.execute(check_table_query, (tablename,))
 
-        logger.info(f"Deleted embeddings for document {document_id}")
+            if table_exists and table_exists[0]['exists']:
+                query = f"DELETE FROM {tablename} WHERE document_id = %s"
+                params = [document_id]
 
-        return 1  # In a real implementation, you would return the actual count
+                if embed_source_id:
+                    query += " AND embed_source_id = %s"
+                    params.append(embed_source_id)
 
-    def find_zero_vectors(self, embed_source: Optional[str] = None) -> List[Dict[str, Any]]:
+                if model_name:
+                    query += " AND model_name = %s"
+                    params.append(model_name)
+
+                self.execute(query, tuple(params), commit=True)
+                total_deleted += 1  # In a real implementation, you would return the actual count
+                logger.info(f"Deleted embeddings for document {document_id} from table {tablename}")
+        else:
+            # Without a vector size, delete from all embedding tables
+            # Get all embedding tables
+            tables_query = """
+            SELECT table_name
+            FROM information_schema.tables
+            WHERE table_name LIKE 'emb_%'
+            """
+            tables = self.execute(tables_query)
+
+            if tables:
+                for table in tables:
+                    tablename = table['table_name']
+                    query = f"DELETE FROM {tablename} WHERE document_id = %s"
+                    params = [document_id]
+
+                    if embed_source_id:
+                        query += " AND embed_source_id = %s"
+                        params.append(embed_source_id)
+
+                    if model_name:
+                        query += " AND model_name = %s"
+                        params.append(model_name)
+
+                    self.execute(query, tuple(params), commit=True)
+                    total_deleted += 1  # In a real implementation, you would return the actual count
+                    logger.info(f"Deleted embeddings for document {document_id} from table {tablename}")
+
+        return total_deleted
+
+    def find_zero_vectors(self, embed_source: Optional[str] = None, vector_size: Optional[int] = None) -> List[Dict[str, Any]]:
         """Find embeddings that are all zeros (likely created by error).
 
         Args:
             embed_source: Name of the embedding source (optional)
+            vector_size: Size of the embedding vector (optional)
 
         Returns:
             List of embedding records with zero vectors
         """
-        # For pgvector, we'll use a fixed dimension of 1024, which is what we expect
-        # This is the dimension used by most embedding models like snowflake-arctic-embed2
-        dimensions = 1024
-        logger.info(f"Using fixed embedding dimension: {dimensions}")
+        all_results = []
 
-        # Create a properly formatted zero vector with the correct dimensions
-        zero_vector_str = f"[{','.join(['0' for _ in range(dimensions)])}]"
-        logger.debug(f"Zero vector: {zero_vector_str[:50]}...{zero_vector_str[-10:]} (length: {len(zero_vector_str)})")
-
-        # Base query to find zero vectors
-        # We need to check if the embedding is all zeros
-        # For pgvector, we can use the <-> operator (L2 distance) to compare with a zero vector
-        # If the distance is very small, it's likely a zero vector
-        query = """
-        SELECT e.id, e.document_id, s.name as embed_source, e.model_name, e.chunk_no, e.page_no
-        FROM unified_multiembeddings e
-        JOIN embedding_source s ON e.embed_source_id = s.id
-        WHERE e.embedding <-> %s::vector < 0.0001
-        """
-
-        params = [zero_vector_str]
-
+        # Get embed_source_id if provided
+        embed_source_id = None
         if embed_source:
-            # Get the embedding source ID
             embed_source_record = self.embedding_source_db.get_embedding_source_by_name(embed_source)
-
             if embed_source_record:
-                query += " AND e.embed_source_id = %s"
-                params.append(embed_source_record['id'])
+                embed_source_id = embed_source_record['id']
 
-        query += " ORDER BY e.document_id, e.chunk_no, e.page_no"
+        # If vector_size is provided, check that specific table
+        if vector_size:
+            tablename = self.get_tablename_for_vectorsize(vector_size)
 
-        result = self.execute(query, tuple(params))
-        logger.info(f"Found {len(result)} embeddings with zero vectors")
-        return result or []
+            # Check if the table exists
+            check_table_query = """
+            SELECT EXISTS (
+                SELECT FROM information_schema.tables
+                WHERE table_name = %s
+            )
+            """
+            table_exists = self.execute(check_table_query, (tablename,))
 
-    def delete_zero_vectors(self, embed_source: Optional[str] = None) -> int:
+            if table_exists and table_exists[0]['exists']:
+                # Create a properly formatted zero vector with the correct dimensions
+                zero_vector_str = f"[{','.join(['0' for _ in range(vector_size)])}]"
+
+                # Base query to find zero vectors
+                query = f"""
+                SELECT e.id, e.document_id, s.name as embed_source, e.model_name, e.chunk_no, e.page_no, '{tablename}' as table_name
+                FROM {tablename} e
+                JOIN embedding_source s ON e.embed_source_id = s.id
+                WHERE e.embedding <-> %s::vector < 0.0001
+                """
+
+                params = [zero_vector_str]
+
+                if embed_source_id:
+                    query += " AND e.embed_source_id = %s"
+                    params.append(embed_source_id)
+
+                query += " ORDER BY e.document_id, e.chunk_no, e.page_no"
+
+                result = self.execute(query, tuple(params))
+                if result:
+                    all_results.extend(result)
+                logger.info(f"Found {len(result) if result else 0} embeddings with zero vectors in table {tablename}")
+        else:
+            # Without a vector size, check all embedding tables
+            # Get all embedding tables
+            tables_query = """
+            SELECT table_name
+            FROM information_schema.tables
+            WHERE table_name LIKE 'emb_%'
+            """
+            tables = self.execute(tables_query)
+
+            if tables:
+                for table in tables:
+                    tablename = table['table_name']
+
+                    # Extract vector size from table name
+                    try:
+                        table_vector_size = int(tablename.split('_')[1])
+                    except (IndexError, ValueError):
+                        logger.warning(f"Could not determine vector size from table name: {tablename}")
+                        continue
+
+                    # Create a properly formatted zero vector with the correct dimensions
+                    zero_vector_str = f"[{','.join(['0' for _ in range(table_vector_size)])}]"
+
+                    # Base query to find zero vectors
+                    query = f"""
+                    SELECT e.id, e.document_id, s.name as embed_source, e.model_name, e.chunk_no, e.page_no, '{tablename}' as table_name
+                    FROM {tablename} e
+                    JOIN embedding_source s ON e.embed_source_id = s.id
+                    WHERE e.embedding <-> %s::vector < 0.0001
+                    """
+
+                    params = [zero_vector_str]
+
+                    if embed_source_id:
+                        query += " AND e.embed_source_id = %s"
+                        params.append(embed_source_id)
+
+                    query += " ORDER BY e.document_id, e.chunk_no, e.page_no"
+
+                    result = self.execute(query, tuple(params))
+                    if result:
+                        all_results.extend(result)
+                    logger.info(f"Found {len(result) if result else 0} embeddings with zero vectors in table {tablename}")
+
+        logger.info(f"Found a total of {len(all_results)} embeddings with zero vectors")
+        return all_results
+
+    def delete_zero_vectors(self, embed_source: Optional[str] = None, vector_size: Optional[int] = None) -> int:
         """Delete embeddings that are all zeros (likely created by error).
 
         Args:
             embed_source: Name of the embedding source (optional)
+            vector_size: Size of the embedding vector (optional)
 
         Returns:
             Number of embeddings deleted
         """
         # Find zero vectors first
-        zero_vectors = self.find_zero_vectors(embed_source)
+        zero_vectors = self.find_zero_vectors(embed_source, vector_size)
 
         if not zero_vectors:
             logger.info("No zero vectors found")
             return 0
 
-        # Extract IDs of zero vectors
-        zero_vector_ids = [record['id'] for record in zero_vectors]
+        # Group zero vectors by table
+        vectors_by_table = {}
+        for record in zero_vectors:
+            table = record['table_name']
+            if table not in vectors_by_table:
+                vectors_by_table[table] = []
+            vectors_by_table[table].append(record['id'])
 
-        # Delete zero vectors by ID
-        query = "DELETE FROM unified_multiembeddings WHERE id = ANY(%s)"
-        self.execute(query, (zero_vector_ids,), commit=True)
+        total_deleted = 0
 
-        deleted_count = len(zero_vector_ids)
-        logger.info(f"Deleted {deleted_count} embeddings with zero vectors")
-        return deleted_count
+        # Delete zero vectors from each table
+        for table, ids in vectors_by_table.items():
+            query = f"DELETE FROM {table} WHERE id = ANY(%s)"
+            self.execute(query, (ids,), commit=True)
+
+            deleted_count = len(ids)
+            total_deleted += deleted_count
+            logger.info(f"Deleted {deleted_count} embeddings with zero vectors from table {table}")
+
+        logger.info(f"Deleted a total of {total_deleted} embeddings with zero vectors")
+        return total_deleted
 
     def get_embedding_stats(self) -> Dict[str, Any]:
         """Get statistics about the embeddings.
@@ -503,53 +905,133 @@ class EmbeddingsDatabaseManager(DatabaseManager):
         """
         stats = {}
 
-        # Count total embeddings
-        query = "SELECT COUNT(*) as count FROM unified_multiembeddings"
-        result = self.execute(query)
-        stats['total_embeddings'] = result[0]['count'] if result else 0
-
-        # Count embeddings by source
-        query = """
-        SELECT s.name, COUNT(*) as count
-        FROM unified_multiembeddings e
-        JOIN embedding_source s ON e.embed_source_id = s.id
-        GROUP BY s.name
-        ORDER BY count DESC
+        # Get all embedding tables
+        tables_query = """
+        SELECT table_name
+        FROM information_schema.tables
+        WHERE table_name LIKE 'emb_%'
         """
-        result = self.execute(query)
-        stats['embeddings_by_source'] = result or []
+        tables = self.execute(tables_query)
 
-        # Count embeddings by model
-        query = """
-        SELECT model_name, COUNT(*) as count
-        FROM unified_multiembeddings
-        GROUP BY model_name
-        ORDER BY count DESC
-        """
-        result = self.execute(query)
-        stats['embeddings_by_model'] = result or []
+        if not tables:
+            logger.warning("No embedding tables found")
+            return {
+                'total_embeddings': 0,
+                'embeddings_by_source': [],
+                'embeddings_by_model': [],
+                'embeddings_by_table': [],
+                'documents_with_embeddings': 0,
+                'zero_vectors': 0
+            }
 
-        # Count documents with embeddings
-        query = "SELECT COUNT(DISTINCT document_id) as count FROM unified_multiembeddings"
-        result = self.execute(query)
-        stats['documents_with_embeddings'] = result[0]['count'] if result else 0
+        # Initialize counters
+        total_embeddings = 0
+        embeddings_by_source = {}
+        embeddings_by_model = {}
+        embeddings_by_table = []
+        documents_with_embeddings_set = set()
+        total_zero_vectors = 0
 
-        # Count zero vectors
-        # For pgvector, we'll use a fixed dimension of 1024, which is what we expect
-        # This is the dimension used by most embedding models like snowflake-arctic-embed2
-        dimensions = 1024
+        # Process each table
+        for table in tables:
+            tablename = table['table_name']
 
-        # Create a properly formatted zero vector with the correct dimensions
-        zero_vector_str = f"[{','.join(['0' for _ in range(dimensions)])}]"
+            # Count embeddings in this table
+            count_query = f"SELECT COUNT(*) as count FROM {tablename}"
+            count_result = self.execute(count_query)
+            table_count = count_result[0]['count'] if count_result else 0
+            total_embeddings += table_count
 
-        # Count zero vectors
-        query = """
-        SELECT COUNT(*) as count
-        FROM unified_multiembeddings
-        WHERE embedding <-> %s::vector < 0.0001
-        """
-        result = self.execute(query, (zero_vector_str,))
-        stats['zero_vectors'] = result[0]['count'] if result else 0
+            # Add to embeddings_by_table
+            embeddings_by_table.append({
+                'table_name': tablename,
+                'count': table_count
+            })
+
+            # Count embeddings by source in this table
+            source_query = f"""
+            SELECT s.name, COUNT(*) as count
+            FROM {tablename} e
+            JOIN embedding_source s ON e.embed_source_id = s.id
+            GROUP BY s.name
+            """
+            source_result = self.execute(source_query)
+
+            if source_result:
+                for row in source_result:
+                    source_name = row['name']
+                    if source_name in embeddings_by_source:
+                        embeddings_by_source[source_name] += row['count']
+                    else:
+                        embeddings_by_source[source_name] = row['count']
+
+            # Count embeddings by model in this table
+            model_query = f"""
+            SELECT model_name, COUNT(*) as count
+            FROM {tablename}
+            GROUP BY model_name
+            """
+            model_result = self.execute(model_query)
+
+            if model_result:
+                for row in model_result:
+                    model_name = row['model_name']
+                    if model_name in embeddings_by_model:
+                        embeddings_by_model[model_name] += row['count']
+                    else:
+                        embeddings_by_model[model_name] = row['count']
+
+            # Get document IDs with embeddings in this table
+            doc_query = f"SELECT DISTINCT document_id FROM {tablename}"
+            doc_result = self.execute(doc_query)
+
+            if doc_result:
+                for row in doc_result:
+                    documents_with_embeddings_set.add(row['document_id'])
+
+            # Extract vector size from table name
+            try:
+                vector_size = int(tablename.split('_')[1])
+
+                # Create a properly formatted zero vector with the correct dimensions
+                zero_vector_str = f"[{','.join(['0' for _ in range(vector_size)])}]"
+
+                # Count zero vectors in this table
+                zero_query = f"""
+                SELECT COUNT(*) as count
+                FROM {tablename}
+                WHERE embedding <-> %s::vector < 0.0001
+                """
+                zero_result = self.execute(zero_query, (zero_vector_str,))
+
+                if zero_result:
+                    total_zero_vectors += zero_result[0]['count']
+            except (IndexError, ValueError):
+                logger.warning(f"Could not determine vector size from table name: {tablename}")
+
+        # Convert dictionaries to sorted lists
+        embeddings_by_source_list = [
+            {'name': name, 'count': count}
+            for name, count in embeddings_by_source.items()
+        ]
+        embeddings_by_source_list.sort(key=lambda x: x['count'], reverse=True)
+
+        embeddings_by_model_list = [
+            {'model_name': name, 'count': count}
+            for name, count in embeddings_by_model.items()
+        ]
+        embeddings_by_model_list.sort(key=lambda x: x['count'], reverse=True)
+
+        # Sort embeddings_by_table
+        embeddings_by_table.sort(key=lambda x: x['count'], reverse=True)
+
+        # Build the final stats dictionary
+        stats['total_embeddings'] = total_embeddings
+        stats['embeddings_by_source'] = embeddings_by_source_list
+        stats['embeddings_by_model'] = embeddings_by_model_list
+        stats['embeddings_by_table'] = embeddings_by_table
+        stats['documents_with_embeddings'] = len(documents_with_embeddings_set)
+        stats['zero_vectors'] = total_zero_vectors
 
         return stats
 

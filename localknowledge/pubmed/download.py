@@ -66,7 +66,7 @@ def create_ftp_connection():
 import backoff
 
 @backoff.on_exception(
-    backoff.expo, 
+    backoff.expo,
     (socket.timeout, socket.error, IOError, EOFError),
     max_tries=5,
     on_backoff=lambda details: logger.warning(
@@ -98,31 +98,31 @@ def ftp_download_with_retry(ftp, xml_file, callback, rest_pos=0, max_retries=3):
             logger.warning(f"FTP connection lost: {e}, attempt {attempt+1}/{max_retries}")
             if attempt + 1 >= max_retries:
                 raise
-                
+
             # Connection issues - create new connection
             try:
                 ftp.quit()
             except:
                 pass
             ftp = create_ftp_connection()
-            
+
             # If we're downloading baseline files
             if xml_file.endswith('.xml.gz') and '/baseline/' not in xml_file:
                 ftp.cwd('/pubmed/baseline')
             # If we're downloading update files
             elif xml_file.endswith('.xml.gz') and '/updatefiles/' not in xml_file:
                 ftp.cwd('/pubmed/updatefiles')
-                
+
             # Sleep briefly before retry
             time.sleep(2)
-            
+
 def verify_md5(file_path):
     """
     Verify a file's MD5 checksum against its corresponding .md5 file.
-    
+
     Args:
         file_path: Path to the file to verify
-    
+
     Returns:
         Tuple of (is_valid, checksum_value, error_message)
         is_valid: True if the checksum matches, False otherwise
@@ -130,11 +130,11 @@ def verify_md5(file_path):
         error_message: Error message if any occurred, None otherwise
     """
     md5_file_path = file_path + '.md5'
-    
+
     # Check if the MD5 file exists
     if not os.path.exists(md5_file_path):
         return False, None, "MD5 file not found"
-    
+
     try:
         # Calculate MD5 hash for the file
         md5_hash = hashlib.md5()
@@ -143,57 +143,87 @@ def verify_md5(file_path):
             for chunk in iter(lambda: f.read(4096), b""):
                 md5_hash.update(chunk)
         calculated_hash = md5_hash.hexdigest()
-        
+
         # Read expected hash from .md5 file
         with open(md5_file_path, 'r') as f:
             md5_content = f.read().strip()
-            # MD5 files from NCBI typically contain the MD5 followed by the filename
-            expected_hash = md5_content.split()[0] if ' ' in md5_content else md5_content
-        
-        # Compare the hashes
+
+            # NCBI's MD5 files have format: MD5(filename)= hash
+            # Just extract everything after the equals sign
+            if '=' in md5_content:
+                expected_hash = md5_content.split('=', 1)[1].strip()
+            # Fallback for other formats
+            elif ' ' in md5_content:
+                expected_hash = md5_content.split()[0]
+            else:
+                expected_hash = md5_content
+
+            # If the expected hash is empty, verification cannot succeed
+            if not expected_hash:
+                return False, calculated_hash, "Empty or invalid MD5 in checksum file"
+
+            # Remove any extra spaces or quotes
+            expected_hash = expected_hash.strip().strip('"').strip("'").strip()
+
+        # Compare the hashes (case-insensitive)
         is_valid = calculated_hash.lower() == expected_hash.lower()
-        
+
         if not is_valid:
             return False, calculated_hash, f"Checksum mismatch: expected {expected_hash}, got {calculated_hash}"
-            
+
         return True, calculated_hash, None
-    
+
     except Exception as e:
         return False, None, f"Error verifying MD5: {e}"
 
-def download_pubmed_baseline(baseline_dir='~/knowledgebase/pubmed_data/baseline', tracker=None):
+def download_pubmed_baseline(baseline_dir='~/knowledgebase/pubmed_data/baseline', tracker=None, from_highest_seq=False, from_highest_processed_seq=False):
     """Download the complete PubMed baseline dataset with resume capability
-    
+
     Args:
         baseline_dir (str): Directory to store baseline files
         tracker (PubMedDownloadTracker, optional): Database tracker for downloaded files.
             If None, a local checkpoint file will be used instead.
+        from_highest_seq (bool): If True, start download from the highest sequence number in the database
+        from_highest_processed_seq (bool): If True, start download from the highest processed sequence number
     """
     # Ensure the path is fully expanded
     baseline_dir = os.path.expanduser(baseline_dir)
     baseline_dir = os.path.abspath(baseline_dir)
-    
+
     # Create directory if it doesn't exist
     os.makedirs(baseline_dir, exist_ok=True)
-    
+
     # If no tracker provided, use the local checkpoint file
     using_db_tracker = tracker is not None
-    
+
     # Define checkpoint file path
     checkpoint_file = os.path.join(baseline_dir, '.download_checkpoint')
     last_downloaded_file = None
-    
-    # Check if checkpoint exists and load it if no tracker provided
-    if not using_db_tracker and os.path.exists(checkpoint_file):
+
+    # If using database tracker and one of the sequence options is enabled
+    if using_db_tracker and (from_highest_seq or from_highest_processed_seq):
+        # Get the highest sequence number based on the option
+        highest_seq = tracker.get_highest_sequence_number(processed_only=from_highest_processed_seq)
+        if highest_seq > 0:
+            # Construct the filename with the highest sequence number
+            # The actual download will start from the next file
+            last_downloaded_file = f"pubmed25n{highest_seq}.xml.gz"
+            logger.info(f"Starting download from sequence number {highest_seq} (file: {last_downloaded_file})")
+            if from_highest_processed_seq:
+                logger.info("Using highest processed sequence number")
+            else:
+                logger.info("Using highest sequence number (regardless of processed status)")
+    # Otherwise, check if checkpoint exists and load it if no tracker provided
+    elif not using_db_tracker and os.path.exists(checkpoint_file):
         try:
             with open(checkpoint_file, 'r') as f:
                 last_downloaded_file = f.read().strip()
                 logger.info(f"Found checkpoint file. Last downloaded file: {last_downloaded_file}")
         except Exception as e:
             logger.warning(f"Error reading checkpoint file: {e}")
-    
+
     logger.info(f"Starting PubMed baseline download to {baseline_dir}")
-    
+
     # Check if backoff package is available, install if needed
     try:
         import backoff
@@ -206,19 +236,19 @@ def download_pubmed_baseline(baseline_dir='~/knowledgebase/pubmed_data/baseline'
 
     ftp = None
     retry_count = 0
-    
+
     while retry_count < MAX_RETRIES:
         try:
             if ftp is None:
                 ftp = create_ftp_connection()
-                
+
             files = ftp.nlst()
             xml_files = [f for f in files if f.endswith('.xml.gz')]
             xml_files.sort()  # Ensure files are processed in order
             total_files = len(xml_files)
-            
+
             logger.info(f"Found {total_files} PubMed baseline files to download")
-            
+
             # If we have a checkpoint, skip files until we reach the last downloaded one
             start_index = 0
             if last_downloaded_file:
@@ -229,10 +259,10 @@ def download_pubmed_baseline(baseline_dir='~/knowledgebase/pubmed_data/baseline'
                     xml_files = xml_files[start_index:]
                 except ValueError:
                     logger.warning(f"Checkpoint file {last_downloaded_file} not found in the FTP directory. Starting from the beginning.")
-            
+
             for i, xml_file in enumerate(xml_files, start_index + 1):
                 local_file = os.path.join(baseline_dir, xml_file)
-                
+
                 # Check if file exists and has correct size
                 should_download = True
                 try:
@@ -244,7 +274,7 @@ def download_pubmed_baseline(baseline_dir='~/knowledgebase/pubmed_data/baseline'
                             ftp.voidcmd('TYPE I')
                             remote_size = ftp.size(xml_file)
                             local_size = os.path.getsize(local_file)
-                            
+
                             if local_size == remote_size:
                                 logger.info(f"Skipped existing complete baseline file {xml_file} ({i}/{total_files})")
                                 should_download = False
@@ -258,7 +288,7 @@ def download_pubmed_baseline(baseline_dir='~/knowledgebase/pubmed_data/baseline'
                         ftp.voidcmd('TYPE I')  # Switch to binary mode
                         remote_size = ftp.size(xml_file)
                         local_size = os.path.getsize(local_file)
-                        
+
                         if local_size == remote_size:
                             logger.info(f"Skipped existing complete baseline file {xml_file} ({i}/{total_files})")
                             should_download = False
@@ -277,7 +307,7 @@ def download_pubmed_baseline(baseline_dir='~/knowledgebase/pubmed_data/baseline'
                         pass
                     ftp = create_ftp_connection()
                     # Continue with download attempt
-                
+
                 if should_download:
                     file_downloaded = False
                     download_retries = 0
@@ -287,7 +317,7 @@ def download_pubmed_baseline(baseline_dir='~/knowledgebase/pubmed_data/baseline'
                         try:
                             # Try to resume download if file exists
                             rest_pos = os.path.getsize(local_file) if os.path.exists(local_file) else 0
-                            
+
                             # Ensure FTP connection is active
                             try:
                                 # Get file size for progress bar
@@ -302,7 +332,7 @@ def download_pubmed_baseline(baseline_dir='~/knowledgebase/pubmed_data/baseline'
                                 ftp = create_ftp_connection()
                                 ftp.voidcmd('TYPE I')
                                 file_size = ftp.size(xml_file)
-                            
+
                             # Create progress bar
                             pbar = tqdm(
                                 total=file_size,
@@ -312,25 +342,25 @@ def download_pubmed_baseline(baseline_dir='~/knowledgebase/pubmed_data/baseline'
                                 desc=f"File {i}/{total_files}: {xml_file}",
                                 ncols=100
                             )
-                            
+
                             # Define callback to update progress bar
                             def callback(data):
                                 pbar.update(len(data))
                                 fp.write(data)
-                            
+
                             with open(local_file, 'ab' if rest_pos > 0 else 'wb') as fp:
                                 # Use our retry-capable download function
                                 ftp_download_with_retry(ftp, xml_file, callback, rest_pos)
-                            
+
                             # Close progress bar
                             pbar.close()
-                                
+
                             logger.info(f"Downloaded {xml_file} ({i}/{total_files})")
-                            
+
                             # Download the MD5 file for verification
                             md5_file = xml_file + '.md5'
                             local_md5_file = local_file + '.md5'
-                            
+
                             # Download MD5 file for checksum verification
                             md5_download_successful = False
                             md5_retries = 0
@@ -340,16 +370,16 @@ def download_pubmed_baseline(baseline_dir='~/knowledgebase/pubmed_data/baseline'
                                     with open(local_md5_file, 'wb') as md5_fp:
                                         def md5_callback(data):
                                             md5_fp.write(data)
-                                        
+
                                         ftp_download_with_retry(ftp, md5_file, md5_callback)
-                                        
+
                                     logger.info(f"Downloaded MD5 file for {xml_file}")
                                     md5_download_successful = True
                                 except Exception as md5_error:
                                     md5_retries += 1
                                     logger.warning(f"Error downloading MD5 file for {xml_file} (attempt {md5_retries}/3): {md5_error}")
                                     time.sleep(1)  # Short delay before retry
-                            
+
                             # Verify MD5 checksum
                             checksum = None
                             if md5_download_successful:
@@ -358,9 +388,9 @@ def download_pubmed_baseline(baseline_dir='~/knowledgebase/pubmed_data/baseline'
                                     logger.info(f"✓ MD5 verification passed for {xml_file}")
                                 else:
                                     logger.warning(f"✗ MD5 verification failed for {xml_file}: {error}")
-                            
+
                             file_downloaded = True
-                            
+
                             # Log successful download in database if tracker provided
                             if using_db_tracker:
                                 try:
@@ -370,10 +400,10 @@ def download_pubmed_baseline(baseline_dir='~/knowledgebase/pubmed_data/baseline'
                                 except:
                                     # Use local file size if FTP size check fails
                                     file_size = os.path.getsize(local_file)
-                                
+
                                 # Include checksum in the database if available
                                 tracker.log_download(xml_file, 'baseline', file_size)
-                                
+
                                 # Store the checksum if available
                                 if checksum:
                                     try:
@@ -385,65 +415,67 @@ def download_pubmed_baseline(baseline_dir='~/knowledgebase/pubmed_data/baseline'
                                             tracker.connection.commit()
                                     except Exception as e:
                                         logger.error(f"Error updating checksum: {e}")
-                            
+
                             # Also update checkpoint file as a backup
                             try:
                                 with open(checkpoint_file, 'w') as f:
                                     f.write(xml_file)
                             except Exception as e:
                                 logger.warning(f"Error writing checkpoint file: {e}")
-                            
+
                         except Exception as download_error:
                             download_retries += 1
                             logger.error(f"Error downloading {xml_file} (attempt {download_retries}/{MAX_RETRIES}): {download_error}")
-                            
+
                             # Sleep before retrying
                             time.sleep(RETRY_DELAY)
-                            
+
                             # Reset the FTP connection
                             try:
                                 ftp.quit()
                             except:
                                 pass
                             ftp = create_ftp_connection()
-                            
+
                             if download_retries >= MAX_RETRIES:
                                 logger.error(f"Failed to download {xml_file} after {MAX_RETRIES} attempts, moving to next file")
-            
+
             try:
                 ftp.quit()
             except:
                 pass
-                
+
             logger.info("PubMed baseline download completed")
             return
-            
+
         except Exception as e:
             retry_count += 1
             logger.error(f"Error in PubMed baseline download (attempt {retry_count}/{MAX_RETRIES}): {e}")
-            
+
             # Sleep before retrying
             time.sleep(RETRY_DELAY)
-            
+
             # Reset the FTP connection
             try:
                 ftp.quit()
             except:
                 pass
             ftp = None
-            
+
     logger.error(f"Failed to complete PubMed baseline download after {MAX_RETRIES} attempts")
 
 
 
-def download_pubmed_updates(updates_dir=None, tracker=None):
+def download_pubmed_updates(updates_dir=None, tracker=None, from_highest_seq=False, from_highest_processed_seq=False):
     """Download PubMed update files with resume capability
-    
+
     Args:
-        updates_dir (str, optional): Directory to store update files. 
+        updates_dir (str, optional): Directory to store update files.
             Defaults to PUBMED_DIR/updates if None.
         tracker (PubMedDownloadTracker, optional): Database tracker for downloaded files.
             If None, a local checkpoint file will be used instead.
+        from_highest_seq (bool): If True, start download from the highest sequence number in the database
+        from_highest_processed_seq (bool): If True, start download from the highest processed sequence number
     """
     # Determine the updates directory
     if updates_dir is None:
@@ -451,31 +483,44 @@ def download_pubmed_updates(updates_dir=None, tracker=None):
     else:
         updates_dir = os.path.expanduser(updates_dir)
         updates_dir = os.path.abspath(updates_dir)
-    
+
     # Create directory if it doesn't exist
     os.makedirs(updates_dir, exist_ok=True)
-    
+
     # If no tracker provided, use the local checkpoint file
     using_db_tracker = tracker is not None
-    
+
     # Define checkpoint file path (used as fallback if no tracker)
     checkpoint_file = os.path.join(updates_dir, '.download_checkpoint')
     last_downloaded_file = None
-    
-    # Check if checkpoint exists and load it if no tracker provided
-    if not using_db_tracker and os.path.exists(checkpoint_file):
+
+    # If using database tracker and one of the sequence options is enabled
+    if using_db_tracker and (from_highest_seq or from_highest_processed_seq):
+        # Get the highest sequence number based on the option
+        highest_seq = tracker.get_highest_sequence_number(processed_only=from_highest_processed_seq)
+        if highest_seq > 0:
+            # Construct the filename with the highest sequence number
+            # The actual download will start from the next file
+            last_downloaded_file = f"pubmed25n{highest_seq}.xml.gz"
+            logger.info(f"Starting download from sequence number {highest_seq} (file: {last_downloaded_file})")
+            if from_highest_processed_seq:
+                logger.info("Using highest processed sequence number")
+            else:
+                logger.info("Using highest sequence number (regardless of processed status)")
+    # Otherwise, check if checkpoint exists and load it if no tracker provided
+    elif not using_db_tracker and os.path.exists(checkpoint_file):
         try:
             with open(checkpoint_file, 'r') as f:
                 last_downloaded_file = f.read().strip()
                 logger.info(f"Found checkpoint file. Last downloaded update file: {last_downloaded_file}")
         except Exception as e:
             logger.warning(f"Error reading checkpoint file: {e}")
-    
+
     logger.info(f"Starting PubMed updates download to {updates_dir}")
-    
+
     ftp = None
     retry_count = 0
-    
+
     while retry_count < MAX_RETRIES:
         try:
             if ftp is None:
@@ -488,14 +533,14 @@ def download_pubmed_updates(updates_dir=None, tracker=None):
                 # Set a keepalive option if possible
                 if hasattr(ftp.sock, 'setsockopt') and hasattr(socket, 'SO_KEEPALIVE'):
                     ftp.sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
-                
+
             files = ftp.nlst()
             xml_files = [f for f in files if f.endswith('.xml.gz')]
             xml_files.sort()  # Ensure files are processed in order
             total_files = len(xml_files)
-            
+
             logger.info(f"Found {total_files} PubMed update files to download")
-            
+
             # If we have a checkpoint, skip files until we reach the last downloaded one
             start_index = 0
             if last_downloaded_file:
@@ -506,10 +551,10 @@ def download_pubmed_updates(updates_dir=None, tracker=None):
                     xml_files = xml_files[start_index:]
                 except ValueError:
                     logger.warning(f"Checkpoint file {last_downloaded_file} not found in the FTP directory. Starting from the beginning.")
-            
+
             for i, xml_file in enumerate(xml_files, start_index + 1):
                 local_file = os.path.join(updates_dir, xml_file)
-                
+
                 # Check if file exists and has correct size
                 should_download = True
                 try:
@@ -525,7 +570,7 @@ def download_pubmed_updates(updates_dir=None, tracker=None):
                             ftp.voidcmd('TYPE I')
                             remote_size = ftp.size(xml_file)
                             local_size = os.path.getsize(local_file)
-                            
+
                             if local_size == remote_size:
                                 logger.info(f"Skipped existing complete update file {xml_file} ({i}/{total_files})")
                                 should_download = False
@@ -539,7 +584,7 @@ def download_pubmed_updates(updates_dir=None, tracker=None):
                         ftp.voidcmd('TYPE I')  # Switch to binary mode
                         remote_size = ftp.size(xml_file)
                         local_size = os.path.getsize(local_file)
-                        
+
                         if local_size == remote_size:
                             logger.info(f"Skipped existing complete update file {xml_file} ({i}/{total_files})")
                             should_download = False
@@ -559,7 +604,7 @@ def download_pubmed_updates(updates_dir=None, tracker=None):
                     ftp = create_ftp_connection()
                     ftp.cwd('/pubmed/updatefiles')  # Change to updates directory
                     # Continue with download attempt
-                
+
                 if should_download:
                     file_downloaded = False
                     download_retries = 0
@@ -574,7 +619,7 @@ def download_pubmed_updates(updates_dir=None, tracker=None):
                                     ftp.voidcmd('TYPE I')  # Switch to binary mode
                                     remote_size = ftp.size(xml_file)
                                     local_size = os.path.getsize(local_file)
-                                    
+
                                     # If local file is significantly larger than remote (corrupt), delete it
                                     if local_size > remote_size * 1.1:  # 10% buffer for any metadata differences
                                         logger.warning(f"File {local_file} appears corrupt (local: {local_size} bytes, remote: {remote_size} bytes) - removing and downloading fresh")
@@ -589,7 +634,7 @@ def download_pubmed_updates(updates_dir=None, tracker=None):
                                     rest_pos = 0
                             else:
                                 rest_pos = 0
-                            
+
                             # Ensure FTP connection is active
                             try:
                                 # Get file size for progress bar
@@ -605,7 +650,7 @@ def download_pubmed_updates(updates_dir=None, tracker=None):
                                 ftp.cwd('/pubmed/updatefiles')  # Change to updates directory
                                 ftp.voidcmd('TYPE I')
                                 file_size = ftp.size(xml_file)
-                            
+
                             # Create progress bar
                             pbar = tqdm(
                                 total=file_size,
@@ -615,25 +660,25 @@ def download_pubmed_updates(updates_dir=None, tracker=None):
                                 desc=f"File {i}/{total_files}: {xml_file}",
                                 ncols=100
                             )
-                            
+
                             # Define callback to update progress bar
                             def callback(data):
                                 pbar.update(len(data))
                                 fp.write(data)
-                            
+
                             with open(local_file, 'ab' if rest_pos > 0 else 'wb') as fp:
                                 # Use our retry-capable download function
                                 ftp_download_with_retry(ftp, xml_file, callback, rest_pos)
-                            
+
                             # Close progress bar
                             pbar.close()
-                                
+
                             logger.info(f"Downloaded update {xml_file} ({i}/{total_files})")
-                            
+
                             # Download the MD5 file for verification
                             md5_file = xml_file + '.md5'
                             local_md5_file = local_file + '.md5'
-                            
+
                             # Download MD5 file for checksum verification
                             md5_download_successful = False
                             md5_retries = 0
@@ -643,16 +688,16 @@ def download_pubmed_updates(updates_dir=None, tracker=None):
                                     with open(local_md5_file, 'wb') as md5_fp:
                                         def md5_callback(data):
                                             md5_fp.write(data)
-                                        
+
                                         ftp_download_with_retry(ftp, md5_file, md5_callback)
-                                        
+
                                     logger.info(f"Downloaded MD5 file for {xml_file}")
                                     md5_download_successful = True
                                 except Exception as md5_error:
                                     md5_retries += 1
                                     logger.warning(f"Error downloading MD5 file for {xml_file} (attempt {md5_retries}/3): {md5_error}")
                                     time.sleep(1)  # Short delay before retry
-                            
+
                             # Verify MD5 checksum
                             checksum = None
                             if md5_download_successful:
@@ -661,9 +706,9 @@ def download_pubmed_updates(updates_dir=None, tracker=None):
                                     logger.info(f"✓ MD5 verification passed for {xml_file}")
                                 else:
                                     logger.warning(f"✗ MD5 verification failed for {xml_file}: {error}")
-                            
+
                             file_downloaded = True
-                            
+
                             # Log successful download in database if tracker provided
                             if using_db_tracker:
                                 try:
@@ -673,10 +718,10 @@ def download_pubmed_updates(updates_dir=None, tracker=None):
                                 except:
                                     # Use local file size if FTP size check fails
                                     file_size = os.path.getsize(local_file)
-                                
+
                                 # Track the file in the database
                                 tracker.log_download(xml_file, 'update', file_size)
-                                
+
                                 # Store the checksum if available
                                 if checksum:
                                     try:
@@ -688,21 +733,21 @@ def download_pubmed_updates(updates_dir=None, tracker=None):
                                             tracker.connection.commit()
                                     except Exception as e:
                                         logger.error(f"Error updating checksum: {e}")
-                            
+
                             # Also update checkpoint file as a backup
                             try:
                                 with open(checkpoint_file, 'w') as f:
                                     f.write(xml_file)
                             except Exception as e:
                                 logger.warning(f"Error writing checkpoint file: {e}")
-                            
+
                         except Exception as download_error:
                             download_retries += 1
                             logger.error(f"Error downloading update {xml_file} (attempt {download_retries}/{MAX_RETRIES}): {download_error}")
-                            
+
                             # Sleep before retrying
                             time.sleep(RETRY_DELAY)
-                            
+
                             # Reset the FTP connection
                             try:
                                 ftp.quit()
@@ -710,32 +755,32 @@ def download_pubmed_updates(updates_dir=None, tracker=None):
                                 pass
                             ftp = create_ftp_connection()
                             ftp.cwd('/pubmed/updatefiles')  # Change to updates directory
-                            
+
                             if download_retries >= MAX_RETRIES:
                                 logger.error(f"Failed to download update {xml_file} after {MAX_RETRIES} attempts, moving to next file")
-            
+
             try:
                 ftp.quit()
             except:
                 pass
-                
+
             logger.info("PubMed updates download completed")
             return
-            
+
         except Exception as e:
             retry_count += 1
             logger.error(f"Error in PubMed updates download (attempt {retry_count}/{MAX_RETRIES}): {e}")
-            
+
             # Sleep before retrying
             time.sleep(RETRY_DELAY)
-            
+
             # Reset the FTP connection
             try:
                 ftp.quit()
             except:
                 pass
             ftp = None
-            
+
     logger.error(f"Failed to complete PubMed updates download after {MAX_RETRIES} attempts")
 
 
@@ -744,11 +789,11 @@ if __name__ == "__main__":
     # Define the directory to save the downloaded files
     import sys  # For pip install
     import argparse
-    
+
     print ("Downloading PubMed data... V3")
     # Set up command line arguments
     parser = argparse.ArgumentParser(description='Download PubMed data')
-    parser.add_argument('--from_scratch', action='store_true', 
+    parser.add_argument('--from_scratch', action='store_true',
                         help='Download the complete baseline data in addition to updates')
     parser.add_argument('--data_dir', default='~/knowledgebase/pubmed_data',
                         help='Directory to store downloaded files (default: ~/knowledgebase/pubmed_data)')
@@ -758,21 +803,25 @@ if __name__ == "__main__":
                         help='Do not use database tracking (use only file-based checkpoints)')
     parser.add_argument('--show_stats', action='store_true',
                         help='Show statistics about downloaded and processed files')
-    
+    parser.add_argument('--from_highest_seq', action='store_true',
+                        help='Start download from the highest sequence number in the database')
+    parser.add_argument('--from_highest_processed_seq', action='store_true',
+                        help='Start download from the highest processed sequence number in the database')
+
     args = parser.parse_args()
-    
+
     # Set up directories
     PUBMED_DIR = os.path.expanduser(args.data_dir)
     PUBMED_DIR = os.path.abspath(PUBMED_DIR)
     logger.info(f"Using directory: {PUBMED_DIR}")
-    
+
     # Check if the directory exists
     if not os.path.exists(PUBMED_DIR):
         logger.info(f"Creating directory: {PUBMED_DIR}")
         os.makedirs(PUBMED_DIR, exist_ok=True)
     else:
         logger.info(f"Directory already exists: {PUBMED_DIR}")
-    
+
     # Check if the baseline directory exists
     BASELINE_DIR = os.path.join(PUBMED_DIR, 'baseline')
     if not os.path.exists(BASELINE_DIR):
@@ -780,7 +829,7 @@ if __name__ == "__main__":
         os.makedirs(BASELINE_DIR, exist_ok=True)
     else:
         logger.info(f"Baseline directory already exists: {BASELINE_DIR}")
-        
+
     # Check if the updates directory exists
     UPDATES_DIR = os.path.join(PUBMED_DIR, 'updates')
     if not os.path.exists(UPDATES_DIR):
@@ -788,7 +837,7 @@ if __name__ == "__main__":
         os.makedirs(UPDATES_DIR, exist_ok=True)
     else:
         logger.info(f"Updates directory already exists: {UPDATES_DIR}")
-    
+
     # Initialize database tracker if not disabled
     tracker = None
     if not args.no_db_tracking:
@@ -798,7 +847,7 @@ if __name__ == "__main__":
         except Exception as e:
             logger.error(f"Failed to initialize database tracking: {e}")
             logger.info("Continuing without database tracking")
-    
+
     # Show statistics if requested
     if args.show_stats and tracker:
         stats = tracker.get_download_stats()
@@ -808,24 +857,39 @@ if __name__ == "__main__":
         logger.info(f"Processed files: {stats['processed_files']}")
         logger.info(f"Baseline files: {stats['baseline_files']}")
         logger.info(f"Update files: {stats['update_files']}")
-        
+
         if stats['last_download_date']:
             logger.info(f"Last download: {stats['last_download_date']}")
         if stats['last_process_date']:
             logger.info(f"Last processing: {stats['last_process_date']}")
         logger.info("=================================")
-        
+
         # If only showing stats, exit
         if not args.from_scratch and not args.skip_updates:
             sys.exit(0)
-    
+
     # Start the download process based on arguments
     if args.from_scratch:
         logger.info("Starting complete download (baseline + updates)")
-        download_pubmed_baseline(BASELINE_DIR, tracker)
+        download_pubmed_baseline(
+            BASELINE_DIR,
+            tracker,
+            from_highest_seq=args.from_highest_seq,
+            from_highest_processed_seq=args.from_highest_processed_seq
+        )
         if not args.skip_updates:
-            download_pubmed_updates(UPDATES_DIR, tracker)
+            download_pubmed_updates(
+                UPDATES_DIR,
+                tracker,
+                from_highest_seq=args.from_highest_seq,
+                from_highest_processed_seq=args.from_highest_processed_seq
+            )
     else:
         # Default: only download updates
         logger.info("Starting updates download only")
-        download_pubmed_updates(UPDATES_DIR, tracker)
+        download_pubmed_updates(
+            UPDATES_DIR,
+            tracker,
+            from_highest_seq=args.from_highest_seq,
+            from_highest_processed_seq=args.from_highest_processed_seq
+        )
