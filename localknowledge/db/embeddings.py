@@ -19,6 +19,8 @@ from localknowledge.db.embedding_source import get_embedding_source_db
 
 # Configure logging
 logger = logging.getLogger(__name__)
+#silence logger except for warnings and errors
+logger.setLevel(logging.WARNING)
 
 
 class EmbeddingsDatabaseManager(DatabaseManager):
@@ -585,24 +587,36 @@ class EmbeddingsDatabaseManager(DatabaseManager):
         Returns:
             List of embedding records
         """
+        # Get model_id if model_name is provided
+        model_id = None
+        if model_name:
+            model_id = self.get_model_id(model_name)
+            if model_id == -1:
+                logger.warning(f"Model '{model_name}' not found in embedding_models table")
+                return []
+
+        # Query embedding_base and its child tables
         query = """
-        SELECT e.*, s.name as embed_source
-        FROM unified_multiembeddings e
-        JOIN embedding_source s ON e.embed_source_id = s.id
-        WHERE e.document_id = %s
+        SELECT e.id, e.chunk_id, e.model_id, c.document_id, c.chunk_no, c.page_start, c.page_end,
+               c.text, c.document_title, m.model_name, t.chunktype as chunk_type
+        FROM embedding_base e
+        JOIN chunks c ON e.chunk_id = c.id
+        JOIN embedding_models m ON e.model_id = m.id
+        JOIN chunktypes t ON c.chunktype_id = t.id
+        WHERE c.document_id = %s
         """
 
         params = [document_id]
 
         if embed_source:
-            query += " AND s.name = %s"
+            query += " AND t.chunktype = %s"
             params.append(embed_source)
 
-        if model_name:
-            query += " AND e.model_name = %s"
-            params.append(model_name)
+        if model_id:
+            query += " AND e.model_id = %s"
+            params.append(model_id)
 
-        query += " ORDER BY e.chunk_no, e.page_no"
+        query += " ORDER BY c.chunk_no, c.page_start"
 
         result = self.execute(query, tuple(params))
 

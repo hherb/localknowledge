@@ -19,6 +19,7 @@ import sys
 import concurrent.futures
 import time
 import statistics
+from concurrent.futures import TimeoutError as FuturesTimeoutError
 
 import tqdm
 import ollama
@@ -29,6 +30,7 @@ from localknowledge.db.document import DocumentDatabaseManager
 from localknowledge.db.chunker import ChunkingDatabaseManager, Chunk
 from localknowledge.embeddings import OllamaEmbedder, PubMedBERTEmbedder
 from localknowledge.db.connection_pool import initialize_pool, get_cursor, close_pool
+# Use Python's built-in TimeoutError
 
 # Configure logging
 logging.basicConfig(
@@ -43,7 +45,7 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 
 class AbstractEmbeddingUpdater:
     """Class for updating abstract embeddings for chunks without embeddings."""
-    def __init__(self, embedder=OllamaEmbedder, model_name: str = "snowflake-arctic-embed2:latest"):
+    def __init__(self, embedder=OllamaEmbedder, model_name: str = "snowflake-arctic-embed2:latest", db_timeout: int = 120):
         # Initialize connection pool if not already initialized
         initialize_pool(min_connections=2, max_connections=10)
         logger.info("Database connection pool initialized or reused")
@@ -54,6 +56,8 @@ class AbstractEmbeddingUpdater:
         self.embedder = embedder(model_name)
         self.model_name = model_name
         self.vectorsize = self.embedder.get_vectorsize()
+        self.db_timeout = db_timeout
+
         # Make sure we have a table for this vector size
         self.embeddings_db.ensure_table_for_vectorsize(self.vectorsize)
         # Get the model ID
@@ -61,19 +65,18 @@ class AbstractEmbeddingUpdater:
         if self.model_id == -1:
             logger.warning(f"Model {model_name} not found in embedding_models table. Embeddings will not be stored.")
 
+        # Ensure we have the necessary indices for efficient queries
+        self.ensure_indices()
+
         # Performance metrics
         self.embedding_times = []
         self.db_times = []
 
-    def count_chunks_without_embeddings(self) -> int:
-        """Count chunks without embeddings.
-
-        Returns:
-            Number of chunks without embeddings
+    def ensure_indices(self):
+        """Ensure that necessary indices exist for efficient queries.
+        This is only called once during initialization.
         """
-        vector_size = self.embedder.get_vectorsize()
-        model_id = self.model_id
-        tablename = self.embeddings_db.get_tablename_for_vectorsize(vector_size)
+        tablename = self.embeddings_db.get_tablename_for_vectorsize(self.vectorsize)
 
         # Check if the table exists
         check_table_query = """
@@ -85,6 +88,64 @@ class AbstractEmbeddingUpdater:
         table_exists = self.embeddings_db.execute(check_table_query, (tablename,))
 
         if not table_exists or not table_exists[0]['exists']:
+            logger.info(f"Table '{tablename}' doesn't exist yet, skipping index creation")
+            return
+
+        # Create indices if they don't exist
+        try:
+            # Create all indices in a single transaction for better performance
+            indices_queries = []
+
+            # Index for the embedding table
+            indices_queries.append(f"""
+            CREATE INDEX IF NOT EXISTS {tablename}_chunk_model_idx
+            ON {tablename} (chunk_id, model_id)
+            """)
+
+            # Index for the chunks table to speed up chunktype filtering
+            indices_queries.append("""
+            CREATE INDEX IF NOT EXISTS chunks_chunktype_id_idx
+            ON chunks (chunktype_id)
+            """)
+
+            # Index for the chunks table to speed up document_id filtering
+            indices_queries.append("""
+            CREATE INDEX IF NOT EXISTS chunks_document_id_idx
+            ON chunks (document_id)
+            """)
+
+            # Execute all index creation queries in a single transaction
+            with get_cursor(commit=True) as cursor:
+                for query in indices_queries:
+                    cursor.execute(query)
+
+            logger.info(f"All necessary indices created or verified successfully")
+
+        except Exception as e:
+            logger.warning(f"Error creating indices: {e}")
+
+    def count_chunks_without_embeddings(self) -> int:
+        """Count chunks without embeddings.
+
+        Returns:
+            Number of chunks without embeddings
+        """
+        vector_size = self.embedder.get_vectorsize()
+        model_id = self.model_id
+        tablename = self.embeddings_db.get_tablename_for_vectorsize(vector_size)
+
+        # Use the cached table existence check
+        if not hasattr(self, '_table_exists_cache'):
+            check_table_query = """
+            SELECT EXISTS (
+                SELECT FROM information_schema.tables
+                WHERE table_name = %s
+            )
+            """
+            table_exists_result = self.embeddings_db.execute(check_table_query, (tablename,))
+            self._table_exists_cache = table_exists_result[0]['exists'] if table_exists_result else False
+
+        if not self._table_exists_cache:
             # If the table doesn't exist, all chunks need embeddings
             logger.info(f"Table '{tablename}' doesn't exist, counting all abstract chunks")
             query = """
@@ -95,20 +156,46 @@ class AbstractEmbeddingUpdater:
             """
             params = []
         else:
-            # Count chunks that don't have embeddings in this specific table
+            # Use a more efficient approach with NOT EXISTS
+            # For counting, we can use an even more optimized query with LIMIT 1
             query = f"""
             SELECT COUNT(*) as count
             FROM chunks c
             JOIN chunktypes ct ON c.chunktype_id = ct.id
-            LEFT JOIN {tablename} e ON c.id = e.chunk_id AND e.model_id = %s
             WHERE ct.chunktype = 'abstract'
-            AND e.id IS NULL
+            AND NOT EXISTS (
+                SELECT 1 FROM {tablename} e
+                WHERE e.chunk_id = c.id AND e.model_id = %s
+                LIMIT 1
+            )
             """
             params = [model_id]
 
-        result = self.embeddings_db.execute(query, params)
-        count = result[0]['count'] if result else 0
-        return count
+        try:
+            # Use the instance's db_timeout value
+            result = self.embeddings_db.execute(query, params, timeout=self.db_timeout)
+            count = result[0]['count'] if result else 0
+            return count
+        except TimeoutError:
+            logger.warning("Count query timed out. Using an estimate instead.")
+            # Instead of returning a fixed large number, try to get an approximate count
+            # by sampling a small portion of the data
+            try:
+                # Get the total number of abstract chunks
+                total_query = """
+                SELECT COUNT(*) as count
+                FROM chunks c
+                JOIN chunktypes ct ON c.chunktype_id = ct.id
+                WHERE ct.chunktype = 'abstract'
+                """
+                total_result = self.embeddings_db.execute(total_query, timeout=30)
+                total_count = total_result[0]['count'] if total_result else 0
+
+                # Return 90% of total as an estimate (assuming most need embedding)
+                return int(total_count * 0.9)
+            except Exception:
+                # If that fails too, return a large number
+                return 1000000  # Just a large number to indicate there's work to do
 
     def get_chunks_without_embeddings(self, limit: Optional[int] = None, offset: int = 0) -> List[Dict[str, Any]]:
         """Get chunks without embeddings.
@@ -124,20 +211,23 @@ class AbstractEmbeddingUpdater:
         model_id = self.model_id
         tablename = self.embeddings_db.get_tablename_for_vectorsize(vector_size)
 
-        # Check if the table exists
-        check_table_query = """
-        SELECT EXISTS (
-            SELECT FROM information_schema.tables
-            WHERE table_name = %s
-        )
-        """
-        table_exists = self.embeddings_db.execute(check_table_query, (tablename,))
+        # We only check if the table exists once during initialization
+        # and cache the result for better performance
+        if not hasattr(self, '_table_exists_cache'):
+            check_table_query = """
+            SELECT EXISTS (
+                SELECT FROM information_schema.tables
+                WHERE table_name = %s
+            )
+            """
+            table_exists_result = self.embeddings_db.execute(check_table_query, (tablename,))
+            self._table_exists_cache = table_exists_result[0]['exists'] if table_exists_result else False
 
-        if not table_exists or not table_exists[0]['exists']:
+        if not self._table_exists_cache:
             # If the table doesn't exist, all chunks need embeddings
-            logger.info(f"Table '{tablename}' doesn't exist, getting all abstract chunks")
             query = """
-            SELECT c.*, d.title as document_title, d.abstract
+            SELECT c.id, c.document_id, c.chunk_no, c.page_start, c.page_end,
+                   c.text, c.chunktype_id, d.title as document_title, d.abstract
             FROM chunks c
             JOIN chunktypes ct ON c.chunktype_id = ct.id
             JOIN document d ON c.document_id = d.id
@@ -146,15 +236,18 @@ class AbstractEmbeddingUpdater:
             """
             params = []
         else:
-            # Get chunks that don't have embeddings in this specific table
+            # Use a more efficient approach with NOT EXISTS and select only needed columns
             query = f"""
-            SELECT c.*, d.title as document_title, d.abstract
+            SELECT c.id, c.document_id, c.chunk_no, c.page_start, c.page_end,
+                   c.text, c.chunktype_id, d.title as document_title, d.abstract
             FROM chunks c
             JOIN chunktypes ct ON c.chunktype_id = ct.id
             JOIN document d ON c.document_id = d.id
-            LEFT JOIN {tablename} e ON c.id = e.chunk_id AND e.model_id = %s
             WHERE ct.chunktype = 'abstract'
-            AND e.id IS NULL
+            AND NOT EXISTS (
+                SELECT 1 FROM {tablename} e
+                WHERE e.chunk_id = c.id AND e.model_id = %s
+            )
             ORDER BY c.id
             """
             params = [model_id]
@@ -166,18 +259,33 @@ class AbstractEmbeddingUpdater:
         if limit:
             query += f" LIMIT {limit}"
 
-        chunks = self.embeddings_db.execute(query, params)
-        logger.debug(f"Found {len(chunks)} abstract chunks without embeddings (offset: {offset}, limit: {limit})")
-        return chunks or []
+        # Use the instance's db_timeout value for this query
+        try:
+            chunks = self.embeddings_db.execute(query, params, timeout=self.db_timeout)
+            logger.debug(f"Found {len(chunks)} abstract chunks without embeddings (offset: {offset}, limit: {limit})")
+            return chunks or []
+        except TimeoutError:
+            # If it times out, try a more aggressive approach with a smaller batch
+            logger.warning(f"Query timed out. Trying with a smaller batch size.")
+            if limit and limit > 20:
+                smaller_limit = max(20, limit // 2)  # Don't go below 20 for performance
+                chunks = self.get_chunks_without_embeddings(limit=smaller_limit, offset=offset)
+                return chunks or []
+            else:
+                # If we're already using a small limit, just return an empty list
+                logger.error("Query timed out even with small batch size.")
+                return []
 
-    def update_abstract_embeddings(self, limit: Optional[int] = None, batch_size: int = 20, workers: int = 4, dry_run: bool = False) -> int:
+    def update_abstract_embeddings(self, limit: Optional[int] = None, batch_size: int = 50, workers: int = 4,
+                              dry_run: bool = False, show_progress: bool = True) -> int:
         """Update abstract embeddings for chunks without embeddings.
 
         Args:
             limit: Maximum number of chunks to process
-            batch_size: Number of chunks to process in each batch
+            batch_size: Number of chunks to process in each batch (default: 50)
             workers: Number of worker threads to use for parallel processing
             dry_run: If True, don't actually modify the database
+            show_progress: If True, show the progress bar (default: True)
 
         Returns:
             Number of chunks successfully processed
@@ -186,64 +294,103 @@ class AbstractEmbeddingUpdater:
         total_to_process = self.count_chunks_without_embeddings()
         start_time = time.time()
         batch_count = 0
+        consecutive_errors = 0
+        max_consecutive_errors = 3
 
         if limit:
             total_to_process = min(total_to_process, limit)
 
-        with tqdm.tqdm(total=total_to_process, desc=self.model_name[:20]) as pbar:
+        # Create a progress bar, but only show it if requested
+        # We'll still use it to track progress internally
+        with tqdm.tqdm(total=total_to_process, desc=self.model_name[:20], disable=not show_progress) as pbar:
             offset = 0
             while True:
-                # Get a batch of chunks
-                chunks = self.get_chunks_without_embeddings(limit=batch_size, offset=offset)
-                if not chunks:
-                    break
+                try:
+                    # Get a batch of chunks
+                    chunks = self.get_chunks_without_embeddings(limit=batch_size, offset=offset)
+                    if not chunks:
+                        logger.info("No more chunks to process")
+                        break
 
-                batch_count += 1
-                batch_start_time = time.time()
+                    # Reset consecutive errors counter on successful query
+                    consecutive_errors = 0
 
-                # Process chunks in parallel to create embeddings
-                embedding_data = []
+                    batch_count += 1
+                    batch_start_time = time.time()
 
-                with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
-                    # Submit all chunks for processing
-                    futures = [executor.submit(self.process_chunk, chunk, dry_run) for chunk in chunks]
+                    # Process chunks in parallel to create embeddings
+                    embedding_data = []
 
-                    # Collect results as they complete
-                    for i, future in enumerate(concurrent.futures.as_completed(futures)):
-                        try:
-                            success, message, embedding = future.result()
+                    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
+                        # Submit all chunks for processing
+                        futures = [executor.submit(self.process_chunk, chunk, dry_run) for chunk in chunks]
 
-                            if success and embedding:
-                                # Add to batch for database insertion
-                                embedding_data.append({
-                                    'chunk_id': chunks[i]['id'],
-                                    'embedding': embedding
-                                })
-                        except Exception as e:
-                            logger.error(f"Error processing chunk: {e}")
+                        # Collect results as they complete
+                        for i, future in enumerate(concurrent.futures.as_completed(futures)):
+                            try:
+                                success, message, embedding = future.result()
 
-                        # Update progress bar
-                        pbar.update(1)
+                                if success and embedding:
+                                    # Add to batch for database insertion
+                                    embedding_data.append({
+                                        'chunk_id': chunks[i]['id'],
+                                        'embedding': embedding
+                                    })
+                            except Exception as e:
+                                logger.error(f"Error processing chunk: {e}")
 
-                # Store all embeddings in a single batch operation
-                if embedding_data and not dry_run:
-                    success_count = self.store_embeddings_batch(embedding_data, dry_run)
-                    total_processed += success_count
-                elif dry_run:
-                    # In dry run mode, count all successful embeddings
-                    total_processed += len(embedding_data)
+                            # Update progress bar (still useful for internal tracking)
+                            pbar.update(1)
 
-                # Calculate and display batch statistics
-                batch_time = time.time() - batch_start_time
-                items_per_second = len(chunks) / batch_time if batch_time > 0 else 0
+                    # Store all embeddings in a single batch operation
+                    if embedding_data and not dry_run:
+                        success_count = self.store_embeddings_batch(embedding_data, dry_run)
+                        total_processed += success_count
+                    elif dry_run:
+                        # In dry run mode, count all successful embeddings
+                        total_processed += len(embedding_data)
 
-                # Log batch performance
-                logger.info(f"Batch {batch_count}: Processed {len(chunks)} chunks in {batch_time:.2f}s ({items_per_second:.2f} items/s)")
+                    # Calculate and display batch statistics
+                    batch_time = time.time() - batch_start_time
+                    items_per_second = len(chunks) / batch_time if batch_time > 0 else 0
 
-                # Update offset for next batch
-                offset += batch_size
-                if limit and total_processed >= limit:
-                    break
+                    # Log batch performance only if progress bar is disabled
+                    if not show_progress:
+                        total_processed_so_far = pbar.n
+                        percent_complete = (total_processed_so_far / total_to_process) * 100 if total_to_process > 0 else 0
+                        logger.info(f"Processed: {total_processed_so_far}/{total_to_process} ({percent_complete:.2f}%) - Batch {batch_count}: {len(chunks)} chunks at {items_per_second:.2f}/s")
+
+                    # Update offset for next batch
+                    offset += len(chunks)  # Use actual number of chunks processed
+                    if limit and total_processed >= limit:
+                        logger.info(f"Reached processing limit of {limit} chunks")
+                        break
+
+                except TimeoutError as e:
+                    consecutive_errors += 1
+                    logger.warning(f"Timeout error in batch {batch_count}: {e}")
+
+                    if consecutive_errors >= max_consecutive_errors:
+                        logger.error(f"Too many consecutive errors ({consecutive_errors}). Stopping processing.")
+                        break
+
+                    # Try with a smaller batch size
+                    new_batch_size = max(1, batch_size // 2)
+                    logger.info(f"Reducing batch size from {batch_size} to {new_batch_size}")
+                    batch_size = new_batch_size
+
+                    # Don't update offset, retry with same offset but smaller batch
+
+                except Exception as e:
+                    consecutive_errors += 1
+                    logger.error(f"Error in batch {batch_count}: {e}")
+
+                    if consecutive_errors >= max_consecutive_errors:
+                        logger.error(f"Too many consecutive errors ({consecutive_errors}). Stopping processing.")
+                        break
+
+                    # Skip this batch and continue with the next one
+                    offset += batch_size
 
         # Calculate and display overall statistics
         total_time = time.time() - start_time
@@ -352,31 +499,56 @@ class AbstractEmbeddingUpdater:
                 VALUES (%s, %s, %s)
                 ON CONFLICT (chunk_id, model_id) DO UPDATE
                 SET embedding = EXCLUDED.embedding
-                RETURNING id
                 """
 
-                # Execute for each embedding
-                success_count = 0
-                for item in embedding_data:
-                    chunk_id = item['chunk_id']
-                    embedding = item['embedding']
+                # Prepare all the data for batch execution
+                batch_data = [(item['chunk_id'], self.model_id, item['embedding']) for item in embedding_data]
 
-                    try:
-                        # Use the upsert query to insert or update in a single operation
-                        cursor.execute(upsert_query, (chunk_id, self.model_id, embedding))
-                        result = cursor.fetchone()
-                        if result and result['id']:
-                            success_count += 1
-                            logger.debug(f"Upserted embedding for chunk {chunk_id}")
-                    except Exception as e:
-                        logger.error(f"Error storing embedding for chunk {chunk_id}: {e}")
+                try:
+                    # Execute the query for all embeddings in a single batch
+                    cursor.executemany(upsert_query, batch_data)
+                    success_count = cursor.rowcount
 
-                # Record database operation time
-                db_time = time.time() - start_time
-                self.db_times.append(db_time)
+                    # Record database operation time
+                    db_time = time.time() - start_time
+                    self.db_times.append(db_time)
 
-                logger.debug(f"Stored {success_count}/{len(embedding_data)} embeddings in {db_time:.3f}s")
-                return success_count
+                    logger.debug(f"Stored {success_count}/{len(embedding_data)} embeddings in {db_time:.3f}s")
+                    return success_count
+                except Exception as e:
+                    logger.error(f"Error in batch embedding storage: {e}")
+
+                    # Fall back to individual inserts if batch fails
+                    logger.warning("Falling back to individual inserts")
+                    success_count = 0
+
+                    # Individual upsert query with RETURNING
+                    individual_query = f"""
+                    INSERT INTO {tablename} (chunk_id, model_id, embedding)
+                    VALUES (%s, %s, %s)
+                    ON CONFLICT (chunk_id, model_id) DO UPDATE
+                    SET embedding = EXCLUDED.embedding
+                    RETURNING id
+                    """
+
+                    for item in embedding_data:
+                        chunk_id = item['chunk_id']
+                        embedding = item['embedding']
+
+                        try:
+                            cursor.execute(individual_query, (chunk_id, self.model_id, embedding))
+                            result = cursor.fetchone()
+                            if result and result['id']:
+                                success_count += 1
+                        except Exception as inner_e:
+                            logger.error(f"Error storing embedding for chunk {chunk_id}: {inner_e}")
+
+                    # Record database operation time
+                    db_time = time.time() - start_time
+                    self.db_times.append(db_time)
+
+                    logger.debug(f"Stored {success_count}/{len(embedding_data)} embeddings individually in {db_time:.3f}s")
+                    return success_count
 
         except Exception as e:
             logger.error(f"Error in batch embedding storage: {e}")
@@ -412,7 +584,7 @@ def main():
     """Main function to update abstract embeddings."""
     parser = argparse.ArgumentParser(description='Update abstract embeddings for documents without embeddings.')
     parser.add_argument('--limit', type=int, default=None, help='Maximum number of documents to process')
-    parser.add_argument('--batch-size', type=int, default=100, help='Number of documents to process in each batch')
+    parser.add_argument('--batch-size', type=int, default=50, help='Number of documents to process in each batch (default: 50)')
     parser.add_argument('--workers', type=int, default=4, help='Number of worker threads to use for parallel processing')
     parser.add_argument('--model', type=str, default="snowflake-arctic-embed2:latest", help='Name of the embedding model to use')
     parser.add_argument('--embedder', type=str, default="ollama", choices=["ollama", "pubmedbert"], help='Type of embedder to use')
@@ -420,6 +592,10 @@ def main():
     parser.add_argument('--verbose', action='store_true', help='Show detailed information about each document processed')
     parser.add_argument('--min-connections', type=int, default=2, help='Minimum number of database connections in the pool')
     parser.add_argument('--max-connections', type=int, default=10, help='Maximum number of database connections in the pool')
+    parser.add_argument('--no-progress', action='store_true', help='Hide progress bar and only show batch information')
+    parser.add_argument('--timeout', type=int, default=120, help='Database query timeout in seconds (default: 120)')
+    parser.add_argument('--optimize-query', action='store_true', help='Use optimized query strategy (default: True)')
+    parser.add_argument('--no-optimize-query', action='store_false', dest='optimize_query', help='Disable optimized query strategy')
     args = parser.parse_args()
 
     # Set logging level based on verbose flag
@@ -475,10 +651,15 @@ def main():
         print(f"Using connection pool with {args.min_connections}-{args.max_connections} connections")
 
         # Create the updater
-        updater = AbstractEmbeddingUpdater(embedder=embedder_class, model_name=model_name)
+        updater = AbstractEmbeddingUpdater(
+            embedder=embedder_class,
+            model_name=model_name,
+            db_timeout=args.timeout
+        )
         print(f"Model ID: {updater.model_id}")
         print(f"Vector size: {updater.vectorsize}")
         print(f"Table name: {updater.embeddings_db.get_tablename_for_vectorsize(updater.vectorsize)}")
+        print(f"Database query timeout: {updater.db_timeout} seconds")
 
         # Count chunks without embeddings
         count = updater.count_chunks_without_embeddings()
@@ -529,7 +710,8 @@ def main():
                 limit=args.limit,
                 batch_size=args.batch_size,
                 workers=args.workers,
-                dry_run=args.dry_run
+                dry_run=args.dry_run,
+                show_progress=not args.no_progress
             )
 
             print(f"Successfully processed {processed} chunks")
