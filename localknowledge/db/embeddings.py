@@ -158,6 +158,11 @@ class EmbeddingsDatabaseManager(DatabaseManager):
             CREATE INDEX IF NOT EXISTS {tablename}_embedding_idx ON {tablename} USING ivfflat (embedding vector_cosine_ops)
             """, commit=True)
 
+            # Create a unique constraint on chunk_id and model_id
+            self.execute(f"""
+            ALTER TABLE {tablename} ADD CONSTRAINT {tablename}_chunk_model_unique UNIQUE (chunk_id, model_id)
+            """, commit=True)
+
             logger.info(f"Created table {tablename} for vector size {vector_size}")
 
         return tablename
