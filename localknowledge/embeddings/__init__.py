@@ -6,8 +6,7 @@ using Ollama models and storing them in a PostgreSQL database with pgvector.
 """
 
 from localknowledge.embeddings.embedding_manager import EmbeddingManager
-from localknowledge.embeddings.database import EmbeddingDatabaseManager
 from localknowledge.embeddings.ollama_embedder import OllamaEmbedder
 from localknowledge.embeddings.pubmed_embedder import PubMedBERTEmbedder
 
-__all__ = ['EmbeddingManager', 'EmbeddingDatabaseManager', OllamaEmbedder, PubMedBERTEmbedder]
+__all__ = ['EmbeddingManager', 'OllamaEmbedder', 'PubMedBERTEmbedder']

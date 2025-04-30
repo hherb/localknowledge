@@ -8,8 +8,11 @@ interface for other modules to interact with embeddings data.
 """
 
 import logging
+import time
 from typing import List, Dict, Any, Optional, Union
 import json
+import re
+from functools import lru_cache
 
 from localknowledge.db.base import DatabaseManager
 from localknowledge.db.embedding_source import get_embedding_source_db
@@ -30,6 +33,60 @@ class EmbeddingsDatabaseManager(DatabaseManager):
         """Initialize the embeddings database manager."""
         super().__init__()
         self.embedding_source_db = get_embedding_source_db()
+
+    def begin_transaction(self):
+        """Begin a new transaction.
+
+        This allows multiple operations to be grouped together and committed or rolled back as a unit.
+
+        Note: In psycopg2, transactions are automatically started when needed, so this method
+        mainly ensures we have a valid connection.
+        """
+        if not self.connection:
+            self.connect()
+
+        try:
+            # Check if we're already in a transaction
+            cursor = self.connection.cursor()
+            cursor.execute("SELECT 1")
+            cursor.close()
+            logger.debug("Transaction ready")
+
+        except Exception as e:
+            logger.error(f"Error preparing transaction: {e}")
+            raise
+
+    def commit_transaction(self):
+        """Commit the current transaction.
+
+        This saves all changes made since the transaction began.
+        """
+        if not self.connection:
+            logger.warning("No active connection to commit")
+            return
+
+        try:
+            self.connection.commit()
+        except Exception as e:
+            logger.error(f"Error committing transaction: {e}")
+            raise
+
+    def rollback_transaction(self):
+        """Roll back the current transaction.
+
+        This discards all changes made since the transaction began.
+        """
+        if not self.connection:
+            logger.warning("No active connection to roll back")
+            return
+
+        logger.debug("Rolling back transaction")
+        try:
+            self.connection.rollback()
+            logger.debug("Transaction rolled back successfully")
+        except Exception as e:
+            logger.error(f"Error rolling back transaction: {e}")
+            # Don't raise here, as this is often called in exception handlers
 
     def get_tablename_for_vectorsize(self, vector_size: int) -> str:
         """Get the table name for a specific vector size.
@@ -144,58 +201,69 @@ class EmbeddingsDatabaseManager(DatabaseManager):
             # Ensure the table exists
             self.ensure_table_for_vectorsize(vector_size)
 
-            # # First check if the embedding already exists
-            # check_query = f"""
-            # SELECT id FROM {tablename}
-            # WHERE chunk_id = %s AND model_id = %s
-            # """
+            # Begin a transaction
+            self.begin_transaction()
 
-            # check_result = self.execute(check_query, (chunk_id, model_id))
+            try:
+                # First check if the embedding already exists
+                check_query = f"""
+                SELECT id FROM {tablename}
+                WHERE chunk_id = %s AND model_id = %s
+                """
 
-            # if check_result:
-                # embedding_id = check_result[0]['id']
-                # logger.info(f"Embedding already exists for chunk {chunk_id}, model {model_id} in table {tablename}")
+                check_result = self.execute(check_query, (chunk_id, model_id), commit=False)
 
-                # # Update the existing embedding
-                # update_query = f"""
-                # UPDATE {tablename}
-                # SET embedding = %s
-                # WHERE id = %s
-                # RETURNING id;
-                # """
+                if check_result:
+                    embedding_id = check_result[0]['id']
+                    logger.info(f"Embedding already exists for chunk {chunk_id}, model {model_id} in table {tablename}")
 
-                # update_result = self.execute(update_query, (embedding, embedding_id), commit=True)
+                    # Update the existing embedding
+                    update_query = f"""
+                    UPDATE {tablename}
+                    SET embedding = %s
+                    WHERE id = %s
+                    RETURNING id;
+                    """
 
-                # if update_result:
-                #     logger.info(f"Updated embedding for chunk {chunk_id}, model {model_id} in table {tablename}")
-                #     return update_result[0]['id']
-                # else:
-                #     logger.error(f"Failed to update embedding for chunk {chunk_id}, model {model_id} in table {tablename}")
-                #     return -1
+                    update_result = self.execute(update_query, (embedding, embedding_id), commit=False)
 
-            # If the embedding doesn't exist, insert it
-            insert_query = f"""
-            INSERT INTO {tablename} (
-                chunk_id, model_id, embedding
-            )
-            VALUES (%s, %s, %s)
-            RETURNING id;
-            """
+                    if update_result:
+                        self.commit_transaction()
+                        logger.info(f"Updated embedding for chunk {chunk_id}, model {model_id} in table {tablename}")
+                        return update_result[0]['id']
+                    else:
+                        self.rollback_transaction()
+                        logger.error(f"Failed to update embedding for chunk {chunk_id}, model {model_id} in table {tablename}")
+                        return -1
+                else:
+                    # If the embedding doesn't exist, insert it
+                    insert_query = f"""
+                    INSERT INTO {tablename} (
+                        chunk_id, model_id, embedding
+                    )
+                    VALUES (%s, %s, %s)
+                    RETURNING id;
+                    """
 
-            insert_result = self.execute(
-                insert_query,
-                (chunk_id, model_id, embedding),
-                commit=True
-            )
+                    insert_result = self.execute(
+                        insert_query,
+                        (chunk_id, model_id, embedding),
+                        commit=False
+                    )
 
-            if insert_result:
-                embedding_id = insert_result[0]['id']
-                logger.info(f"Added embedding for chunk {chunk_id}, model {model_id} to table {tablename}")
-                return embedding_id
-
-            # Log at debug level instead of error level
-            logger.debug(f"Failed to add embedding for chunk {chunk_id}, model {model_id} to table {tablename}")
-            return -1
+                    if insert_result:
+                        self.commit_transaction()
+                        embedding_id = insert_result[0]['id']
+                        logger.info(f"Added embedding for chunk {chunk_id}, model {model_id} to table {tablename}")
+                        return embedding_id
+                    else:
+                        self.rollback_transaction()
+                        logger.debug(f"Failed to add embedding for chunk {chunk_id}, model {model_id} to table {tablename}")
+                        return -1
+            except Exception as inner_e:
+                self.rollback_transaction()
+                logger.error(f"Transaction error for chunk {chunk_id}, model {model_id}: {inner_e}")
+                raise
         except Exception as e:
             logger.error(f"Error adding embedding for chunk {chunk_id}, model {model_id}: {e}")
             raise
@@ -1012,6 +1080,45 @@ class EmbeddingsDatabaseManager(DatabaseManager):
         stats['zero_vectors'] = total_zero_vectors
 
         return stats
+
+
+    @staticmethod
+    @lru_cache(maxsize=100)
+    def model_to_tablename(model_name: str) -> str:
+        """
+        Convert model name to valid SQL table name, ensuring it's under 63 bytes.
+
+        Args:
+            model_name: Name of the embedding model
+
+        Returns:
+            Valid PostgreSQL table name under 63 bytes
+        """
+        # Remove version tags and convert to lowercase
+        base_name = model_name.split(':')[0].lower()
+
+        # Replace non-alphanumeric chars with underscore
+        clean_name = re.sub(r'[^a-z0-9]+', '_', base_name)
+
+        # Remove consecutive underscores
+        clean_name = re.sub(r'_+', '_', clean_name)
+
+        # Trim underscores from ends
+        clean_name = clean_name.strip('_')
+
+        # Prefix for embedding tables
+        prefix = "emb_"
+
+        # Calculate maximum length for the name part (63 bytes - prefix length)
+        max_name_length = 63 - len(prefix)
+
+        # Truncate if necessary
+        if len(clean_name) > max_name_length:
+            # Keep the start and end, remove from middle
+            half_length = (max_name_length - 1) // 2  # -1 for the joining underscore
+            clean_name = f"{clean_name[:half_length]}_{clean_name[-half_length:]}"
+
+        return f"{prefix}{clean_name}"
 
 
 # Singleton instance
