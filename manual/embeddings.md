@@ -6,89 +6,111 @@ The Embeddings Module provides functionality for creating, storing, and searchin
 
 ## Core Components
 
-### Embedding Manager
+### Embedders
 
-The `EmbeddingManager` class in `localknowledge.embeddings` provides the main interface for working with embeddings:
+The system supports multiple embedder types:
 
-- Creating embeddings from text
-- Storing embeddings in the database
-- Searching for similar embeddings
-- Managing embedding models
+- `OllamaEmbedder`: Uses Ollama models for creating embeddings
+- `PubMedBERTEmbedder`: Uses the PubMedBERT model for biomedical text embeddings
+
+Each embedder implements the `BaseEmbedder` interface, providing consistent methods for embedding text.
 
 ### Database Manager
 
-The `EmbeddingDatabaseManager` class in `localknowledge.embeddings.database` handles database operations for embeddings:
+The `EmbeddingsDatabaseManager` class in `localknowledge.db.embeddings` handles database operations for embeddings:
 
-- Creating and managing the embeddings table
+- Creating and managing embedding tables based on vector size
 - Storing and retrieving embeddings
 - Performing similarity searches
 - Managing indices for efficient search
 
-### Multi-Embeddings Support
-
-The system also includes support for multiple embedding models through:
-
-- `EmbeddingTableManager` in `localknowledge.db.multiembeddings`: Creates and manages model-specific tables
-- `EmbeddingManager` in `localknowledge.embeddings.multiembeddings`: Provides an interface for working with multiple models
-
-See the [Multi-Embeddings Module](multiembeddings.md) documentation for details on this functionality.
-
 ## Database Schema
 
-The `embeddings` table stores vector embeddings:
+The system uses a flexible table structure for storing embeddings:
 
-| Column | Type | Description |
-|--------|------|-------------|
-| id | SERIAL | Primary key |
-| source_id | TEXT | Source identifier (e.g., 'medrxiv', 'pubmed') |
-| document_id | TEXT | Document identifier (e.g., DOI, PMID) |
-| chunk_no | INTEGER | Chunk number within the document |
-| page_no | INTEGER | Page number (optional) |
-| text | TEXT | Text that was embedded |
-| embedding | vector(1024) | Vector embedding |
-| model_name | TEXT | Name of the model used to create the embedding |
-| created_at | TIMESTAMP | Record creation timestamp |
+1. A base table `embedding_base` with common fields:
+   ```sql
+   CREATE TABLE embedding_base (
+       id SERIAL PRIMARY KEY,
+       chunk_id INTEGER NOT NULL REFERENCES chunks(id),
+       model_id INTEGER REFERENCES embedding_models(id)
+   );
+   ```
 
-The table has a unique constraint on (source_id, document_id, chunk_no) to prevent duplicates.
+2. Model-specific tables that inherit from the base table and add a vector field with the appropriate dimension:
+   ```sql
+   CREATE TABLE emb_1024 (
+       embedding vector(1024)
+   ) INHERITS (embedding_base);
+
+   CREATE TABLE emb_768 (
+       embedding vector(768)
+   ) INHERITS (embedding_base);
+   ```
+
+This structure allows efficient storage and retrieval of embeddings with different dimensions.
+
+### Related Tables
+
+- `embedding_models`: Stores information about embedding models
+- `embedding_provider`: Stores information about embedding providers (e.g., Ollama, Hugging Face)
+- `chunks`: Stores text chunks that are embedded
+- `chunktypes`: Defines different types of chunks (e.g., abstract, fulltext)
 
 ## Usage Examples
 
 ### Creating and Storing Embeddings
 
 ```python
-from localknowledge.embeddings import EmbeddingManager
+from localknowledge.db.embeddings import get_embeddings_db
+from localknowledge.embeddings import OllamaEmbedder
 
-# Create an embedding manager
-manager = EmbeddingManager()
+# Create an embedder
+embedder = OllamaEmbedder(model_name="snowflake-arctic-embed2:latest")
 
-# Create and store an embedding
-result = manager.process_text(
-    source_id='medrxiv',
-    document_id='10.1101/2023.01.01.12345',
-    text='This is a sample text for embedding.',
-    chunk_no=0
+# Get the embeddings database manager
+embeddings_db = get_embeddings_db()
+
+# Create an embedding
+text = "This is a sample text for embedding."
+embedding = embedder.embed(text)
+
+# Get the model ID
+model_id = embeddings_db.get_model_id("snowflake-arctic-embed2:latest")
+
+# Store the embedding
+embedding_id = embeddings_db.add_embedding(
+    chunk_id=123,  # ID of the chunk in the chunks table
+    model_id=model_id,
+    embedding=embedding
 )
 
-print(f"Stored embedding with ID: {result}")
-
-# Close the manager
-manager.close()
+print(f"Stored embedding with ID: {embedding_id}")
 ```
 
 ### Searching for Similar Embeddings
 
 ```python
-from localknowledge.embeddings import EmbeddingManager
+from localknowledge.db.embeddings import get_embeddings_db
+from localknowledge.embeddings import OllamaEmbedder
 
-# Create an embedding manager
-manager = EmbeddingManager()
+# Create an embedder
+embedder = OllamaEmbedder(model_name="snowflake-arctic-embed2:latest")
+
+# Get the embeddings database manager
+embeddings_db = get_embeddings_db()
+
+# Create an embedding for the query
+query = "This is a search query."
+query_embedding = embedder.embed(query)
 
 # Search for similar embeddings
-results = manager.search(
-    query='This is a search query.',
+results = embeddings_db.search_similar(
+    embedding=query_embedding,
+    embed_source="abstract",  # Source type (e.g., abstract, fulltext)
+    model_name="snowflake-arctic-embed2:latest",
     limit=10,
-    threshold=0.7,
-    source_id='medrxiv'  # Optional: filter by source
+    threshold=0.7
 )
 
 # Print search results
@@ -97,126 +119,117 @@ for result in results:
     print(f"Similarity: {result['similarity']:.2f}")
     print(f"Text: {result['text'][:100]}...")
     print()
-
-# Close the manager
-manager.close()
 ```
 
-### Batch Processing
+### Batch Processing with AbstractEmbeddingUpdater
+
+The `AbstractEmbeddingUpdater` class provides a convenient way to update embeddings for chunks without embeddings:
 
 ```python
-from localknowledge.embeddings import EmbeddingManager
-from localknowledge.textprocessing.chunking import fixed_size_chunker
+from update_embeddings_for_abstracts import AbstractEmbeddingUpdater
+from localknowledge.embeddings import OllamaEmbedder
 
-# Create an embedding manager
-manager = EmbeddingManager()
+# Create an updater with the default Ollama embedder
+updater = AbstractEmbeddingUpdater(
+    embedder=OllamaEmbedder,
+    model_name="snowflake-arctic-embed2:latest"
+)
 
-# Load a document
-with open("document.txt", "r") as f:
-    text = f.read()
+# Count chunks without embeddings
+count = updater.count_chunks_without_embeddings()
+print(f"Found {count} chunks without embeddings")
 
-# Split into chunks
-chunks = fixed_size_chunker(text, chunk_size=1000, overlap=100)
+# Update embeddings for chunks without embeddings
+processed = updater.update_abstract_embeddings(
+    limit=1000,  # Maximum number of chunks to process
+    batch_size=20,  # Number of chunks to process in each batch
+    workers=4  # Number of worker threads
+)
 
-# Process each chunk
-for i, chunk in enumerate(chunks):
-    result = manager.process_text(
-        source_id='document',
-        document_id='doc-123',
-        text=chunk,
-        chunk_no=i
-    )
-    print(f"Processed chunk {i+1}/{len(chunks)}")
-
-# Close the manager
-manager.close()
+print(f"Successfully processed {processed} chunks")
 ```
 
 ## Command-Line Tools
 
 The module provides command-line tools for working with embeddings:
 
-### Embed MedRxiv Abstracts
+### Update Embeddings for Abstracts
 
 ```bash
-# Create embeddings for MedRxiv abstracts
-python -m localknowledge.medrxiv.embed_abstracts
+# Create embeddings for abstracts using the default Ollama embedder
+python update_embeddings_for_abstracts.py
 
 # Specify a limit
-python -m localknowledge.medrxiv.embed_abstracts --limit 1000
+python update_embeddings_for_abstracts.py --limit 1000
+
+# Specify a batch size
+python update_embeddings_for_abstracts.py --batch-size 50
+
+# Specify number of worker threads
+python update_embeddings_for_abstracts.py --workers 8
+
+# Use the PubMedBERT embedder
+python update_embeddings_for_abstracts.py --embedder pubmedbert
 
 # Specify a model
-python -m localknowledge.medrxiv.embed_abstracts --model "nomic-embed-text:latest"
+python update_embeddings_for_abstracts.py --model "nomic-embed-text:latest"
+
+# Perform a dry run without modifying the database
+python update_embeddings_for_abstracts.py --dry-run
+
+# Show detailed information
+python update_embeddings_for_abstracts.py --verbose
 ```
 
-### Embed PubMed Abstracts
+## Supported Embedders and Models
 
-```bash
-# Create embeddings for PubMed abstracts
-python -m localknowledge.pubmed.embed_abstracts
+### Ollama Embedder
 
-# Specify a limit
-python -m localknowledge.pubmed.embed_abstracts --limit 1000
-
-# Specify a model
-python -m localknowledge.pubmed.embed_abstracts --model "nomic-embed-text:latest"
-```
-
-## Models
-
-The Embeddings module uses Ollama models for creating embeddings:
+The `OllamaEmbedder` class supports various models:
 
 | Model | Dimension | Default |
 |-------|-----------|---------|
 | snowflake-arctic-embed2:latest | 1024 | Yes |
-| nomic-embed-text:latest | 768 | No |
-| jina-embeddings-v2-base-en:latest | 768 | No |
-| bge-m3:latest | 1024 | No |
+| nomic-embed-text | 768 | No |
+| jina/jina-embeddings-v2-base-en | 768 | No |
+| bge-m3 | 1024 | No |
 | granite-embedding:278m | 768 | No |
-| mxbai-embed-large:latest | 1024 | No |
+| mxbai-embed-large | 1024 | No |
 
-Models can be configured through environment variables or application settings.
+### PubMedBERT Embedder
 
-The multi-embeddings system allows using different models simultaneously and comparing their performance. See the [Multi-Embeddings Module](multiembeddings.md) documentation for details.
+The `PubMedBERTEmbedder` class uses the PubMedBERT model for biomedical text:
+
+| Model | Dimension | Default |
+|-------|-----------|---------|
+| microsoft/BiomedNLP-PubMedBERT-base-uncased-abstract-fulltext | 768 | Yes |
+| pritamdeka/BioBERT-mnli-snli-scinli-scitail-mednli-stsb | 768 | No |
 
 ## Configuration
 
 ### Model Configuration
 
-Embedding models can be configured:
+Embedding models can be configured when creating an embedder:
 
 ```python
-from localknowledge.embeddings import EmbeddingManager
+from localknowledge.embeddings import OllamaEmbedder, PubMedBERTEmbedder
 
-# Use a specific model
-manager = EmbeddingManager(model_name="nomic-embed-text:latest")
+# Use a specific Ollama model
+ollama_embedder = OllamaEmbedder(model_name="nomic-embed-text")
 
-# Or set an environment variable
-# export LK_EMBEDDING_MODEL="nomic-embed-text:latest"
+# Use a specific PubMedBERT model
+pubmed_embedder = PubMedBERTEmbedder(model_name="pritamdeka/BioBERT-mnli-snli-scinli-scitail-mednli-stsb")
 ```
 
 ### Database Configuration
 
-Database connection parameters are configured in `localknowledge.db.config`:
+Database connection parameters are configured in `.env` file or environment variables:
 
-```python
-# Database configuration
-DB_CONFIG = {
-    'host': 'localhost',
-    'port': 5432,
-    'database': 'localknowledge',
-    'user': 'postgres',
-    'password': 'password'
-}
-```
-
-Environment variables can override these settings:
-
-- `LK_DB_HOST`: Database host
-- `LK_DB_PORT`: Database port
-- `LK_DB_NAME`: Database name
-- `LK_DB_USER`: Database user
-- `LK_DB_PASSWORD`: Database password
+- `DB_HOST`: Database host
+- `DB_PORT`: Database port
+- `DB_NAME`: Database name
+- `DB_USER`: Database user
+- `DB_PASSWORD`: Database password
 
 ## Performance Considerations
 
@@ -226,6 +239,7 @@ Creating embeddings can be resource-intensive. To optimize:
 
 - Process in batches to amortize model loading time
 - Use a GPU if available for faster processing
+- Use multiple worker threads for parallel processing
 - Implement caching to avoid re-embedding the same text
 
 ### Similarity Search
@@ -242,7 +256,7 @@ For optimal database performance:
 
 - Use transactions for batch operations
 - Create appropriate indices for frequently queried columns
-- Regularly vacuum and analyze the table
+- Regularly vacuum and analyze the tables
 
 ## Maintenance
 
@@ -262,7 +276,7 @@ To update embedding models:
 To optimize search performance after adding many embeddings:
 
 ```sql
-REINDEX INDEX idx_embeddings_vector;
+REINDEX INDEX emb_1024_embedding_idx;
 ```
 
 ### Monitoring
@@ -277,11 +291,12 @@ Monitor embedding performance using:
 
 ### Common Issues
 
-1. **Dimension Mismatch**: If you see errors about vector dimensions, ensure the embedding model produces vectors of the expected dimension (1024).
+1. **Dimension Mismatch**: If you see errors about vector dimensions, ensure the embedding model produces vectors of the expected dimension.
 
 2. **Performance Issues**: If embedding generation is slow, consider:
    - Using a smaller model
    - Processing in batches
+   - Using more worker threads
    - Using a GPU
 
 3. **Search Quality Issues**: If search results are poor, consider:
@@ -298,204 +313,139 @@ For detailed debugging:
    ```python
    import logging
    logging.basicConfig(level=logging.DEBUG)
-   logging.getLogger('localknowledge.embeddings').setLevel(logging.DEBUG)
+   logging.getLogger('localknowledge.db.embeddings').setLevel(logging.DEBUG)
    ```
 
 2. Test embedding generation directly:
    ```python
-   from localknowledge.embeddings import create_embedding
+   from localknowledge.embeddings import OllamaEmbedder
 
-   embedding = create_embedding("Test text")
+   embedder = OllamaEmbedder()
+   embedding = embedder.embed("Test text")
    print(f"Embedding dimension: {len(embedding)}")
    ```
 
 3. Check database queries:
    ```sql
-   EXPLAIN ANALYZE SELECT * FROM embeddings
-   WHERE 1 - (embedding <=> '[0.1,0.2,...]'::vector) > 0.7
-   ORDER BY 1 - (embedding <=> '[0.1,0.2,...]'::vector) DESC
+   EXPLAIN ANALYZE SELECT e.*, 1 - (e.embedding <=> '[0.1,0.2,...]'::vector) as similarity
+   FROM emb_1024 e
+   WHERE 1 - (e.embedding <=> '[0.1,0.2,...]'::vector) > 0.7
+   ORDER BY similarity DESC
    LIMIT 10;
    ```
 
 ## Advanced Usage
 
-### HyDE (Hypothetical Document Embeddings)
+### Implementing Custom Embedders
 
-HyDE is a technique that improves semantic search by generating a hypothetical document that answers a query, then using that document's embedding for search instead of directly embedding the query:
+You can create custom embedders by implementing the `BaseEmbedder` interface:
 
 ```python
-from localknowledge.ai.HyDE import generate_hypothetical_abstract, generate_hyde_embedding
-from localknowledge.embeddings import EmbeddingManager
+from localknowledge.embeddings.base_embedder import BaseEmbedder
 
-# Create an embedding manager
-manager = EmbeddingManager()
+class CustomEmbedder(BaseEmbedder):
+    """Custom embedder implementation."""
 
-# Define a query
-query = "What is the effectiveness of mRNA vaccines against COVID-19 variants?"
+    def __init__(self, model_name: str = "custom-model"):
+        """Initialize the custom embedder."""
+        super().__init__(model_name)
+        # Initialize your model here
 
-# Method 1: Direct semantic search
-direct_results = manager.search(
-    query=query,
-    limit=5,
-    threshold=0.6
-)
+    def list_available_models(self) -> list[str]:
+        """List available models."""
+        return ["custom-model"]
 
-print(f"Direct search found {len(direct_results)} results")
+    def get_vectorsize(self):
+        """Get the size of the embedding vectors."""
+        return 768  # Replace with your model's vector size
 
-# Method 2: HyDE semantic search
-# Generate a hypothetical abstract that answers the query
-hyde_embedding = generate_hyde_embedding(
-    question=query,
-    generation_model="gemma3:4b",
-    embedding_model="snowflake-arctic-embed2:latest"
-)
+    def embed(self, text: str) -> list[float]:
+        """Create an embedding for the given text."""
+        # Implement your embedding logic here
+        # Return a list of floats representing the embedding
 
-# Search using the HyDE embedding
-hyde_results = manager.search_with_embedding(
-    embedding=hyde_embedding,
-    limit=5,
-    threshold=0.6
-)
-
-print(f"HyDE search found {len(hyde_results)} results")
-
-# Compare top results
-if direct_results and hyde_results:
-    print(f"Direct search top result: {direct_results[0]['similarity']:.4f}")
-    print(f"HyDE search top result: {hyde_results[0]['similarity']:.4f}")
-
-# Close the manager
-manager.close()
+    def embed_batch(self, texts: list[str]) -> list[list[float]]:
+        """Create embeddings for multiple texts at once."""
+        # Implement your batch embedding logic here
+        # Return a list of embeddings (each a list of floats)
 ```
 
-HyDE typically produces higher similarity scores and more relevant results, especially for specialized queries.
+### Working with Different Vector Sizes
 
-### Hybrid Search
-
-Combine keyword and semantic search for better results:
+The system automatically creates and manages tables for different vector sizes:
 
 ```python
-from localknowledge.embeddings import EmbeddingManager
-from localknowledge.db.base import DatabaseManager
+from localknowledge.db.embeddings import get_embeddings_db
+from localknowledge.embeddings import OllamaEmbedder, PubMedBERTEmbedder
 
-# Create managers
-embedding_manager = EmbeddingManager()
-db_manager = DatabaseManager()
+# Get the embeddings database manager
+embeddings_db = get_embeddings_db()
 
-# Perform keyword search
-keyword_query = "traumatic brain injury treatment"
-keyword_results = db_manager.execute("""
-    SELECT document_id, ts_rank(to_tsvector('english', text), to_tsquery('english', %s)) AS rank
-    FROM embeddings
-    WHERE to_tsvector('english', text) @@ to_tsquery('english', %s)
-    ORDER BY rank DESC
-    LIMIT 20
-""", (keyword_query.replace(' ', ' & '), keyword_query.replace(' ', ' & ')))
+# Create embedders with different vector sizes
+ollama_embedder = OllamaEmbedder(model_name="snowflake-arctic-embed2:latest")  # 1024 dimensions
+pubmed_embedder = PubMedBERTEmbedder()  # 768 dimensions
 
-# Perform semantic search
-semantic_results = embedding_manager.search(
-    query=keyword_query,
-    limit=20,
-    threshold=0.6
-)
+# Ensure tables exist for both vector sizes
+embeddings_db.ensure_table_for_vectorsize(ollama_embedder.get_vectorsize())  # Creates emb_1024 if needed
+embeddings_db.ensure_table_for_vectorsize(pubmed_embedder.get_vectorsize())  # Creates emb_768 if needed
 
-# Combine results (simple approach)
-combined_results = {}
-for result in keyword_results:
-    combined_results[result['document_id']] = {
-        'document_id': result['document_id'],
-        'keyword_rank': result['rank'],
-        'semantic_rank': 0
-    }
+# Create embeddings with different models
+text = "This is a sample text for embedding."
+ollama_embedding = ollama_embedder.embed(text)
+pubmed_embedding = pubmed_embedder.embed(text)
 
-for result in semantic_results:
-    if result['document_id'] in combined_results:
-        combined_results[result['document_id']]['semantic_rank'] = result['similarity']
-    else:
-        combined_results[result['document_id']] = {
-            'document_id': result['document_id'],
-            'keyword_rank': 0,
-            'semantic_rank': result['similarity']
-        }
+# Store embeddings in the appropriate tables
+ollama_model_id = embeddings_db.get_model_id("snowflake-arctic-embed2:latest")
+pubmed_model_id = embeddings_db.get_model_id("microsoft/BiomedNLP-PubMedBERT-base-uncased-abstract-fulltext")
 
-# Sort by combined score
-final_results = sorted(
-    combined_results.values(),
-    key=lambda x: (x['keyword_rank'] * 0.4 + x['semantic_rank'] * 0.6),
-    reverse=True
-)
-
-# Print results
-for result in final_results[:10]:
-    print(f"Document: {result['document_id']}")
-    print(f"Keyword Rank: {result['keyword_rank']:.2f}")
-    print(f"Semantic Rank: {result['semantic_rank']:.2f}")
-    print(f"Combined Score: {result['keyword_rank'] * 0.4 + result['semantic_rank'] * 0.6:.2f}")
-    print()
-
-# Close managers
-embedding_manager.close()
-db_manager.close()
+embeddings_db.add_embedding(chunk_id=123, model_id=ollama_model_id, embedding=ollama_embedding)
+embeddings_db.add_embedding(chunk_id=123, model_id=pubmed_model_id, embedding=pubmed_embedding)
 ```
 
-### Custom Embedding Models
+### Finding and Deleting Zero Vectors
 
-Use a custom embedding model:
+The system provides methods for finding and deleting zero vectors (which can occur due to errors):
 
 ```python
-import ollama
-from localknowledge.embeddings import EmbeddingManager
+from localknowledge.db.embeddings import get_embeddings_db
 
-# Define a custom embedding function
-def custom_embedding_function(text):
-    response = ollama.embeddings(model="custom-model:latest", prompt=text)
-    return response['embedding']
+# Get the embeddings database manager
+embeddings_db = get_embeddings_db()
 
-# Create an embedding manager with the custom function
-manager = EmbeddingManager(embedding_function=custom_embedding_function)
+# Find zero vectors
+zero_vectors = embeddings_db.find_zero_vectors()
+print(f"Found {len(zero_vectors)} zero vectors")
 
-# Use the manager as usual
-results = manager.search("Query text")
-
-# Close the manager
-manager.close()
+# Delete zero vectors
+deleted = embeddings_db.delete_zero_vectors()
+print(f"Deleted {deleted} zero vectors")
 ```
 
-### Comparing Multiple Models
+### Getting Embedding Statistics
 
-Compare search results across different embedding models:
+The system provides methods for getting statistics about embeddings:
 
 ```python
-from localknowledge.embeddings.multiembeddings import EmbeddingManager
+from localknowledge.db.embeddings import get_embeddings_db
 
-# Create a multi-embedding manager
-manager = EmbeddingManager()
+# Get the embeddings database manager
+embeddings_db = get_embeddings_db()
 
-# Compare search results across different models
-comparison = manager.compare_models(
-    query='Treatment options for COVID-19',
-    models=[
-        "snowflake-arctic-embed2:latest",
-        "nomic-embed-text:latest",
-        "jina-embeddings-v2-base-en:latest"
-    ],
-    limit=5,
-    threshold=0.7
-)
+# Get embedding statistics
+stats = embeddings_db.get_embedding_stats()
+print(f"Total embeddings: {stats['total_embeddings']}")
+print(f"Documents with embeddings: {stats['documents_with_embeddings']}")
+print(f"Zero vectors: {stats['zero_vectors']}")
 
-# Process comparison results
-for model_name, model_data in comparison.items():
-    print(f"Model: {model_name}")
-    print(f"Results: {model_data['result_count']}")
-    print(f"Vector dimension: {model_data['stats']['vector_dim']}")
+# Print embeddings by source
+for source in stats['embeddings_by_source']:
+    print(f"Source: {source['name']}, Count: {source['count']}")
 
-    # Print top result for each model
-    if model_data['results']:
-        top_result = model_data['results'][0]
-        print(f"Top similarity: {top_result['similarity']:.4f}")
-        print(f"Top document: {top_result['document_id']}")
-    print()
+# Print embeddings by model
+for model in stats['embeddings_by_model']:
+    print(f"Model: {model['model_name']}, Count: {model['count']}")
 
-# Close the manager
-manager.close()
+# Print embeddings by table
+for table in stats['embeddings_by_table']:
+    print(f"Table: {table['table_name']}, Count: {table['count']}")
 ```

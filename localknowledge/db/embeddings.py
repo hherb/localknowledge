@@ -9,7 +9,7 @@ interface for other modules to interact with embeddings data.
 
 import logging
 import time
-from typing import List, Dict, Any, Optional, Union
+from typing import List, Dict, Any, Optional, Union, Tuple
 import json
 import re
 from functools import lru_cache
@@ -603,6 +603,90 @@ class EmbeddingsDatabaseManager(DatabaseManager):
 
         return result or []
 
+    @lru_cache(maxsize=100)
+    def sanity_check(self, embed_source: Union[str, int], vector_size: int) -> Tuple[bool, Optional[str], Optional[int]]:
+        """Perform sanity checks for embedding operations.
+
+        This method checks:
+        1. If the embedding source exists
+        2. If pgvector extension is installed
+        3. If the table for the vector size exists
+        4. If the embedding column is of the correct type
+
+        Args:
+            embed_source: Name of the embedding source or source ID
+            vector_size: Size of the embedding vector
+
+        Returns:
+            Tuple of (success, tablename, embed_source_id)
+            - success: True if all checks pass, False otherwise
+            - tablename: Name of the table for the vector size if success is True, None otherwise
+            - embed_source_id: ID of the embedding source if success is True, None otherwise
+        """
+        # Handle both string and integer embed_source
+        if isinstance(embed_source, str):
+            # Get the embedding source ID by name
+            embed_source_record = self.embedding_source_db.get_embedding_source_by_name(embed_source)
+
+            if not embed_source_record:
+                logger.error(f"Embedding source not found: {embed_source}")
+                return False, None, None
+
+            embed_source_id = embed_source_record['id']
+        else:
+            # Use the provided ID directly
+            embed_source_id = embed_source
+
+            # Verify that the ID exists
+            embed_source_record = self.embedding_source_db.get_embedding_source_by_id(embed_source_id)
+
+            if not embed_source_record:
+                logger.error(f"Embedding source ID not found: {embed_source_id}")
+                return False, None, None
+
+        # Check if pgvector extension is installed
+        check_query = "SELECT EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'vector')"
+        result = self.execute(check_query)
+
+        if not result or not result[0]['exists']:
+            logger.warning("pgvector extension is not installed. Vector search is not available.")
+            return False, None, None
+
+        # Get the table name for the vector size
+        tablename = self.get_tablename_for_vectorsize(vector_size)
+
+        # Check if the table exists
+        check_table_query = """
+        SELECT EXISTS (
+            SELECT FROM information_schema.tables
+            WHERE table_name = %s
+        )
+        """
+        table_exists = self.execute(check_table_query, (tablename,))
+
+        if not table_exists or not table_exists[0]['exists']:
+            logger.warning(f"Table '{tablename}' doesn't exist. Vector search is not available.")
+            return False, None, None
+
+        # Check if the embedding column is of type vector
+        column_query = f"""
+        SELECT data_type FROM information_schema.columns
+        WHERE table_name = '{tablename}' AND column_name = 'embedding'
+        """
+        column_result = self.execute(column_query)
+
+        if not column_result:
+            logger.warning(f"Could not determine embedding column type for table {tablename}. Vector search is not available.")
+            return False, None, None
+
+        # PostgreSQL reports the vector type as 'USER-DEFINED'
+        if column_result[0]['data_type'] != 'USER-DEFINED':
+            logger.warning(f"Embedding column in table {tablename} is of type {column_result[0]['data_type']}, not vector. Vector search is not available.")
+            return False, None, None
+
+        # All checks passed
+        return True, tablename, embed_source_id
+
     def search_similar(
         self,
         embedding: List[float],
@@ -623,67 +707,12 @@ class EmbeddingsDatabaseManager(DatabaseManager):
         Returns:
             List of similar embedding records with similarity scores
         """
-        # Handle both string and integer embed_source
-        if isinstance(embed_source, str):
-            # Get the embedding source ID by name
-            embed_source_record = self.embedding_source_db.get_embedding_source_by_name(embed_source)
-
-            if not embed_source_record:
-                logger.error(f"Embedding source not found: {embed_source}")
-                return []
-
-            embed_source_id = embed_source_record['id']
-        else:
-            # Use the provided ID directly
-            embed_source_id = embed_source
-
-            # Verify that the ID exists
-            embed_source_record = self.embedding_source_db.get_embedding_source_by_id(embed_source_id)
-
-            if not embed_source_record:
-                logger.error(f"Embedding source ID not found: {embed_source_id}")
-                return []
-
-        # Check if pgvector extension is installed
-        check_query = "SELECT EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'vector')"
-        result = self.execute(check_query)
-
-        if not result or not result[0]['exists']:
-            logger.warning("pgvector extension is not installed. Vector search is not available.")
-            # Return empty results if pgvector is not installed
-            return []
-
         # Get the vector size to determine the table name
         vector_size = len(embedding)
-        tablename = self.get_tablename_for_vectorsize(vector_size)
 
-        # Check if the table exists
-        check_table_query = """
-        SELECT EXISTS (
-            SELECT FROM information_schema.tables
-            WHERE table_name = %s
-        )
-        """
-        table_exists = self.execute(check_table_query, (tablename,))
-
-        if not table_exists or not table_exists[0]['exists']:
-            logger.warning(f"Table '{tablename}' doesn't exist. Vector search is not available.")
-            return []
-
-        # Check if the embedding column is of type vector
-        column_query = f"""
-        SELECT data_type FROM information_schema.columns
-        WHERE table_name = '{tablename}' AND column_name = 'embedding'
-        """
-        column_result = self.execute(column_query)
-
-        if not column_result:
-            logger.warning(f"Could not determine embedding column type for table {tablename}. Vector search is not available.")
-            return []
-
-        # PostgreSQL reports the vector type as 'USER-DEFINED'
-        if column_result[0]['data_type'] != 'USER-DEFINED':
-            logger.warning(f"Embedding column in table {tablename} is of type {column_result[0]['data_type']}, not vector. Vector search is not available.")
+        # Perform sanity checks
+        success, tablename, embed_source_id = self.sanity_check(embed_source, vector_size)
+        if not success:
             return []
 
         try:
@@ -742,6 +771,13 @@ class EmbeddingsDatabaseManager(DatabaseManager):
             if embed_source_record:
                 embed_source_id = embed_source_record['id']
 
+        # Get model_id if model_name is provided
+        model_id = None
+        if model_name:
+            model_id = self.get_model_id(model_name)
+            if model_id == -1:
+                logger.warning(f"Model '{model_name}' not found in embedding_models table")
+
         # If vector_size is provided, delete from that specific table
         if vector_size:
             tablename = self.get_tablename_for_vectorsize(vector_size)
@@ -756,47 +792,40 @@ class EmbeddingsDatabaseManager(DatabaseManager):
             table_exists = self.execute(check_table_query, (tablename,))
 
             if table_exists and table_exists[0]['exists']:
-                query = f"DELETE FROM {tablename} WHERE document_id = %s"
+                query = f"DELETE FROM {tablename} WHERE chunk_id IN (SELECT id FROM chunks WHERE document_id = %s)"
                 params = [document_id]
 
-                if embed_source_id:
-                    query += " AND embed_source_id = %s"
-                    params.append(embed_source_id)
+                if model_id:
+                    query += f" AND model_id = %s"
+                    params.append(model_id)
 
-                if model_name:
-                    query += " AND model_name = %s"
-                    params.append(model_name)
+                # Add RETURNING to get the count of deleted rows
+                query += " RETURNING id"
 
-                self.execute(query, tuple(params), commit=True)
-                total_deleted += 1  # In a real implementation, you would return the actual count
+                result = self.execute(query, tuple(params), commit=True)
+                deleted_count = len(result) if result else 0
+                total_deleted += deleted_count
                 logger.info(f"Deleted embeddings for document {document_id} from table {tablename}")
         else:
-            # Without a vector size, delete from all embedding tables
-            # Get all embedding tables
-            tables_query = """
-            SELECT table_name
-            FROM information_schema.tables
-            WHERE table_name LIKE 'emb_%'
+            # Without a vector size, delete directly from embedding_base
+            # This will cascade to all inherited tables due to PostgreSQL inheritance
+            query = """
+            DELETE FROM embedding_base
+            WHERE chunk_id IN (SELECT id FROM chunks WHERE document_id = %s)
             """
-            tables = self.execute(tables_query)
+            params = [document_id]
 
-            if tables:
-                for table in tables:
-                    tablename = table['table_name']
-                    query = f"DELETE FROM {tablename} WHERE document_id = %s"
-                    params = [document_id]
+            if model_id:
+                query += f" AND model_id = %s"
+                params.append(model_id)
 
-                    if embed_source_id:
-                        query += " AND embed_source_id = %s"
-                        params.append(embed_source_id)
+            # Add RETURNING to get the count of deleted rows
+            query += " RETURNING id"
 
-                    if model_name:
-                        query += " AND model_name = %s"
-                        params.append(model_name)
-
-                    self.execute(query, tuple(params), commit=True)
-                    total_deleted += 1  # In a real implementation, you would return the actual count
-                    logger.info(f"Deleted embeddings for document {document_id} from table {tablename}")
+            result = self.execute(query, tuple(params), commit=True)
+            deleted_count = len(result) if result else 0
+            total_deleted = deleted_count
+            logger.info(f"Deleted {deleted_count} embeddings for document {document_id} from embedding_base (affects all embedding tables)")
 
         return total_deleted
 

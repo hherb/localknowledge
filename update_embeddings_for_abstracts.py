@@ -304,20 +304,33 @@ def main():
         logging.getLogger("localknowledge.db.base").setLevel(logging.WARNING)
         logging.getLogger("localknowledge.db.basic_infrastructure").setLevel(logging.WARNING)
 
+    # Define default models for each embedder type
+    default_models = {
+        "ollama": "snowflake-arctic-embed2:latest",
+        "pubmedbert": "microsoft/BiomedNLP-PubMedBERT-base-uncased-abstract-fulltext"
+    }
+
     # Choose the embedder based on the argument
     if args.embedder == "ollama":
         embedder_class = OllamaEmbedder
+        # Use default model if none specified or if using the default from command line
+        model_name = args.model
     elif args.embedder == "pubmedbert":
         embedder_class = PubMedBERTEmbedder
+        # Use default model if none specified or if using the default from command line
+        if args.model == "snowflake-arctic-embed2:latest":  # This is the default from argparse
+            model_name = default_models["pubmedbert"]
+        else:
+            model_name = args.model
     else:
         logger.error(f"Unknown embedder type: {args.embedder}")
         sys.exit(1)
 
-    # Create the updater
-    updater = AbstractEmbeddingUpdater(embedder=embedder_class, model_name=args.model)
+    print(f"Using embedder: {args.embedder}")
+    print(f"Using model: {model_name}")
 
-    # Print model information
-    print(f"Using model: {args.model}")
+    # Create the updater
+    updater = AbstractEmbeddingUpdater(embedder=embedder_class, model_name=model_name)
     print(f"Model ID: {updater.model_id}")
     print(f"Vector size: {updater.vectorsize}")
     print(f"Table name: {updater.embeddings_db.get_tablename_for_vectorsize(updater.vectorsize)}")
