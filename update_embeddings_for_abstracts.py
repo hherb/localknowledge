@@ -173,7 +173,7 @@ class AbstractEmbeddingUpdater:
         if limit:
             total_to_process = min(total_to_process, limit)
 
-        with tqdm.tqdm(total=total_to_process, desc="Updating abstract embeddings") as pbar:
+        with tqdm.tqdm(total=total_to_process, desc=self.model_name[:20]) as pbar:
             with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
                 offset = 0
                 while True:

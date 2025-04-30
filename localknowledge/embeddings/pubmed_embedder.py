@@ -31,11 +31,11 @@ class PubMedBERTEmbedder(BaseEmbedder):
 
     def embed(self, text: str) -> list[float]:
         """Create an embedding for the given text."""
-        return self.model.encode(text).tolist()
+        return self.model.encode(text, show_progress_bar=False).tolist()
 
     def embed_batch(self, texts: list[str]) -> list[list[float]]:
         """Create embeddings for multiple texts at once."""
-        return self.model.encode(texts).tolist()
+        return self.model.encode(texts, show_progress_bar=False).tolist()
 
 if __name__== "__main__":
     for model in MODELS:

@@ -39,25 +39,6 @@ class EmbeddingDatabaseManager(DatabaseManager):
             self.execute("CREATE EXTENSION IF NOT EXISTS vector", commit=False)
             logger.info("pgvector extension created or verified")
 
-            # Create embeddings table
-            logger.debug("Creating embeddings table if it doesn't exist")
-            self.execute("""
-            CREATE TABLE IF NOT EXISTS embeddings (
-                id SERIAL PRIMARY KEY,
-                source_id TEXT NOT NULL,
-                document_id TEXT NOT NULL,
-                chunk_no INTEGER NOT NULL,
-                page_no INTEGER,
-                text TEXT NOT NULL,
-                keywords TEXT[],
-                embedding vector(1024),
-                model_name TEXT NOT NULL,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE (source_id, document_id, chunk_no)
-            )
-            """, commit=False)
-            logger.info("Embeddings table created or verified")
-
             # Commit all table creation operations
             self.commit_transaction()
             logger.debug("Table creation transaction committed")
