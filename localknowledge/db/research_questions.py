@@ -226,6 +226,21 @@ class ResearchQuestionsManager(DatabaseManager):
         result = self.execute(query, (question_id,))
         return result or []
 
+    def get_all_questions(self) -> List[Dict[str, Any]]:
+        """
+        Get all research questions from the database.
+
+        Returns:
+            List of research question data dictionaries
+        """
+        query = """
+        SELECT *
+        FROM research_questions
+        ORDER BY id
+        """
+        result = self.execute(query)
+        return result or []
+
     def search_questions(self, search_term: str, project_id: Optional[int] = None, active_only: bool = True) -> List[Dict[str, Any]]:
         """
         Search for research questions by content.

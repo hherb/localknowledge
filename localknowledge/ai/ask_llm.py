@@ -65,7 +65,7 @@ Please rate the text on a scale of 0 to 3, where 0 means the document is not rel
 Provide a brief reason for your rating in no more than 3 brief sentences. Keep it short.
 Answer in json format in the form of {{"rating": <rating>, "reason": "<reason>"}}.
 """
-    models = ["gemma3:4b", "gemma3:12b-it-q8_0", "qwen3:1.7b-q8_0", "qwen3:4b", "qwen3:8b"]
+    models = ["gemma3:4b", "gemma3:12b-it-q8_0", "qwen3:1.7b-q8_0", "qwen3:4b", "qwen3:8b", "phi4:latest"]
 
     #now let's analyze performance of these models by running the question for each model 11 times,
     # discarding the results of the first run so as not to count model loading time.
@@ -78,7 +78,7 @@ Answer in json format in the form of {{"rating": <rating>, "reason": "<reason>"}
     from tabulate import tabulate
 
     # Define the research question
-    research_question = "Are there studies that confirm that machine learning or AI applications are contributing to better health outcome?"
+    research_question = "is machine learning or AI superior to nurses in triaging patients?"
 
     # Prepare the formatted prompt
     formatted_prompt = prompt.format(question=research_question, document=text)

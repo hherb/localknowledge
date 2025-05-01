@@ -801,22 +801,62 @@ class MainWindow(QMainWindow):
         current_index = self.tab_widget.currentIndex()
         if current_index < 0:
             # No tabs open
+            print("update_config_panel_for_current_tab: No tabs open")
             return
 
         current_widget = self.tab_widget.widget(current_index)
+        print(f"update_config_panel_for_current_tab: Current widget = {current_widget}")
+        print(f"Current tab text: {self.tab_widget.tabText(current_index)}")
 
         # Find the plugin for this widget
         for plugin_name, plugin in self.plugin_manager.get_active_plugins().items():
-            if plugin.get_main_widget() == current_widget:
+            print(f"Checking plugin: {plugin_name}, class: {plugin.__class__.__name__}")
+
+            # Check if plugin has a main widget
+            main_widget = plugin.get_main_widget()
+            print(f"Plugin main widget: {main_widget}")
+
+            if main_widget == current_widget:
                 # Found the plugin, get its config widget
-                config_widget = plugin.get_config_widget()
-                if config_widget:
-                    self.config_panel.set_content(config_widget)
+                print(f"Found matching plugin: {plugin_name}")
+
+                try:
+                    config_widget = plugin.get_config_widget()
+                    print(f"Plugin {plugin_name} get_config_widget() returned: {config_widget}")
+
+                    if config_widget:
+                        print(f"Setting config panel content to widget: {config_widget}")
+                        self.config_panel.set_content(config_widget)
+                    else:
+                        print(f"Plugin {plugin_name} returned None for config widget")
+                except Exception as e:
+                    print(f"Error calling get_config_widget() on plugin {plugin_name}: {e}")
+                    import traceback
+                    traceback.print_exc()
+
                 break
+        else:
+            print("update_config_panel_for_current_tab: No matching plugin found")
 
     def update_config_button_state(self):
         """Update the config button state based on whether the current tab has a config widget."""
         has_config = self.has_config_widget_for_current_tab()
+
+        # Debug print
+        print(f"update_config_button_state: has_config = {has_config}")
+
+        # Get current tab info for debugging
+        current_index = self.tab_widget.currentIndex()
+        if current_index >= 0:
+            tab_text = self.tab_widget.tabText(current_index)
+            print(f"Current tab: {tab_text} (index {current_index})")
+
+            # Find the plugin for this tab
+            current_widget = self.tab_widget.widget(current_index)
+            for plugin_name, plugin in self.plugin_manager.get_active_plugins().items():
+                if plugin.get_main_widget() == current_widget:
+                    print(f"Plugin: {plugin_name}, has config widget: {plugin.get_config_widget() is not None}")
+                    break
 
         # Enable/disable the config button
         self.config_button.setEnabled(has_config)
@@ -835,16 +875,44 @@ class MainWindow(QMainWindow):
         current_index = self.tab_widget.currentIndex()
         if current_index < 0:
             # No tabs open
+            print("has_config_widget_for_current_tab: No tabs open")
             return False
 
         current_widget = self.tab_widget.widget(current_index)
+        print(f"has_config_widget_for_current_tab: Current widget = {current_widget}")
+        print(f"Current tab text: {self.tab_widget.tabText(current_index)}")
 
         # Find the plugin for this widget
         for plugin_name, plugin in self.plugin_manager.get_active_plugins().items():
-            if plugin.get_main_widget() == current_widget:
-                # Found the plugin, check if it has a config widget
-                return plugin.get_config_widget() is not None
+            print(f"Checking plugin: {plugin_name}, class: {plugin.__class__.__name__}")
 
+            # Check if plugin has a main widget
+            main_widget = plugin.get_main_widget()
+            print(f"Plugin main widget: {main_widget}")
+
+            if main_widget == current_widget:
+                # Found the plugin, check if it has a config widget
+                print(f"Found matching plugin: {plugin_name}")
+
+                # Check if plugin has a has_config_widget method
+                if hasattr(plugin, 'has_config_widget'):
+                    has_config = plugin.has_config_widget()
+                    print(f"Plugin {plugin_name} has_config_widget() returned: {has_config}")
+                    if has_config:
+                        return True
+
+                # Try to get the config widget
+                try:
+                    config_widget = plugin.get_config_widget()
+                    print(f"Plugin {plugin_name} get_config_widget() returned: {config_widget}")
+                    return config_widget is not None
+                except Exception as e:
+                    print(f"Error calling get_config_widget() on plugin {plugin_name}: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    return False
+
+        print("has_config_widget_for_current_tab: No matching plugin found")
         return False
 
     def get_config_panel_width(self):

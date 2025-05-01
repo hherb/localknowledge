@@ -10,6 +10,7 @@ from .project import ProjectDatabaseManager
 from .hypotheses import HypothesesDatabaseManager
 from .research_questions import ResearchQuestionsManager
 from .evaluations import EvaluationsDatabaseManager
+from .models import ModelsDatabaseManager
 
 __all__ = [
     'DatabaseManager',
@@ -19,5 +20,6 @@ __all__ = [
     'ProjectDatabaseManager',
     'HypothesesDatabaseManager',
     'ResearchQuestionsManager',
-    'EvaluationsDatabaseManager'
+    'EvaluationsDatabaseManager',
+    'ModelsDatabaseManager'
 ]

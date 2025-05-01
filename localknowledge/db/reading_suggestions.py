@@ -22,9 +22,9 @@ class ReadingSuggestionsManager(DatabaseManager):
         """Initialize the reading suggestions database manager."""
         super().__init__()
 
-    def add_evaluator(self, 
-                     name: str, 
-                     user_id: Optional[int] = None, 
+    def add_evaluator(self,
+                     name: str,
+                     user_id: Optional[int] = None,
                      model_id: Optional[str] = None,
                      parameters: Optional[Dict[str, Any]] = None,
                      prompt: Optional[str] = None) -> Optional[int]:
@@ -107,6 +107,82 @@ class ReadingSuggestionsManager(DatabaseManager):
             logger.error(f"Error getting evaluators: {e}")
             return []
 
+    def update_evaluator(self,
+                        evaluator_id: int,
+                        name: Optional[str] = None,
+                        model_id: Optional[str] = None,
+                        parameters: Optional[Dict[str, Any]] = None,
+                        prompt: Optional[str] = None) -> bool:
+        """
+        Update an existing evaluator.
+
+        Args:
+            evaluator_id: ID of the evaluator to update
+            name: New name for the evaluator (if None, keeps existing)
+            model_id: New model ID (if None, keeps existing)
+            parameters: New parameters (if None, keeps existing)
+            prompt: New prompt (if None, keeps existing)
+
+        Returns:
+            True if the update was successful, False otherwise
+        """
+        # Get current evaluator data
+        current = self.get_evaluator(evaluator_id)
+        if not current:
+            logger.error(f"Evaluator with ID {evaluator_id} not found")
+            return False
+
+        # Use current values for any parameters that weren't provided
+        name = name if name is not None else current.get('name')
+        model_id = model_id if model_id is not None else current.get('model_id')
+        parameters = parameters if parameters is not None else current.get('parameters')
+        prompt = prompt if prompt is not None else current.get('prompt')
+
+        # Update the evaluator
+        query = """
+        UPDATE evaluators
+        SET name = %s, model_id = %s, parameters = %s, prompt = %s, updated_at = NOW()
+        WHERE id = %s
+        """
+        try:
+            self.execute(query, (name, model_id, parameters, prompt, evaluator_id), commit=True)
+            return True
+        except Exception as e:
+            logger.error(f"Error updating evaluator: {e}")
+            return False
+
+    def delete_evaluator(self, evaluator_id: int) -> bool:
+        """
+        Delete an evaluator.
+
+        Args:
+            evaluator_id: ID of the evaluator to delete
+
+        Returns:
+            True if the deletion was successful, False otherwise
+        """
+        # Check if there are any reading suggestions using this evaluator
+        check_query = """
+        SELECT COUNT(*) as count FROM reading_suggestions
+        WHERE evaluator_id = %s
+        """
+        try:
+            result = self.execute(check_query, (evaluator_id,))
+            if result and result[0]['count'] > 0:
+                logger.warning(f"Cannot delete evaluator {evaluator_id} because it has {result[0]['count']} reading suggestions")
+                return False
+
+            # Delete the evaluator
+            delete_query = """
+            DELETE FROM evaluators
+            WHERE id = %s
+            """
+            self.execute(delete_query, (evaluator_id,), commit=True)
+            return True
+        except Exception as e:
+            logger.error(f"Error deleting evaluator: {e}")
+            return False
+
     def add_reading_suggestion(self,
                               document_id: int,
                               user_id: int,
@@ -153,7 +229,7 @@ class ReadingSuggestionsManager(DatabaseManager):
             else:
                 # Insert new suggestion
                 insert_query = """
-                INSERT INTO reading_suggestions 
+                INSERT INTO reading_suggestions
                 (document_id, user_id, evaluator_id, recommendation_strength, confidence_level, comment)
                 VALUES (%s, %s, %s, %s, %s, %s)
                 RETURNING id
@@ -187,8 +263,8 @@ class ReadingSuggestionsManager(DatabaseManager):
             logger.error(f"Error updating user agreement: {e}")
             return False
 
-    def get_reading_suggestions(self, 
-                               user_id: int, 
+    def get_reading_suggestions(self,
+                               user_id: int,
                                include_read: bool = False,
                                min_strength: int = 0,
                                evaluator_id: Optional[int] = None,
@@ -320,7 +396,7 @@ class ReadingSuggestionsManager(DatabaseManager):
             Dictionary with performance metrics
         """
         query = """
-        SELECT 
+        SELECT
             COUNT(*) as total_suggestions,
             COUNT(CASE WHEN user_agreement = TRUE THEN 1 END) as agreed,
             COUNT(CASE WHEN user_agreement = FALSE THEN 1 END) as disagreed,

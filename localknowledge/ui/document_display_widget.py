@@ -512,7 +512,12 @@ class DocumentDisplayWidget(QWidget):
         # When checkbox is checked (Qt.Checked), we want to add a bookmark
         # When checkbox is unchecked (Qt.Unchecked), we want to remove a bookmark
         logger.info(f"Personal bookmark checkbox state changed to: {state}")
-        self._toggle_bookmark("personal", state == Qt.Checked)
+
+        # Get the actual checkbox state
+        is_checked = self.personal_bookmark_cb.isChecked()
+        logger.info(f"Personal bookmark isChecked(): {is_checked}")
+
+        self._toggle_bookmark("personal", is_checked)
 
     def _toggle_project_bookmark(self, state):
         """
@@ -524,7 +529,12 @@ class DocumentDisplayWidget(QWidget):
         # When checkbox is checked (Qt.Checked), we want to add a bookmark
         # When checkbox is unchecked (Qt.Unchecked), we want to remove a bookmark
         logger.info(f"Project bookmark checkbox state changed to: {state}")
-        self._toggle_bookmark("project", state == Qt.Checked)
+
+        # Get the actual checkbox state
+        is_checked = self.project_bookmark_cb.isChecked()
+        logger.info(f"Project bookmark isChecked(): {is_checked}")
+
+        self._toggle_bookmark("project", is_checked)
 
     def _toggle_bookmark(self, bookmark_type: str, is_bookmarked: bool):
         """
@@ -548,29 +558,55 @@ class DocumentDisplayWidget(QWidget):
         try:
             # Determine project ID based on bookmark type
             project_id = None
-            if bookmark_type == "project":
+            if bookmark_type == "project" or (bookmark_type == "personal" and self.project_bookmark_cb.isChecked()):
                 project_id = self.current_project_id
                 if not project_id:
                     # Can't bookmark to a project if none is selected
                     logger.error("Cannot toggle project bookmark: no project selected")
                     return
 
+            # Determine the actual bookmark type to use
+            actual_bookmark_type = bookmark_type
+
+            # If toggling personal bookmark and project is also checked, use "both"
+            if bookmark_type == "personal" and self.project_bookmark_cb.isChecked() and is_bookmarked:
+                actual_bookmark_type = "both"
+                logger.info("Both personal and project checkboxes are checked, using 'both' bookmark type")
+
+            # If toggling project bookmark and personal is also checked, use "both"
+            if bookmark_type == "project" and self.personal_bookmark_cb.isChecked() and is_bookmarked:
+                actual_bookmark_type = "both"
+                logger.info("Both personal and project checkboxes are checked, using 'both' bookmark type")
+
             # Log the action being performed
-            logger.info(f"Toggle bookmark: type={bookmark_type}, is_bookmarked={is_bookmarked}, " +
+            logger.info(f"Toggle bookmark: type={actual_bookmark_type}, is_bookmarked={is_bookmarked}, " +
                        f"source={source_name}, id={external_id}, user={self.current_user_id}, project={project_id}")
 
             # Set or remove bookmark
             if is_bookmarked:
+                # Adding a bookmark
+                logger.info(f"Adding bookmark of type {actual_bookmark_type} with project_id={project_id}")
                 result = self.db_manager.add_bookmark(
                     source_name=source_name,
                     external_id=external_id,
                     user_id=self.current_user_id,
-                    bookmark_type=bookmark_type,
+                    bookmark_type=actual_bookmark_type,
                     project_id=project_id
                 )
-                status_msg = f"Added to {'project' if project_id else 'personal'} bookmarks"
+                status_msg = f"Added to {'both personal and project' if actual_bookmark_type == 'both' else ('project' if project_id and actual_bookmark_type == 'project' else 'personal')} bookmarks"
                 logger.info(f"Add bookmark result: {result}")
+
+                # Verify the bookmark was added
+                check_result = self.db_manager.is_bookmarked(
+                    source_name=source_name,
+                    external_id=external_id,
+                    user_id=self.current_user_id,
+                    project_id=project_id
+                )
+                logger.info(f"Verification after adding: is_bookmarked={check_result}")
             else:
+                # Removing a bookmark
+                logger.info(f"Removing bookmark with project_id={project_id}")
                 result = self.db_manager.remove_bookmark(
                     source_name=source_name,
                     external_id=external_id,
@@ -580,8 +616,17 @@ class DocumentDisplayWidget(QWidget):
                 status_msg = f"Removed from {'project' if project_id else 'personal'} bookmarks"
                 logger.info(f"Remove bookmark result: {result}")
 
+                # Verify the bookmark was removed
+                check_result = self.db_manager.is_bookmarked(
+                    source_name=source_name,
+                    external_id=external_id,
+                    user_id=self.current_user_id,
+                    project_id=project_id
+                )
+                logger.info(f"Verification after removing: is_bookmarked={check_result}")
+
             # Emit signal
-            self.documentBookmarked.emit(self.current_document, bookmark_type, is_bookmarked)
+            self.documentBookmarked.emit(self.current_document, actual_bookmark_type, is_bookmarked)
 
             # Show success message
             if self.status_bar:
