@@ -290,6 +290,27 @@ class DocumentDatabaseManager(DatabaseManager):
         result = self.execute(query, (doi,))
         return result[0] if result else None
 
+    def get_document(self, document_id: int) -> Optional[Dict[str, Any]]:
+        """
+        Get a document by its internal database ID.
+
+        Args:
+            document_id: Internal database ID of the document
+
+        Returns:
+            Document data or None if not found
+        """
+        query = """
+        SELECT d.*, s.name as source_name, c.name as category_name
+        FROM document d
+        JOIN sources s ON d.source_id = s.id
+        LEFT JOIN categories c ON d.category_id = c.id
+        WHERE d.id = %s
+        """
+
+        result = self.execute(query, (document_id,))
+        return result[0] if result else None
+
     def search_documents(self,
                         search_text: str,
                         source_name: Optional[str] = None,

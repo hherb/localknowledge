@@ -288,7 +288,12 @@ class NewsBrowser(QWidget):
             # Get current project from context
             from localknowledge.context import get_current_project
             project = get_current_project()
-            self.current_project_id = project.get('id') if project else None
+
+            # Handle project being either an integer (project ID) or a dictionary with an 'id' key
+            if isinstance(project, dict) and 'id' in project:
+                self.current_project_id = project['id']
+            else:
+                self.current_project_id = project  # project is already the ID or None
 
             print(f"Loading documents for user_id={self.user_id}, project_id={self.current_project_id}")
 
@@ -468,7 +473,11 @@ class NewsBrowser(QWidget):
             self.recommendation_group.setVisible(False)
 
         # Display the document in the document display widget
-        self.document_display.display_document(self.current_document)
+        # Pass the suggestion if available
+        self.document_display.display_document(
+            self.current_document,
+            self.current_suggestion
+        )
 
         # The document display widget gets user and project from context
         # No need to explicitly set them here
@@ -477,7 +486,10 @@ class NewsBrowser(QWidget):
         """Update the document display with the current document."""
         # This method is now handled by the document display widget
         if self.current_document:
-            self.document_display.display_document(self.current_document)
+            self.document_display.display_document(
+                self.current_document,
+                self.current_suggestion
+            )
 
     # PDF-related methods are now handled by the DocumentDisplayWidget
 

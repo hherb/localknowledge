@@ -26,6 +26,8 @@ This manual provides comprehensive documentation for developers working with the
 4. [Keywords Extraction](keywords.md)
 5. [Chunking](chunking.md)
 6. [Bookmarking System](bookmarks.md)
+7. [Project Management](project_management.md)
+8. [Hypotheses and Research Questions](hypotheses_and_questions.md)
 
 ### Development
 

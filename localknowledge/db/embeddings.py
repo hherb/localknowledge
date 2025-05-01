@@ -728,34 +728,70 @@ class EmbeddingsDatabaseManager(DatabaseManager):
         """
         # Get the vector size to determine the table name
         vector_size = len(embedding)
+        tablename = self.get_tablename_for_vectorsize(vector_size)
 
-        # Perform sanity checks
-        success, tablename, embed_source_id = self.sanity_check(embed_source, vector_size)
-        if not success:
+        # Get model_id from model_name
+        model_id = self.get_model_id(model_name)
+        if model_id == -1:
+            logger.error(f"Model '{model_name}' not found in embedding_models table")
             return []
 
+        # Handle both string and integer embed_source
+        if isinstance(embed_source, str):
+            # Get the embedding source ID by name
+            embed_source_record = self.embedding_source_db.get_embedding_source_by_name(embed_source)
+            if not embed_source_record:
+                logger.error(f"Embedding source not found: {embed_source}")
+                return []
+            embed_source_name = embed_source
+        else:
+            # Use the provided ID directly
+            embed_source_record = self.embedding_source_db.get_embedding_source_by_id(embed_source)
+            if not embed_source_record:
+                logger.error(f"Embedding source ID not found: {embed_source}")
+                return []
+            embed_source_name = embed_source_record['name']
+
         try:
+            # Check if the table exists
+            check_table_query = """
+            SELECT EXISTS (
+                SELECT FROM information_schema.tables
+                WHERE table_name = %s
+            )
+            """
+            table_exists = self.execute(check_table_query, (tablename,))
+            if not table_exists or not table_exists[0]['exists']:
+                logger.warning(f"Table '{tablename}' doesn't exist, no embeddings found")
+                return []
+
             # Convert the embedding list to a PostgreSQL vector
             # For pgvector, we need to pass the embedding as a string in the format '[0.1, 0.2, ...]'
             embedding_str = str(embedding)
 
+            # Query for similar embeddings using the new schema
             query = f"""
-            SELECT e.*, s.name as embed_source,
+            SELECT e.id, e.chunk_id, e.model_id, c.document_id, c.chunk_no, c.page_start, c.page_end,
+                   c.text, c.document_title, m.model_name, t.chunktype as chunk_type,
                    (e.embedding <=> vector(%s)) as distance,
                    1 - (e.embedding <=> vector(%s)) as similarity,
-                   d.title, d.abstract
+                   d.id as document_id, d.title, d.abstract, d.source_id, s.name as source_name
             FROM {tablename} e
-            JOIN embedding_source s ON e.embed_source_id = s.id
-            JOIN document d ON e.document_id = d.id
-            WHERE e.embed_source_id = %s
-            AND e.model_name = %s
+            JOIN chunks c ON e.chunk_id = c.id
+            JOIN chunktypes t ON c.chunktype_id = t.id
+            JOIN embedding_models m ON e.model_id = m.id
+            JOIN document d ON c.document_id = d.id
+            JOIN sources s ON d.source_id = s.id
+            WHERE t.chunktype = %s
+            AND e.model_id = %s
             AND 1 - (e.embedding <=> vector(%s)) >= %s
             ORDER BY similarity DESC
             LIMIT %s;
             """
+
             result = self.execute(
                 query,
-                (embedding_str, embedding_str, embed_source_id, model_name, embedding_str, threshold, limit)
+                (embedding_str, embedding_str, embed_source_name, model_id, embedding_str, threshold, limit)
             )
 
             return result or []

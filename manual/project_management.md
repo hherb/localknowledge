@@ -152,6 +152,31 @@ The `RecentProjectsWidget` class in `localknowledge.ui.recent_projects` displays
 - Last worked on date
 - Click functionality to select a project
 
+#### Project Detail Widget
+
+The `ProjectDetailWidget` class in `localknowledge.ui.project_detail_widget` provides a detailed view of a project with:
+
+- Project title and edit button
+- Hypothesis and counterhypothesis editing
+- Research questions management
+- Tabbed interface for questions, bookmarks, citations, and drafts
+
+#### Hypothesis Widget
+
+The `HypothesisWidget` class in `localknowledge.ui.hypothesis_widget` provides a widget for editing hypotheses with:
+
+- Hypothesis text editing
+- Counterhypothesis text editing
+- Save functionality
+
+#### Research Question Widget
+
+The `ResearchQuestionWidget` class in `localknowledge.ui.research_question_widget` provides a widget for managing research questions with:
+
+- List of existing questions with delete buttons
+- Form for adding new questions
+- Question and details editing
+
 ### Using the Project Manager
 
 The project manager can be used as a plugin in the RWB or as a standalone application:

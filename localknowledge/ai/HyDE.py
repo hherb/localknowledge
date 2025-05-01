@@ -78,14 +78,55 @@ def get_embedding_from_text(text: str, model: str = "snowflake-arctic-embed2:lat
 
     Args:
         text: The text to embed
-        model: The Ollama model to use for embedding (default: snowflake-arctic-embed2:latest)
+        model: The model to use for embedding (default: snowflake-arctic-embed2:latest)
 
     Returns:
         Embedding vector as a list of floats
     """
     try:
-        response = ollama.embeddings(model=model, prompt=text)
-        return response['embedding']
+        # Get the provider for the model
+        from localknowledge.db.embeddings import get_embeddings_db
+        embeddings_db = get_embeddings_db()
+
+        # Query for the provider
+        query = """
+        SELECT p.provider_name
+        FROM embedding_models m
+        JOIN embedding_provider p ON m.provider_id = p.id
+        WHERE m.model_name = %s
+        """
+        result = embeddings_db.execute(query, (model,))
+
+        provider = "unknown"
+        if result and len(result) > 0:
+            provider = result[0]['provider_name']
+
+        # Use the appropriate embedder based on the provider
+        if provider == "ollama":
+            # Use Ollama embedder
+            from localknowledge.embeddings.ollama_embedder import OllamaEmbedder
+            embedder = OllamaEmbedder(model_name=model)
+            return embedder.embed(text)
+        elif provider.startswith("pubmedbert"):
+            # Use PubMedBERT embedder
+            from localknowledge.embeddings.pubmed_embedder import PubMedBERTEmbedder
+            embedder = PubMedBERTEmbedder(model_name=model)
+            return embedder.embed(text)
+        else:
+            # Default to Ollama embedder
+            logger.warning(f"Unknown provider '{provider}' for model '{model}', defaulting to Ollama embedder")
+            response = ollama.embeddings(model=model, prompt=text)
+
+            # Handle the response based on its type
+            if hasattr(response, 'embedding'):
+                # New Ollama client returns a Pydantic model
+                return response.embedding
+            elif isinstance(response, dict) and 'embedding' in response:
+                # Old Ollama client returns a dictionary
+                return response['embedding']
+            else:
+                logger.error(f"Unexpected response format from Ollama: {type(response)}")
+                return []
     except Exception as e:
         logger.error(f"Error getting embedding with model {model}: {e}")
         return []

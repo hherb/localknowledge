@@ -140,12 +140,13 @@ class PDFDisplayWidget(QWidget):
         # Connect signals from the PDF viewer
         self.pdf_viewer.searchCompleted.connect(self._on_search_completed)
 
-    def display_document(self, document: Dict[str, Any]):
+    def display_document(self, document: Dict[str, Any], suggestion: Optional[Dict[str, Any]] = None):
         """
         Display a document's PDF.
 
         Args:
             document: Document data dictionary
+            suggestion: Optional suggestion data dictionary (not used in this widget)
         """
         if not document:
             self.clear()

@@ -215,12 +215,13 @@ class DocumentDisplayWidget(QWidget):
         if self.current_document:
             self._check_bookmark_status()
 
-    def display_document(self, document: Dict[str, Any]):
+    def display_document(self, document: Dict[str, Any], suggestion: Optional[Dict[str, Any]] = None):
         """
         Display a document in the widget.
 
         Args:
             document: Document data dictionary
+            suggestion: Optional suggestion data dictionary
         """
         if not document:
             self.clear()
@@ -235,12 +236,27 @@ class DocumentDisplayWidget(QWidget):
         project = get_current_project()
 
         self.current_user_id = user.get('id', 1) if user else 1
-        self.current_project_id = project.get('id') if project else None
+        # Handle project being either an integer (project ID) or a dictionary with an 'id' key
+        if isinstance(project, dict) and 'id' in project:
+            self.current_project_id = project['id']
+        else:
+            self.current_project_id = project  # project is already the ID or None
 
         logger.info(f"Displaying document with user_id={self.current_user_id}, project_id={self.current_project_id}")
 
+        # If no suggestion was provided, try to get it from the document
+        if not suggestion and document.get('id'):
+            # Try to get suggestion from the database
+            from localknowledge.db.reading_suggestions import ReadingSuggestionsManager
+            suggestions_manager = ReadingSuggestionsManager()
+            suggestion = suggestions_manager.get_suggestion_by_document(document.get('id'), self.current_user_id)
+
+            # If no suggestion found for current user, try user_id=1 as fallback
+            if not suggestion and self.current_user_id != 1:
+                suggestion = suggestions_manager.get_suggestion_by_document(document.get('id'), 1)
+
         # Display the document in each tab
-        self.abstract_widget.display_document(document)
+        self.abstract_widget.display_document(document, suggestion)
         self.summary_widget.display_document(document)
         self.pdf_widget.display_document(document)
 
@@ -360,7 +376,11 @@ class DocumentDisplayWidget(QWidget):
             project = get_current_project()
 
             self.current_user_id = user.get('id', 1) if user else 1
-            self.current_project_id = project.get('id') if project else None
+            # Handle project being either an integer (project ID) or a dictionary with an 'id' key
+            if isinstance(project, dict) and 'id' in project:
+                self.current_project_id = project['id']
+            else:
+                self.current_project_id = project  # project is already the ID or None
 
             # Log the document we're checking
             logger.info(f"Checking bookmark status for document: source={source_name}, id={external_id}, " +

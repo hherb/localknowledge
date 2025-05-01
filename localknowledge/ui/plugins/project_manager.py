@@ -53,6 +53,7 @@ except ImportError:
 from localknowledge.ui.project_list import ProjectListWidget
 from localknowledge.ui.project_form import ProjectForm
 from localknowledge.ui.recent_projects import RecentProjectsWidget
+from localknowledge.ui.project_detail_widget import ProjectDetailWidget
 
 # Import context management
 from localknowledge.context import (
@@ -92,6 +93,20 @@ if REGISTER_PLUGIN_AVAILABLE:
             # My Projects tab
             self.projects_tab = QWidget()
             self.tab_widget.addTab(self.projects_tab, "My Projects")
+
+            # Current Project tab
+            self.current_project_tab = QWidget()
+            current_project_layout = QVBoxLayout(self.current_project_tab)
+            current_project_layout.setContentsMargins(0, 0, 0, 0)
+            current_project_layout.setSpacing(0)
+
+            # Project detail widget
+            self.project_detail = ProjectDetailWidget()
+            current_project_layout.addWidget(self.project_detail)
+
+            # Add tab and disable it until a project is selected
+            self.tab_widget.addTab(self.current_project_tab, "Current Project")
+            self.tab_widget.setTabEnabled(1, False)
 
             # Projects tab layout
             projects_layout = QVBoxLayout(self.projects_tab)
@@ -166,15 +181,14 @@ if REGISTER_PLUGIN_AVAILABLE:
             # Store the selected project ID in the context
             set_current_project(project_id)
 
+            # Load the project in the detail widget
+            self.project_detail.load_project(project_id)
+
             # Enable the Current Project tab
             self.tab_widget.setTabEnabled(1, True)
 
             # Switch to the Current Project tab
             self.tab_widget.setCurrentIndex(1)
-
-            # Update the UI to show the selected project
-            # This could involve loading project details, documents, etc.
-            print(f"Project selected: {project_id}")
 
         @Slot(int)
         def on_project_created(self, project_id: int):
@@ -287,9 +301,23 @@ class ProjectManager(QWidget):
         Args:
             project_id: ID of the selected project
         """
-        # Update the UI to show the selected project
-        # This could involve loading project details, documents, etc.
-        print(f"Project selected: {project_id}")
+        # Store the selected project ID in the context
+        set_current_project(project_id)
+
+        # Create a new window to display the project details
+        detail_window = QMainWindow()
+        detail_window.setWindowTitle(f"Project Details - ID: {project_id}")
+
+        # Create the project detail widget
+        project_detail = ProjectDetailWidget()
+        detail_window.setCentralWidget(project_detail)
+
+        # Load the project
+        project_detail.load_project(project_id)
+
+        # Show the window
+        detail_window.resize(800, 600)
+        detail_window.show()
 
     @Slot(int)
     def on_project_created(self, project_id: int):

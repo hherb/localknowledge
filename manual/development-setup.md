@@ -19,7 +19,7 @@ Before setting up the development environment, ensure you have the following pre
 ### 1. Clone the Repository
 
 ```bash
-git clone https://github.com/yourusername/localknowledge.git
+git clone https://github.com/hherb/localknowledge.git
 cd localknowledge
 ```
 
