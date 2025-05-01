@@ -4,10 +4,11 @@ The `literature_searcher` module provides functionality for searching and evalua
 
 ## Overview
 
-The module consists of two main components:
+The module focuses on document search functionality:
 
 1. **Document Search**: The `search_literature` function uses semantic search to find documents relevant to a research question.
-2. **Document Evaluation**: The `DocumentEvaluator` class evaluates how relevant a document is to a specific research question.
+
+Document evaluation functionality has been moved to the separate `document_evaluator` module.
 
 ## Usage
 
@@ -33,8 +34,10 @@ The `search_literature` function returns a list of `FoundDocuments` objects, eac
 
 ### Evaluating Document Relevance
 
+For document evaluation functionality, please refer to the `document_evaluator` module:
+
 ```python
-from localknowledge.ai.literature_searcher import DocumentEvaluator
+from localknowledge.ai.document_evaluator import DocumentEvaluator
 
 # Create an evaluator
 evaluator = DocumentEvaluator(model_name="gemma3:4b")
@@ -51,13 +54,6 @@ print(f"Rating: {evaluation.rating}/3")
 print(f"Reason: {evaluation.reason_for_rating}")
 ```
 
-The `DocumentEvaluator` class uses an LLM to evaluate how relevant a document is to a research question. It returns a `DocumentOfInterest` object with the following rating scale:
-
-- **0**: Document is not relevant at all
-- **1**: Document is somewhat relevant
-- **2**: Document is likely relevant
-- **3**: Document answers the question
-
 ## API Reference
 
 ### Classes
@@ -70,23 +66,7 @@ Represents the result of a literature search.
   - `document_id` (int): The ID of the document in the database
   - `similarity` (float): The similarity score (0-1) between the document and the query
 
-#### `DocumentOfInterest`
-
-Represents a document that has been evaluated with regards to a question.
-
-- **Attributes**:
-  - `document_id` (int): The ID of the document in the database
-  - `rating` (int): Rating from 0 to 3 indicating relevance
-  - `reason_for_rating` (str): Reason for the rating provided by the evaluator
-  - `similarity` (float): The similarity score (0-1) between the document and the query
-
-#### `DocumentEvaluator`
-
-Evaluates documents for their relevance to a research question.
-
-- **Methods**:
-  - `__init__(model_name="gemma3:4b", model_params=None)`: Initialize the evaluator
-  - `evaluate(question, document_id)`: Evaluate a document's relevance to a question
+For information about the `DocumentEvaluator` class and `DocumentOfInterest` dataclass, please refer to the documentation for the `document_evaluator` module.
 
 ### Functions
 
@@ -120,6 +100,5 @@ The module uses the following components:
 
 - `DocumentSearchManager` from `localknowledge.db.document_search` for semantic search
 - `DocumentDatabaseManager` from `localknowledge.db.document` for database operations
-- `ollama` for generating document evaluations using LLMs
 
-The semantic search is performed using embeddings, and the document evaluation is performed using a prompt-based approach with an LLM.
+The semantic search is performed using embeddings to find documents that are semantically similar to the research question.

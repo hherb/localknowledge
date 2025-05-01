@@ -7,7 +7,7 @@ from typing import List, Dict, Any, Optional, Union
 from dataclasses import dataclass
 from tqdm import tqdm
 
-from localknowledge.ai.literature_searcher import DocumentEvaluator
+from localknowledge.ai.document_evaluator import DocumentEvaluator
 from localknowledge.db.document import DocumentDatabaseManager
 from localknowledge.db.research_questions import ResearchQuestionsManager
 from localknowledge.db.hypotheses import HypothesesDatabaseManager
