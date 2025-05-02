@@ -3,8 +3,11 @@
 Update Missing MedRxiv Fulltext
 
 This script identifies preprints in the database that do not have fulltext,
-first tries to fetch plain text files directly from medRxiv, and if not available,
-falls back to fetching XML files and converting them to markdown.
+and uses multiple strategies to retrieve the fulltext:
+
+1. First tries to find the fulltext link by examining the page source of the DOI landing page
+2. If that fails, tries to fetch plain text files directly using URL pattern matching
+3. If both plain text methods fail, falls back to fetching XML files and converting them to markdown
 
 This is designed to be efficient and fast for processing thousands of records.
 """
@@ -13,7 +16,7 @@ import os
 import sys
 import argparse
 import logging
-from typing import List, Dict, Any, Optional, Tuple, Generator
+from typing import List, Dict, Any, Tuple, Generator
 import concurrent.futures
 from tqdm import tqdm
 
@@ -30,7 +33,12 @@ logger = logging.getLogger('update_missing_fulltext')
 
 
 class MissingFulltextUpdater:
-    """Process all medRxiv records without fulltext, download plain text or XML and convert to markdown."""
+    """
+    Process all medRxiv records without fulltext, using multiple strategies to retrieve fulltext:
+    1. Extract fulltext link from page source
+    2. Try direct URL pattern matching
+    3. Fall back to XML download and conversion
+    """
 
     def __init__(self, output_dir="./output", batch_size=100, max_workers=4, delay=0.5):
         """
@@ -92,29 +100,44 @@ class MissingFulltextUpdater:
         """
         doi = record['doi']
         try:
-            # First try to get plain text directly
-            text_url = self.fetcher._try_direct_text_url(doi)
+            # First try to find fulltext from page source
+            text_url = self.fetcher._find_fulltext_from_page_source(doi)
 
             if text_url:
-                # If plain text is available, download it directly
+                # If plain text is available from page source, download it directly
                 try:
                     response = self.fetcher.session.get(text_url, timeout=10)
                     response.raise_for_status()
                     markdown_content = response.text
-                    logger.info(f"Successfully downloaded plain text for DOI {doi}")
+                    logger.info(f"Successfully downloaded plain text from page source for DOI {doi}")
                     return doi, True, markdown_content
                 except Exception as e:
-                    logger.error(f"No plain text for DOI {doi}: {e}, trying XML...")
-                    # Fall back to XML if plain text download fails
+                    logger.error(f"Failed to download plain text from page source for DOI {doi}: {e}, trying direct URL...")
+                    # Fall back to direct URL if page source method fails
 
-            # If plain text is not available or download failed, try XML
+            # If page source method fails, try direct URL pattern matching
+            if not text_url:
+                text_url = self.fetcher._try_direct_text_url(doi)
+
+                if text_url:
+                    # If plain text is available via direct URL, download it
+                    try:
+                        response = self.fetcher.session.get(text_url, timeout=10)
+                        response.raise_for_status()
+                        markdown_content = response.text
+                        logger.info(f"Successfully downloaded plain text via direct URL for DOI {doi}")
+                        return doi, True, markdown_content
+                    except Exception as e:
+                        logger.error(f"Failed to download plain text via direct URL for DOI {doi}: {e}, trying XML...")
+                        # Fall back to XML if direct URL method fails
+
+            # Only try XML if both plain text methods failed
+            logger.info(f"Plain text not available for DOI {doi}, trying XML...")
             download_result = self.fetcher.download_preprint(doi, formats=['xml'])
 
             # Check if XML was downloaded
             if 'xml' not in download_result:
-                return doi, False, "Failed to download XML for {doi}"
-
-            xml_path = download_result['xml']
+                return doi, False, f"Failed to download XML for {doi}"
 
             # Convert to markdown
             result = self.converter.convert_doi_to_markdown(doi)
@@ -212,7 +235,7 @@ class MissingFulltextUpdater:
             batch = []
 
             # Process in batches for memory efficiency
-            for i, record in enumerate(self.get_missing_fulltext_records(limit)):
+            for record in self.get_missing_fulltext_records(limit):
                 batch.append(record)
 
                 # Process batch when it reaches the batch size
@@ -252,8 +275,9 @@ def main():
     try:
         # Check for required dependencies
         try:
-            import lxml
-            import tqdm
+            # Just check if these modules can be imported
+            __import__('lxml')
+            __import__('tqdm')
         except ImportError as e:
             logger.error(f"Required dependency missing: {e}")
             logger.error("Please install the required dependencies using:")

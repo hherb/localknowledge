@@ -23,6 +23,10 @@ from PySide6.QtWidgets import (
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+# Set this module's logger to WARNING level to reduce debug output
+logger.setLevel(logging.WARNING)
+# Also reduce ollama debug output
+logging.getLogger('ollama').setLevel(logging.WARNING)
 
 # Get access to the parent package
 parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -33,8 +37,7 @@ if parent_dir not in sys.path:
 from rwb_main import PluginBase
 from localknowledge.ui.plugins.plugin_finder import register_plugin
 
-# Import document evaluator
-from localknowledge.ai.document_evaluator import DocumentEvaluator
+# Import document evaluator will be done in the worker class to avoid circular imports
 
 # Import database managers
 from localknowledge.db.document import DocumentDatabaseManager
@@ -88,6 +91,10 @@ class EvaluationWorker(QObject):
         try:
             # Create document evaluator
             from localknowledge.ai.document_evaluator import DocumentEvaluator
+            # Configure the evaluator's logger to reduce debug output
+            import logging
+            eval_logger = logging.getLogger('localknowledge.ai.document_evaluator')
+            eval_logger.setLevel(logging.WARNING)
             evaluator = DocumentEvaluator(model_name=self.model_name)
 
             # Evaluate each document
@@ -249,6 +256,13 @@ class DocumentEvaluatorPlugin(PluginBase):
         self.skip_evaluated_cb.setChecked(True)
         self.skip_evaluated_cb.setToolTip("Skip documents already evaluated by the selected evaluator")
         control_layout.addWidget(self.skip_evaluated_cb)
+
+        # Pending human review checkbox
+        self.pending_review_cb = QCheckBox("Pending Human Review")
+        self.pending_review_cb.setChecked(False)
+        self.pending_review_cb.setToolTip("Show only documents that need human review for the selected research question")
+        self.pending_review_cb.stateChanged.connect(self._on_pending_review_changed)
+        control_layout.addWidget(self.pending_review_cb)
 
         # Evaluate button
         self.evaluate_btn = QPushButton("Evaluate")
@@ -452,49 +466,84 @@ class DocumentEvaluatorPlugin(PluginBase):
             logger.error(f"Error loading evaluator models: {e}")
             QMessageBox.warning(self, "Error", f"Failed to load evaluator models: {str(e)}")
 
+    @Slot(int)
+    def _on_pending_review_changed(self, state):
+        """
+        Handle pending human review checkbox state change.
+
+        Args:
+            state: Qt.CheckState value
+        """
+        # If pending review is checked, disable the skip evaluated checkbox
+        # as they are mutually exclusive, and change the button text
+        if state == Qt.Checked:
+            self.skip_evaluated_cb.setEnabled(False)
+            self.skip_evaluated_cb.setChecked(False)
+            self.evaluate_btn.setText("Load Documents")
+        else:
+            self.skip_evaluated_cb.setEnabled(True)
+            self.evaluate_btn.setText("Evaluate")
+
     @Slot()
     def _on_evaluate_clicked(self):
         """Handle evaluate button click."""
+        logger.debug("Evaluate button clicked")
+
         # Check if evaluation is already running
-        if self.thread and self.thread.isRunning():
+        if hasattr(self, 'thread') and self.thread and self.thread.isRunning():
             # Stop the current evaluation
-            if self.worker:
+            if hasattr(self, 'worker') and self.worker:
                 self.worker.stop()
             self.thread.quit()
             self.thread.wait()
-            self.evaluate_btn.setText("Evaluate")
+            if hasattr(self, 'evaluate_btn') and self.evaluate_btn:
+                self.evaluate_btn.setText("Evaluate")
             self.show_status_message("Evaluation stopped", success=False)
             return
 
         # Get selected research question
-        question_idx = self.question_combo.currentIndex()
-        if question_idx < 0:
-            self.show_status_message("Please select a research question", success=False)
+        try:
+            question_idx = self.question_combo.currentIndex()
+            if question_idx < 0:
+                self.show_status_message("Please select a research question", success=False)
+                return
+
+            question_id = self.question_combo.itemData(question_idx)
+            if question_id is None:
+                self.show_status_message("No valid research question selected", success=False)
+                return
+
+            question_text = self.question_combo.itemText(question_idx)
+            logger.debug(f"Selected question: {question_text} (ID: {question_id})")
+
+            # Get selected evaluator model
+            model_idx = self.model_combo.currentIndex()
+            if model_idx < 0:
+                self.show_status_message("Please select an evaluator model", success=False)
+                return
+
+            evaluator_id = self.model_combo.itemData(model_idx)
+            if evaluator_id is None:
+                self.show_status_message("No valid evaluator selected", success=False)
+                return
+
+            evaluator_name = self.model_combo.itemText(model_idx)
+            logger.debug(f"Selected evaluator: {evaluator_name} (ID: {evaluator_id})")
+
+            # Get number of records and start date
+            num_records = self.records_spin.value()
+            start_date = self.date_edit.date().toString("yyyy-MM-dd")
+            logger.debug(f"Records: {num_records}, Start date: {start_date}")
+
+            # Get checkboxes state
+            pending_review = self.pending_review_cb.isChecked()
+            skip_evaluated = self.skip_evaluated_cb.isChecked()
+            logger.debug(f"Pending review: {pending_review}, Skip evaluated: {skip_evaluated}")
+
+        except (RuntimeError, AttributeError) as e:
+            logger.error(f"Error accessing UI controls: {e}")
+            self.show_status_message("Error accessing UI controls. Please try again.", success=False)
             return
-
-        question_id = self.question_combo.itemData(question_idx)
-        if question_id is None:
-            self.show_status_message("No valid research question selected", success=False)
-            return
-
-        question_text = self.question_combo.itemText(question_idx)
-
-        # Get selected evaluator model
-        model_idx = self.model_combo.currentIndex()
-        if model_idx < 0:
-            self.show_status_message("Please select an evaluator model", success=False)
-            return
-
-        evaluator_id = self.model_combo.itemData(model_idx)
-        if evaluator_id is None:
-            self.show_status_message("No valid evaluator selected", success=False)
-            return
-
-        evaluator_name = self.model_combo.itemText(model_idx)
-
-        # Get number of records and start date
-        num_records = self.records_spin.value()
-        start_date = self.date_edit.date().toString("yyyy-MM-dd")
 
         # Get evaluator details to get the model name
         evaluator = self._get_evaluator_by_id(evaluator_id)
@@ -503,56 +552,132 @@ class DocumentEvaluatorPlugin(PluginBase):
             return
 
         model_name = evaluator.get('model_id', 'gemma3:4b')  # Default to gemma3:4b if not found
+        logger.debug(f"Using model: {model_name}")
 
-        # Show a message that evaluation is starting
-        self.show_status_message(
-            f"Starting evaluation of documents from {start_date} using '{evaluator_name}'...",
-            success=True,
-            duration_ms=0,  # Don't auto-hide
-            show_progress=True
-        )
+        # Show appropriate message based on mode
+        if pending_review:
+            self.show_status_message(
+                f"Loading documents pending human review for question '{question_text}'...",
+                success=True,
+                duration_ms=0,  # Don't auto-hide
+                show_progress=True
+            )
+        else:
+            self.show_status_message(
+                f"Starting evaluation of documents from {start_date} using '{evaluator_name}'...",
+                success=True,
+                duration_ms=0,  # Don't auto-hide
+                show_progress=True
+            )
 
-        # Get recent documents from the database
-        skip_evaluated = self.skip_evaluated_cb.isChecked()
-        documents = self._get_recent_documents(
-            start_date=start_date,
-            limit=num_records,
-            evaluator_id=evaluator_id,
-            skip_evaluated=skip_evaluated
-        )
+        # Get documents from the database based on selected mode
+        try:
+            documents = self._get_recent_documents(
+                start_date=start_date,
+                limit=num_records,
+                evaluator_id=evaluator_id,
+                skip_evaluated=skip_evaluated,
+                pending_review=pending_review,
+                question_id=question_id
+            )
 
-        if not documents:
-            self.show_status_message(f"No documents found from {start_date}", success=False)
+            logger.debug(f"Found {len(documents) if documents else 0} documents")
+
+            if not documents:
+                self.show_status_message(f"No documents found from {start_date}", success=False)
+                return
+
+            # Clear the document list
+            self.document_list.clear()
+            # Reset evaluation count
+            self.evaluated_count = 0
+
+        except Exception as e:
+            logger.error(f"Error retrieving documents: {e}")
+            self.show_status_message(f"Error retrieving documents: {str(e)}", success=False)
             return
 
-        # Clear the document list
-        self.document_list.clear()
+        if pending_review:
+            # In pending review mode, we just display the documents that need human review
+            # without running AI evaluations
+            try:
+                # Update progress bar for loading documents
+                self.progress_bar.setMaximum(len(documents))
+                self.progress_bar.setValue(len(documents))
 
-        # Reset evaluation count
-        self.evaluated_count = 0
+                # Add documents to the list
+                for document in documents:
+                    # Get existing AI evaluations for this document and question
+                    evaluations = self.evaluations_manager.get_evaluations_by_document(
+                        document_id=document['id'],
+                        research_question_id=question_id,
+                        human_only=False  # Get all evaluations, not just human ones
+                    )
 
-        # Create worker and thread
-        self.worker = EvaluationWorker(
-            documents=documents,
-            question_text=question_text,
-            model_name=model_name
-        )
+                    # Filter for AI evaluations only
+                    ai_evaluations = [e for e in evaluations if not e.get('is_human_evaluator')]
 
-        self.thread = QThread()
-        self.worker.moveToThread(self.thread)
+                    if ai_evaluations:
+                        # Use the highest AI rating as the document rating
+                        highest_rating = max([e.get('rating', 0) for e in ai_evaluations])
+                        document['rating'] = highest_rating
 
-        # Connect signals
-        self.thread.started.connect(self.worker.run)
-        self.worker.document_evaluated.connect(self._on_document_evaluated)
-        self.worker.evaluation_complete.connect(self._on_evaluation_complete)
-        self.worker.evaluation_error.connect(self._on_evaluation_error)
-        self.worker.progress_updated.connect(self._on_progress_updated)
+                        # Use the reason from the highest-rated evaluation
+                        highest_eval = max(ai_evaluations, key=lambda e: e.get('rating', 0))
+                        document['reason'] = highest_eval.get('rating_reason', 'No reason provided')
 
-        # Change button to "Stop"
-        self.evaluate_btn.setText("Stop")
+                        # Add to the list widget
+                        is_read = False  # Not read by default
+                        evaluator_name = highest_eval.get('evaluator_name', 'Unknown Evaluator')
+                        suggestion = {
+                            'recommendation_strength': highest_rating,
+                            'recommendation_reason': document['reason'],
+                            'evaluator_name': f"{evaluator_name} (Needs Human Review)"
+                        }
 
-        # Start the thread
-        self.thread.start()
+                        self.document_list.add_document(document, is_read, suggestion)
+
+                # Show completion message
+                self.show_status_message(
+                    f"Loaded {len(documents)} documents pending human review for question '{question_text}'",
+                    success=True
+                )
+
+            except Exception as e:
+                logger.error(f"Error displaying documents for review: {e}")
+                self.show_status_message(f"Error displaying documents: {str(e)}", success=False)
+                return
+        else:
+            # In normal mode, run AI evaluations on the documents
+            try:
+                # Create worker and thread
+                self.worker = EvaluationWorker(
+                    documents=documents,
+                    question_text=question_text,
+                    model_name=model_name
+                )
+
+                self.thread = QThread()
+                self.worker.moveToThread(self.thread)
+
+                # Connect signals
+                self.thread.started.connect(self.worker.run)
+                self.worker.document_evaluated.connect(self._on_document_evaluated)
+                self.worker.evaluation_complete.connect(self._on_evaluation_complete)
+                self.worker.evaluation_error.connect(self._on_evaluation_error)
+                self.worker.progress_updated.connect(self._on_progress_updated)
+
+                # Change button to "Stop"
+                self.evaluate_btn.setText("Stop")
+
+                # Start the thread
+                self.thread.start()
+                logger.debug("Started evaluation thread")
+
+            except Exception as e:
+                logger.error(f"Error starting evaluation thread: {e}")
+                self.show_status_message(f"Error starting evaluation: {str(e)}", success=False)
+                return
 
     @Slot(dict, object)
     def _on_document_evaluated(self, document, evaluation):
@@ -963,14 +1088,18 @@ class DocumentEvaluatorPlugin(PluginBase):
 
     def get_config_widget(self):
         """Get the configuration widget for this plugin."""
-        # Debug print
-        print("DocumentEvaluatorPlugin.get_config_widget() called")
+        logger.debug("DocumentEvaluatorPlugin.get_config_widget() called")
 
         # Create a simple configuration widget
         from PySide6.QtWidgets import QLabel, QVBoxLayout, QWidget, QPushButton, QComboBox, QFormLayout, QTextEdit, QDoubleSpinBox, QSpinBox, QSlider, QHBoxLayout, QLineEdit
         from PySide6.QtCore import Qt
 
+        # Create a container widget that will persist
         config_widget = QWidget()
+
+        # Store a reference to this widget to prevent premature garbage collection
+        self._config_widget = config_widget
+
         config_layout = QVBoxLayout(config_widget)
         config_layout.setContentsMargins(10, 10, 10, 10)
         config_layout.setSpacing(10)
@@ -981,16 +1110,22 @@ class DocumentEvaluatorPlugin(PluginBase):
 
         # Form layout for evaluator settings
         form_widget = QWidget()
+        # Store a reference to prevent garbage collection
+        self._form_widget = form_widget
         form_layout = QFormLayout(form_widget)
 
         # Name field
         name_label = QLabel("Name:")
-        self.name_edit = QLineEdit()
-        form_layout.addRow(name_label, self.name_edit)
+        name_edit = QLineEdit()
+        # Store a reference to prevent garbage collection
+        self._name_edit = name_edit
+        form_layout.addRow(name_label, name_edit)
 
         # Model selector
         model_label = QLabel("Model:")
-        self.model_combo = QComboBox()
+        model_combo = QComboBox()
+        # Store a reference to prevent garbage collection
+        self._model_combo = model_combo
 
         # Load models from database
         try:
@@ -1006,76 +1141,90 @@ class DocumentEvaluatorPlugin(PluginBase):
                 model_name = model.get('name', 'Unknown Model')
                 provider_name = model.get('provider_name', 'Unknown Provider')
                 display_name = f"{model_name} ({provider_name})"
-                self.model_combo.addItem(display_name, model_name)
+                model_combo.addItem(display_name, model_name)
 
             # If no models found, add some defaults
-            if self.model_combo.count() == 0:
-                self.model_combo.addItem("gemma3:4b", "gemma3:4b")
-                self.model_combo.addItem("qwen3:1.7b-q8_0", "qwen3:1.7b-q8_0")
+            if model_combo.count() == 0:
+                model_combo.addItem("gemma3:4b", "gemma3:4b")
+                model_combo.addItem("qwen3:1.7b-q8_0", "qwen3:1.7b-q8_0")
         except Exception as e:
             # Add some default models if there's an error
-            print(f"Error loading models: {e}")
-            self.model_combo.addItem("gemma3:4b", "gemma3:4b")
-            self.model_combo.addItem("qwen3:1.7b-q8_0", "qwen3:1.7b-q8_0")
+            logger.error(f"Error loading models: {e}")
+            model_combo.addItem("gemma3:4b", "gemma3:4b")
+            model_combo.addItem("qwen3:1.7b-q8_0", "qwen3:1.7b-q8_0")
 
-        form_layout.addRow(model_label, self.model_combo)
+        form_layout.addRow(model_label, model_combo)
 
         # Temperature with slider
         temp_label = QLabel("Temperature:")
         temp_widget = QWidget()
+        # Store a reference to prevent garbage collection
+        self._temp_widget = temp_widget
         temp_layout = QHBoxLayout(temp_widget)
         temp_layout.setContentsMargins(0, 0, 0, 0)
 
-        self.temperature_spin = QDoubleSpinBox()
-        self.temperature_spin.setRange(0.0, 2.0)
-        self.temperature_spin.setSingleStep(0.1)
-        self.temperature_spin.setValue(0.7)
-        self.temperature_spin.setFixedWidth(70)
-        temp_layout.addWidget(self.temperature_spin)
+        temperature_spin = QDoubleSpinBox()
+        # Store a reference to prevent garbage collection
+        self._temperature_spin = temperature_spin
+        temperature_spin.setRange(0.0, 2.0)
+        temperature_spin.setSingleStep(0.1)
+        temperature_spin.setValue(0.7)
+        temperature_spin.setFixedWidth(70)
+        temp_layout.addWidget(temperature_spin)
 
-        self.temperature_slider = QSlider(Qt.Horizontal)
-        self.temperature_slider.setRange(0, 200)  # 0.0 to 2.0 with 100 steps per unit
-        self.temperature_slider.setValue(70)      # 0.7 default
-        self.temperature_slider.setTickPosition(QSlider.TicksBelow)
-        self.temperature_slider.setTickInterval(10)
-        temp_layout.addWidget(self.temperature_slider)
+        temperature_slider = QSlider(Qt.Horizontal)
+        # Store a reference to prevent garbage collection
+        self._temperature_slider = temperature_slider
+        temperature_slider.setRange(0, 200)  # 0.0 to 2.0 with 100 steps per unit
+        temperature_slider.setValue(70)      # 0.7 default
+        temperature_slider.setTickPosition(QSlider.TicksBelow)
+        temperature_slider.setTickInterval(10)
+        temp_layout.addWidget(temperature_slider)
 
         # Connect slider and spin box
-        self.temperature_slider.valueChanged.connect(self._on_temp_slider_changed)
-        self.temperature_spin.valueChanged.connect(self._on_temp_spin_changed)
+        temperature_slider.valueChanged.connect(lambda value: self._on_temp_slider_changed(value, temperature_spin))
+        temperature_spin.valueChanged.connect(lambda value: self._on_temp_spin_changed(value, temperature_slider))
 
         form_layout.addRow(temp_label, temp_widget)
 
         # Top-K
         top_k_label = QLabel("Top-K:")
-        self.top_k_spin = QSpinBox()
-        self.top_k_spin.setRange(0, 100)
-        self.top_k_spin.setValue(40)
-        form_layout.addRow(top_k_label, self.top_k_spin)
+        top_k_spin = QSpinBox()
+        # Store a reference to prevent garbage collection
+        self._top_k_spin = top_k_spin
+        top_k_spin.setRange(0, 100)
+        top_k_spin.setValue(40)
+        form_layout.addRow(top_k_label, top_k_spin)
 
         # Top-P with slider
         top_p_label = QLabel("Top-P:")
         top_p_widget = QWidget()
+        # Store a reference to prevent garbage collection
+        self._top_p_widget = top_p_widget
         top_p_layout = QHBoxLayout(top_p_widget)
         top_p_layout.setContentsMargins(0, 0, 0, 0)
 
-        self.top_p_spin = QDoubleSpinBox()
-        self.top_p_spin.setRange(0.0, 1.0)
-        self.top_p_spin.setSingleStep(0.05)
-        self.top_p_spin.setValue(0.9)
-        self.top_p_spin.setFixedWidth(70)
-        top_p_layout.addWidget(self.top_p_spin)
+        top_p_spin = QDoubleSpinBox()
+        # Store a reference to prevent garbage collection
+        self._top_p_spin = top_p_spin
+        top_p_spin.setRange(0.0, 1.0)
+        top_p_spin.setSingleStep(0.05)
+        top_p_spin.setValue(0.9)
+        top_p_spin.setFixedWidth(70)
+        top_p_layout.addWidget(top_p_spin)
 
-        self.top_p_slider = QSlider(Qt.Horizontal)
-        self.top_p_slider.setRange(0, 100)  # 0.0 to 1.0 with 100 steps
-        self.top_p_slider.setValue(90)      # 0.9 default
-        self.top_p_slider.setTickPosition(QSlider.TicksBelow)
-        self.top_p_slider.setTickInterval(10)
-        top_p_layout.addWidget(self.top_p_slider)
+        top_p_slider = QSlider(Qt.Horizontal)
+        # Store a reference to prevent garbage collection
+        self._top_p_slider = top_p_slider
+        top_p_slider.setRange(0, 100)  # 0.0 to 1.0 with 100 steps
+        top_p_slider.setValue(90)      # 0.9 default
+        top_p_slider.setTickPosition(QSlider.TicksBelow)
+        top_p_slider.setTickInterval(10)
+        top_p_layout.addWidget(top_p_slider)
 
         # Connect slider and spin box
-        self.top_p_slider.valueChanged.connect(self._on_top_p_slider_changed)
-        self.top_p_spin.valueChanged.connect(self._on_top_p_spin_changed)
+        top_p_slider.valueChanged.connect(lambda value: self._on_top_p_slider_changed(value, top_p_spin))
+        top_p_spin.valueChanged.connect(lambda value: self._on_top_p_spin_changed(value, top_p_slider))
 
         form_layout.addRow(top_p_label, top_p_widget)
 
@@ -1083,9 +1232,11 @@ class DocumentEvaluatorPlugin(PluginBase):
         prompt_label = QLabel("Custom Prompt:")
         form_layout.addRow(prompt_label)
 
-        self.prompt_edit = QTextEdit()
-        self.prompt_edit.setMinimumHeight(150)
-        self.prompt_edit.setPlaceholderText("Enter a custom prompt for the evaluator...")
+        prompt_edit = QTextEdit()
+        # Store a reference to prevent garbage collection
+        self._prompt_edit = prompt_edit
+        prompt_edit.setMinimumHeight(150)
+        prompt_edit.setPlaceholderText("Enter a custom prompt for the evaluator...")
 
         # Set default prompt
         default_prompt = """
@@ -1109,85 +1260,91 @@ IMPORTANT: You must respond ONLY with a valid JSON object in the following forma
 Do not include any other text, explanations, or formatting outside of this JSON object.
 The rating must be a number (0, 1, 2, or 3) and the reason must be a string.
 """
-        self.prompt_edit.setPlainText(default_prompt.strip())
+        prompt_edit.setPlainText(default_prompt.strip())
 
-        form_layout.addRow(self.prompt_edit)
+        form_layout.addRow(prompt_edit)
 
         # Add form to main layout
         config_layout.addWidget(form_widget)
 
         # Save button
         save_btn = QPushButton("Save Evaluator")
-        save_btn.clicked.connect(self._on_save_evaluator_clicked)
+        # Store a reference to prevent garbage collection
+        self._save_btn = save_btn
+        save_btn.clicked.connect(lambda: self._on_save_evaluator_clicked(
+            name_edit, model_combo, temperature_spin, top_k_spin, top_p_spin, prompt_edit))
         config_layout.addWidget(save_btn)
 
         # Add stretch to push content to the top
         config_layout.addStretch()
 
-        # Debug print
-        print(f"Created config widget: {config_widget}")
+        logger.debug(f"Created config widget: {config_widget}")
 
         return config_widget
 
-    def _on_temp_slider_changed(self, value):
+    def _on_temp_slider_changed(self, value, spin_box):
         """Handle temperature slider value change."""
         # Convert slider value (0-200) to temperature (0.0-2.0)
         temperature = value / 100.0
         # Update spin box without triggering its valueChanged signal
-        self.temperature_spin.blockSignals(True)
-        self.temperature_spin.setValue(temperature)
-        self.temperature_spin.blockSignals(False)
+        spin_box.blockSignals(True)
+        spin_box.setValue(temperature)
+        spin_box.blockSignals(False)
 
-    def _on_temp_spin_changed(self, value):
+    def _on_temp_spin_changed(self, value, slider):
         """Handle temperature spin box value change."""
         # Convert temperature (0.0-2.0) to slider value (0-200)
         slider_value = int(value * 100)
         # Update slider without triggering its valueChanged signal
-        self.temperature_slider.blockSignals(True)
-        self.temperature_slider.setValue(slider_value)
-        self.temperature_slider.blockSignals(False)
+        slider.blockSignals(True)
+        slider.setValue(slider_value)
+        slider.blockSignals(False)
 
-    def _on_top_p_slider_changed(self, value):
+    def _on_top_p_slider_changed(self, value, spin_box):
         """Handle top-p slider value change."""
         # Convert slider value (0-100) to top-p (0.0-1.0)
         top_p = value / 100.0
         # Update spin box without triggering its valueChanged signal
-        self.top_p_spin.blockSignals(True)
-        self.top_p_spin.setValue(top_p)
-        self.top_p_spin.blockSignals(False)
+        spin_box.blockSignals(True)
+        spin_box.setValue(top_p)
+        spin_box.blockSignals(False)
 
-    def _on_top_p_spin_changed(self, value):
+    def _on_top_p_spin_changed(self, value, slider):
         """Handle top-p spin box value change."""
         # Convert top-p (0.0-1.0) to slider value (0-100)
         slider_value = int(value * 100)
         # Update slider without triggering its valueChanged signal
-        self.top_p_slider.blockSignals(True)
-        self.top_p_slider.setValue(slider_value)
-        self.top_p_slider.blockSignals(False)
+        slider.blockSignals(True)
+        slider.setValue(slider_value)
+        slider.blockSignals(False)
 
-    def _on_save_evaluator_clicked(self):
+    def _on_save_evaluator_clicked(self, name_edit, model_combo, temperature_spin, top_k_spin, top_p_spin, prompt_edit):
         """Handle save evaluator button click."""
-        # Get values from form
-        name = self.name_edit.text().strip()
-        model_id = self.model_combo.currentData()
-        temperature = self.temperature_spin.value()
-        top_k = self.top_k_spin.value()
-        top_p = self.top_p_spin.value()
-        prompt = self.prompt_edit.toPlainText().strip()
+        try:
+            # Get values from form
+            name = name_edit.text().strip()
+            model_id = model_combo.currentData()
+            temperature = temperature_spin.value()
+            top_k = top_k_spin.value()
+            top_p = top_p_spin.value()
+            prompt = prompt_edit.toPlainText().strip()
 
-        # Validate input
-        if not name:
-            from PySide6.QtWidgets import QMessageBox
-            QMessageBox.warning(self, "Validation Error", "Please enter a name for the evaluator.")
+            # Validate input
+            if not name:
+                from PySide6.QtWidgets import QMessageBox
+                QMessageBox.warning(self, "Validation Error", "Please enter a name for the evaluator.")
+                return
+
+            # Create parameters dictionary
+            parameters = {
+                "temperature": temperature,
+                "top_k": top_k,
+                "top_p": top_p,
+                "type": "document_evaluator"
+            }
+        except RuntimeError as e:
+            logger.error(f"Qt widget error accessing form values: {e}")
             return
-
-        # Create parameters dictionary
-        parameters = {
-            "temperature": temperature,
-            "top_k": top_k,
-            "top_p": top_p,
-            "type": "document_evaluator"
-        }
 
         try:
             # Get current user ID
@@ -1209,14 +1366,18 @@ The rating must be a number (0, 1, 2, or 3) and the reason must be a string.
                 from PySide6.QtWidgets import QMessageBox
                 QMessageBox.information(self, "Success", f"Created new evaluator '{name}'.")
 
-                # Reload evaluator models
-                self._load_evaluator_models()
+                try:
+                    # Reload evaluator models
+                    self._load_evaluator_models()
 
-                # Clear form
-                self.name_edit.clear()
+                    # Check if widgets are still valid before updating them
+                    if hasattr(self, 'name_edit') and self.name_edit:
+                        # Clear form
+                        self.name_edit.clear()
 
-                # Reset prompt to default
-                default_prompt = """
+                    if hasattr(self, 'prompt_edit') and self.prompt_edit:
+                        # Reset prompt to default
+                        default_prompt = """
 You are a medical expert. You are evaluating a text for its relevance to a research question.
 Consider carefully how likely the provided text will contribute towards answering the question.
 
@@ -1237,22 +1398,37 @@ IMPORTANT: You must respond ONLY with a valid JSON object in the following forma
 Do not include any other text, explanations, or formatting outside of this JSON object.
 The rating must be a number (0, 1, 2, or 3) and the reason must be a string.
 """
-                self.prompt_edit.setPlainText(default_prompt.strip())
+                        self.prompt_edit.setPlainText(default_prompt.strip())
 
-                # Reset other controls
-                self.temperature_spin.setValue(0.7)
-                self.temperature_slider.setValue(70)
-                self.top_k_spin.setValue(40)
-                self.top_p_spin.setValue(0.9)
-                self.top_p_slider.setValue(90)
+                    # Reset other controls if they still exist
+                    if hasattr(self, 'temperature_spin') and self.temperature_spin:
+                        self.temperature_spin.setValue(0.7)
+
+                    if hasattr(self, 'temperature_slider') and self.temperature_slider:
+                        self.temperature_slider.setValue(70)
+
+                    if hasattr(self, 'top_k_spin') and self.top_k_spin:
+                        self.top_k_spin.setValue(40)
+
+                    if hasattr(self, 'top_p_spin') and self.top_p_spin:
+                        self.top_p_spin.setValue(0.9)
+
+                    if hasattr(self, 'top_p_slider') and self.top_p_slider:
+                        self.top_p_slider.setValue(90)
+                except RuntimeError as e:
+                    logger.error(f"Qt widget error resetting form: {e}")
             else:
                 # Show error message
                 from PySide6.QtWidgets import QMessageBox
                 QMessageBox.warning(self, "Error", "Failed to create evaluator.")
         except Exception as e:
             # Show error message
-            from PySide6.QtWidgets import QMessageBox
-            QMessageBox.warning(self, "Error", f"Error creating evaluator: {str(e)}")
+            logger.error(f"Error creating evaluator: {e}")
+            try:
+                from PySide6.QtWidgets import QMessageBox
+                QMessageBox.warning(self, "Error", f"Error creating evaluator: {str(e)}")
+            except RuntimeError as e2:
+                logger.error(f"Qt widget error showing error message: {e2}")
 
     def get_actions(self):
         """Get actions for the toolbar."""
@@ -1299,24 +1475,48 @@ The rating must be a number (0, 1, 2, or 3) and the reason must be a string.
             duration_ms: How long to display the message (0 for indefinite)
             show_progress: Whether to show the progress bar
         """
-        # Set message
-        self.status_label.setText(message)
+        try:
+            # Check if widgets are still valid
+            if not hasattr(self, 'status_label') or not self.status_label:
+                logger.error("Status label is no longer valid")
+                return
 
-        # Set color based on success/error
-        if success:
-            self.status_banner.setStyleSheet("background-color: #d4edda; color: #155724;")
-        else:
-            self.status_banner.setStyleSheet("background-color: #f8d7da; color: #721c24;")
+            if not hasattr(self, 'status_banner') or not self.status_banner:
+                logger.error("Status banner is no longer valid")
+                return
 
-        # Show/hide progress bar
-        self.progress_bar.setVisible(show_progress)
+            if not hasattr(self, 'progress_bar') or not self.progress_bar:
+                logger.error("Progress bar is no longer valid")
+                return
 
-        # Show the banner
-        self.status_banner.setVisible(True)
+            # Set message
+            self.status_label.setText(message)
 
-        # Hide after duration if specified
-        if duration_ms > 0:
-            QTimer.singleShot(duration_ms, lambda: self.status_banner.setVisible(False))
+            # Set color based on success/error
+            if success:
+                self.status_banner.setStyleSheet("background-color: #d4edda; color: #155724;")
+            else:
+                self.status_banner.setStyleSheet("background-color: #f8d7da; color: #721c24;")
+
+            # Show/hide progress bar
+            self.progress_bar.setVisible(show_progress)
+
+            # Show the banner
+            self.status_banner.setVisible(True)
+
+            # Hide after duration if specified
+            if duration_ms > 0:
+                QTimer.singleShot(duration_ms, lambda: self._hide_status_banner())
+        except RuntimeError as e:
+            logger.error(f"Qt widget error showing status message: {e}")
+
+    def _hide_status_banner(self):
+        """Safely hide the status banner."""
+        try:
+            if hasattr(self, 'status_banner') and self.status_banner:
+                self.status_banner.setVisible(False)
+        except RuntimeError as e:
+            logger.error(f"Qt widget error hiding status banner: {e}")
 
     def _get_evaluator_by_id(self, evaluator_id: int) -> dict:
         """
@@ -1334,7 +1534,24 @@ The rating must be a number (0, 1, 2, or 3) and the reason must be a string.
                 return evaluator
         return None
 
-    def _get_recent_documents(self, start_date: str, limit: int, evaluator_id: int = None, skip_evaluated: bool = True) -> list:
+    def _get_human_evaluator_id(self, user_id: int) -> Optional[int]:
+        """
+        Get the human evaluator ID for a user.
+
+        Args:
+            user_id: ID of the user
+
+        Returns:
+            Human evaluator ID or None if not found
+        """
+        query = """
+        SELECT id FROM evaluators
+        WHERE user_id = %s AND (model_id IS NULL OR model_id = 'human')
+        """
+        result = self.db_manager.execute(query, (user_id,))
+        return result[0]['id'] if result else None
+
+    def _get_recent_documents(self, start_date: str, limit: int, evaluator_id: int = None, skip_evaluated: bool = True, pending_review: bool = False, question_id: int = None) -> list:
         """
         Get recent documents from the database.
 
@@ -1343,11 +1560,65 @@ The rating must be a number (0, 1, 2, or 3) and the reason must be a string.
             limit: Maximum number of documents to return
             evaluator_id: Optional evaluator ID to check for existing evaluations
             skip_evaluated: If True, skip documents already evaluated by this evaluator
+            pending_review: If True, only return documents that need human review
+            question_id: ID of the research question (required if pending_review is True)
 
         Returns:
             List of document dictionaries
         """
-        if skip_evaluated and evaluator_id is not None:
+        if pending_review and question_id is not None:
+            # Get current user ID
+            user = get_current_user()
+            user_id = user.get('id') if user else None
+
+            if not user_id:
+                logger.warning("No current user ID available for pending review query")
+                return []
+
+            # Get human evaluator ID for this user
+            human_evaluator_id = self._get_human_evaluator_id(user_id)
+
+            if not human_evaluator_id:
+                logger.warning("No human evaluator ID available for pending review query")
+                return []
+
+            # Get documents that have been evaluated by AI but not by the current human evaluator
+            # for the selected research question
+            query = """
+            WITH ai_evaluated AS (
+                -- Documents evaluated by AI for this question
+                SELECT DISTINCT ch.document_id
+                FROM evaluations e
+                JOIN chunks ch ON e.chunk_id = ch.id
+                WHERE e.research_question_id = %s
+                AND e.is_human_evaluator = FALSE
+            ),
+            human_evaluated AS (
+                -- Documents evaluated by this human evaluator for this question
+                SELECT DISTINCT ch.document_id
+                FROM evaluations e
+                JOIN chunks ch ON e.chunk_id = ch.id
+                WHERE e.research_question_id = %s
+                AND e.evaluator_id = %s
+            )
+            SELECT d.*, s.name as source_name, c.name as category_name
+            FROM document d
+            JOIN sources s ON d.source_id = s.id
+            LEFT JOIN categories c ON d.category_id = c.id
+            JOIN ai_evaluated ae ON d.id = ae.document_id
+            WHERE d.publication_date >= %s
+            AND NOT EXISTS (
+                -- Exclude documents already evaluated by this human
+                SELECT 1 FROM human_evaluated he
+                WHERE he.document_id = d.id
+            )
+            ORDER BY d.publication_date DESC
+            LIMIT %s
+            """
+
+            return self.db_manager.execute(query, (question_id, question_id, human_evaluator_id, start_date, limit)) or []
+
+        elif skip_evaluated and evaluator_id is not None:
             # Get documents that haven't been evaluated by this evaluator
             query = """
             SELECT d.*, s.name as source_name, c.name as category_name

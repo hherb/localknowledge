@@ -7,10 +7,14 @@ that can be extended for different data sources.
 import os
 import logging
 import psycopg2
-from psycopg2.extras import DictCursor
+from psycopg2.extras import DictCursor, Json
+from psycopg2.extensions import register_adapter
 from typing import List, Dict, Any, Optional, Tuple, Union
 from functools import lru_cache
 import time
+
+# Register adapter for Python dict to PostgreSQL JSONB
+register_adapter(dict, Json)
 
 # Configure logging
 logging.basicConfig(
@@ -329,7 +333,7 @@ class DatabaseManager:
 
         logger.info(f"Database infrastructure check #{_check_counter} passed")
 
-    
+
 
     def execute_without_timeout(self, query: str, params: Optional[Tuple] = None, commit: bool = False) -> Optional[List[Dict[str, Any]]]:
         """

@@ -269,6 +269,46 @@ class MedRxivFetcher:
             logger.error(f"Error searching medRxiv: {e}")
             return []
 
+    def _find_fulltext_from_page_source(self, doi):
+        """
+        Find fulltext URL by examining the page source of the DOI landing page.
+
+        Args:
+            doi (str): DOI of the preprint
+
+        Returns:
+            str: Direct plain text URL if found, None otherwise
+        """
+        # Clean DOI to ensure proper format
+        doi = self._clean_doi(doi)
+
+        # Construct the landing page URL
+        landing_page_url = f"{self.BASE_URL}/content/{doi}"
+
+        try:
+            # Get the page source
+            response = self.session.get(landing_page_url, timeout=10)
+            response.raise_for_status()
+
+            # Parse the HTML
+            soup = BeautifulSoup(response.text, 'html.parser')
+
+            # Look for the fulltext link in the page source
+            fulltext_link = soup.select_one('link[rel="alternate"][type="text/plain"][title="Full Text (Plain)"]')
+
+            if fulltext_link and 'href' in fulltext_link.attrs:
+                # Get the relative URL and make it absolute
+                fulltext_url = urljoin(self.BASE_URL, fulltext_link['href'])
+                logger.info(f"Found fulltext URL from page source: {fulltext_url}")
+                return fulltext_url
+
+            logger.info(f"No fulltext link found in page source for DOI {doi}")
+            return None
+
+        except Exception as e:
+            logger.error(f"Error finding fulltext from page source: {e}")
+            return None
+
     def _get_format_urls(self, preprint_url):
         """
         Extract URLs for different formats (PDF, HTML, XML, TXT) from the preprint page.
@@ -287,11 +327,17 @@ class MedRxivFetcher:
 
         # If we have a DOI, try to get plain text URL first
         if doi:
-            # Try to find direct plain text URL
-            text_url = self._try_direct_text_url(doi)
+            # First try to find fulltext from page source
+            text_url = self._find_fulltext_from_page_source(doi)
             if text_url:
                 format_urls['txt'] = text_url
-                logger.info(f"Found plain text URL: {text_url}")
+                logger.info(f"Found plain text URL from page source: {text_url}")
+            else:
+                # Fall back to direct URL pattern matching
+                text_url = self._try_direct_text_url(doi)
+                if text_url:
+                    format_urls['txt'] = text_url
+                    logger.info(f"Found plain text URL: {text_url}")
 
         # If we have a DOI, try to get metadata from API for XML
         if doi:
@@ -487,11 +533,12 @@ class MedRxivFetcher:
         format_urls = self._get_format_urls(preprint_url)
 
         # Special handling for XML - try direct URL if not found via page links
-        if 'xml' in formats and (not format_urls['xml'] or format_urls['xml'] is None) and doc_id:
+        # Only try to find XML if we don't already have plain text
+        if 'xml' in formats and (not format_urls['xml'] or format_urls['xml'] is None) and doc_id and not format_urls['txt']:
             direct_xml_url = self._try_direct_xml_url(doc_id)
             if direct_xml_url:
                 format_urls['xml'] = direct_xml_url
-                #logger.info(f"Found XML using direct URL pattern: {direct_xml_url}")
+                logger.info(f"Found XML using direct URL pattern: {direct_xml_url}")
 
         downloaded_files = {}
 
@@ -500,12 +547,39 @@ class MedRxivFetcher:
             doi_match = re.search(r'10\.1101/([^/]+)', preprint_url)
             filename_prefix = doi_match.group(1) if doi_match else 'preprint'
 
-        # Download each requested format
+        # If we have plain text, prioritize that and skip other formats
+        if 'txt' in formats and format_urls['txt']:
+            try:
+                self._wait()  # Respect rate limits
+                logger.info(f"Downloading plain text format...")
+
+                response = self.session.get(format_urls['txt'], stream=True)
+                response.raise_for_status()
+
+                filename = self._sanitize_filename(f"{filename_prefix}.txt")
+                filepath = os.path.join(self.output_dir, filename)
+
+                with open(filepath, 'wb') as f:
+                    for chunk in response.iter_content(chunk_size=8192):
+                        if chunk:
+                            f.write(chunk)
+
+                downloaded_files['txt'] = filepath
+                logger.info(f"Successfully downloaded plain text to {filepath}")
+
+                # Return early with just the plain text - no need for other formats
+                return downloaded_files
+
+            except requests.RequestException as e:
+                logger.error(f"Error downloading plain text format: {e}")
+                # Continue to try other formats if plain text fails
+
+        # Download each requested format if plain text wasn't available or failed
         for fmt in formats:
-            if fmt in format_urls and format_urls[fmt]:
+            if fmt != 'txt' and fmt in format_urls and format_urls[fmt]:  # Skip txt as we already tried it
                 try:
                     self._wait()  # Respect rate limits
-                    #logger.info(f"Downloading {fmt} format...")
+                    logger.info(f"Downloading {fmt} format...")
 
                     response = self.session.get(format_urls[fmt], stream=True)
                     response.raise_for_status()
@@ -519,12 +593,12 @@ class MedRxivFetcher:
                                 f.write(chunk)
 
                     downloaded_files[fmt] = filepath
-                    #logger.info(f"Successfully downloaded {fmt} to {filepath}")
+                    logger.info(f"Successfully downloaded {fmt} to {filepath}")
 
                 except requests.RequestException as e:
                     logger.error(f"Error downloading {fmt} format: {e}")
 
-            else:
+            elif fmt not in format_urls or not format_urls[fmt]:
                 logger.warning(f"{fmt} format not available for this preprint")
 
         return downloaded_files
