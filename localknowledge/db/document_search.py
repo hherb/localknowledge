@@ -34,6 +34,16 @@ class DocumentSearchManager(DatabaseManager):
         self.embedding_model = "snowflake-arctic-embed2:latest"
         self.embeddings_db = get_embeddings_db()
 
+    def set_embedding_model(self, model_name: str):
+        """
+        Set the embedding model to use for searches.
+
+        Args:
+            model_name: Name of the embedding model
+        """
+        self.embedding_model = model_name
+        logger.info(f"Set embedding model to: {model_name}")
+
     def _get_model_provider(self, model_name: str) -> str:
         """
         Get the provider for a model.
@@ -72,35 +82,21 @@ class DocumentSearchManager(DatabaseManager):
         try:
             # Get the provider for the model
             provider = self._get_model_provider(self.embedding_model)
+            logger.debug(f"Provider for model {self.embedding_model}: {provider}")
 
             # Use the appropriate embedder based on the provider
             if provider == "ollama":
                 # Use Ollama embedder
                 from localknowledge.embeddings.ollama_embedder import OllamaEmbedder
+                logger.debug(f"Using OllamaEmbedder with model: {self.embedding_model}")
                 embedder = OllamaEmbedder(model_name=self.embedding_model)
                 return embedder.embed(text)
-            elif provider.startswith("pubmedbert"):
-                # Use PubMedBERT embedder
+            else:
+                # For all other providers, use PubMedBERT embedder
                 from localknowledge.embeddings.pubmed_embedder import PubMedBERTEmbedder
+                logger.debug(f"Using PubMedBERTEmbedder with model: {self.embedding_model}")
                 embedder = PubMedBERTEmbedder(model_name=self.embedding_model)
                 return embedder.embed(text)
-            else:
-                # Default to Ollama embedder
-                logger.warning(f"Unknown provider '{provider}', defaulting to Ollama embedder")
-                response = ollama.embeddings(model=self.embedding_model, prompt=text)
-
-                # Handle the response based on its type
-                if hasattr(response, 'embedding'):
-                    # New Ollama client returns a Pydantic model
-                    embedding = response.embedding
-                elif isinstance(response, dict) and 'embedding' in response:
-                    # Old Ollama client returns a dictionary
-                    embedding = response['embedding']
-                else:
-                    logger.error(f"Unexpected response format from Ollama: {type(response)}")
-                    return []
-
-                return embedding
         except Exception as e:
             logger.error(f"Error creating embedding: {e}")
             raise

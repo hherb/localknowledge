@@ -34,7 +34,6 @@ def register_plugin(cls: Type[PluginBase]) -> Type[PluginBase]:
     """
     if cls.__name__ not in _plugin_classes:
         _plugin_classes[cls.__name__] = cls
-        print(f"Registered plugin: {cls.__name__}")
     return cls
 
 def get_plugin_classes() -> Dict[str, Type[PluginBase]]:
@@ -56,7 +55,6 @@ def load_plugins():
             try:
                 # Import using the absolute path to avoid conflicts
                 importlib.import_module(f"localknowledge.ui.plugins.{module_name}")
-                print(f"Imported plugin module: {module_name}")
             except Exception as e:
                 print(f"Error importing plugin {module_name}: {e}")
 

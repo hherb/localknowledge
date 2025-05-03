@@ -307,6 +307,9 @@ class KnowledgeBrowser(QWidget):
             'hyde_model': 'gemma3:4b'
         }
 
+        # Available embedding models
+        self.available_embedding_models = self._get_available_embedding_models()
+
         # Search sources
         self.search_sources = {
             'pubmed': True,
@@ -394,6 +397,19 @@ class KnowledgeBrowser(QWidget):
         # When search mode changes, update the placeholder text and trigger search for bookmarks
         self.search_mode.currentIndexChanged.connect(self._on_search_mode_changed)
 
+        # Embedding model selection combo box
+        self.embedding_model_combo = QComboBox()
+        self.embedding_model_combo.setToolTip("Select embedding model for semantic search")
+
+        # Add available embedding models to the combo box
+        print(f"Adding {len(self.available_embedding_models)} models to combo box")
+        for model in self.available_embedding_models:
+            print(f"Adding model to combo box: {model['model_name']}")
+            self.embedding_model_combo.addItem(model['model_name'], model['id'])
+
+        # Hide by default (will be shown when semantic search is selected)
+        self.embedding_model_combo.setVisible(False)
+
         # Search button
         self.search_button = QPushButton("Search")
         self.search_button.clicked.connect(self._on_search)
@@ -406,6 +422,7 @@ class KnowledgeBrowser(QWidget):
 
         search_layout.addWidget(self.search_mode)
         search_layout.addWidget(self.search_input)
+        search_layout.addWidget(self.embedding_model_combo)
         search_layout.addWidget(self.search_button)
         search_layout.addWidget(self.settings_button)
 
@@ -472,12 +489,35 @@ class KnowledgeBrowser(QWidget):
         # Update placeholder text
         self._update_search_placeholder()
 
-        # If bookmarked mode is selected, immediately show all bookmarks
+        # Show or hide the embedding model combo box based on search mode
         search_mode = self.search_mode.currentData()
+        if search_mode == "semantic" or search_mode == "hybrid":
+            self.embedding_model_combo.setVisible(True)
+        else:
+            self.embedding_model_combo.setVisible(False)
+
+        # If bookmarked mode is selected, immediately show all bookmarks
         if search_mode == "bookmarked":
             print("Bookmarked mode selected - automatically showing all bookmarked items")
             QApplication.processEvents()  # Process any pending events before starting the search
             self._perform_bookmarked_search()
+
+    def _get_search_mode(self):
+        """Get the current search mode."""
+        return self.search_mode.currentData()
+
+    def _get_available_embedding_models(self):
+        """
+        Get a list of available embedding models that have data in the database.
+
+        Returns:
+            List of dictionaries with model information
+        """
+
+        models = self.embedding_manager.get_models_with_embeddings()
+        print(f"Available embedding models: {models}")
+        return models
+       
 
     def _update_search_placeholder(self):
         """Update the search input placeholder text based on the selected search mode."""
@@ -708,6 +748,8 @@ class KnowledgeBrowser(QWidget):
             self.publication_list.addItem("Semantic search is not available. Please install Ollama and required models.")
             return
 
+
+
         # Get source filter based on settings
         source_id = None
         if self.search_sources.get('medrxiv', True) and not self.search_sources.get('pubmed', True):
@@ -716,13 +758,28 @@ class KnowledgeBrowser(QWidget):
             source_id = 'pubmed'
         # If both are True or both are False, don't filter by source
 
+        # Get the selected embedding model
+        selected_model = self.embedding_model_combo.currentText()
+        if selected_model:
+            # Update the search settings with the selected model
+            self.search_settings['embedding_model'] = selected_model
+            print(f"Using embedding model: {selected_model}")
+
+        # Show a loading message
+        self.publication_list.clear()
+        self.publication_list.addItem("Searching...")
+        QApplication.processEvents()  # Ensure the UI updates
+
         # Create a worker for the semantic search
         worker = SemanticSearchWorker(
             embedding_manager=self.embedding_manager,
             query=search_text,
             limit=self.search_settings['max_results'],
             threshold=self.search_settings['similarity_threshold'],
-            source_id=source_id
+            source_id=source_id,
+            use_hyde=self.search_settings.get('use_hyde', False),
+            hyde_model=self.search_settings.get('hyde_model', 'gemma3:4b'),
+            embedding_model=self.search_settings.get('embedding_model', 'snowflake-arctic-embed2:latest')
         )
 
         # Connect signals
@@ -869,6 +926,20 @@ class KnowledgeBrowser(QWidget):
             self.publication_list.clear()
             self.publication_list.addItem("Hybrid search requires semantic search capabilities. Please install Ollama and required models.")
             return
+
+
+
+        # Get the selected embedding model
+        selected_model = self.embedding_model_combo.currentText()
+        if selected_model:
+            # Update the search settings with the selected model
+            self.search_settings['embedding_model'] = selected_model
+            print(f"Hybrid search using embedding model: {selected_model}")
+
+        # Show a loading message
+        self.publication_list.clear()
+        self.publication_list.addItem("Searching...")
+        QApplication.processEvents()  # Ensure the UI updates
 
         # Create a worker for the hybrid search
         worker = HybridSearchWorker(
@@ -1528,7 +1599,8 @@ class SemanticSearchWorker(QRunnable):
     Worker thread for performing semantic search.
     """
 
-    def __init__(self, embedding_manager, query, limit=10, threshold=0.7, source_id=None):
+    def __init__(self, embedding_manager, query, limit=10, threshold=0.7, source_id=None,
+                 use_hyde=False, hyde_model=None, embedding_model='snowflake-arctic-embed2:latest'):
         """
         Initialize the worker.
 
@@ -1538,6 +1610,9 @@ class SemanticSearchWorker(QRunnable):
             limit: Maximum number of results to return
             threshold: Similarity threshold (0-1)
             source_id: Filter by source ID (optional)
+            use_hyde: Whether to use HyDE (Hypothetical Document Embeddings)
+            hyde_model: Model to use for HyDE
+            embedding_model: Model to use for embeddings
         """
         super().__init__()
         self.embedding_manager = embedding_manager
@@ -1545,6 +1620,9 @@ class SemanticSearchWorker(QRunnable):
         self.limit = limit
         self.threshold = threshold
         self.source_id = source_id
+        self.use_hyde = use_hyde
+        self.hyde_model = hyde_model
+        self.embedding_model = embedding_model
         self.signals = WorkerSignals()
 
     @Slot()
@@ -1553,13 +1631,40 @@ class SemanticSearchWorker(QRunnable):
         Perform semantic search.
         """
         try:
-            # Perform the search
-            results = self.embedding_manager.search(
-                query=self.query,
-                limit=self.limit,
-                threshold=self.threshold,
-                source_id=self.source_id
-            )
+            # Perform the search with the specified embedding model
+            print(f"Using embedding model: {self.embedding_model}")
+
+            # Set the embedding model in the embedding manager
+            if hasattr(self.embedding_manager, 'set_embedding_model'):
+                self.embedding_manager.set_embedding_model(self.embedding_model)
+
+            # Check if HyDE is enabled
+            if self.use_hyde and self.hyde_model:
+                print(f"Using HyDE with model: {self.hyde_model}")
+                # Import HyDE module if needed
+                from localknowledge.ai.HyDE import generate_hypothetical_document
+
+                # Generate a hypothetical document
+                hypothetical_doc = generate_hypothetical_document(
+                    query=self.query,
+                    model=self.hyde_model
+                )
+
+                # Use the hypothetical document for search
+                results = self.embedding_manager.search(
+                    query=hypothetical_doc,
+                    limit=self.limit,
+                    threshold=self.threshold,
+                    source_id=self.source_id
+                )
+            else:
+                # Standard semantic search
+                results = self.embedding_manager.search(
+                    query=self.query,
+                    limit=self.limit,
+                    threshold=self.threshold,
+                    source_id=self.source_id
+                )
 
             # Emit the result
             self.signals.result.emit(results)
@@ -1853,6 +1958,14 @@ class HybridSearchWorker(QRunnable):
                     elif self.search_settings.get('sources', {}).get('pubmed', True) and not self.search_settings.get('sources', {}).get('medrxiv', True):
                         source_id = 'pubmed'
                     # If both are True or both are False, don't filter by source
+
+                    # Get the embedding model to use
+                    embedding_model = self.search_settings.get('embedding_model', 'snowflake-arctic-embed2:latest')
+                    print(f"Hybrid search using embedding model: {embedding_model}")
+
+                    # Set the embedding model in the embedding manager
+                    if hasattr(self.embedding_manager, 'set_embedding_model'):
+                        self.embedding_manager.set_embedding_model(embedding_model)
 
                     # Get raw semantic search results
                     raw_results = self.embedding_manager.search(

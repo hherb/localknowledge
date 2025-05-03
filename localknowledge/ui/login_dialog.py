@@ -8,13 +8,13 @@ import os
 from pathlib import Path
 from typing import Optional, Dict, Any, Tuple
 
-from PySide6.QtCore import Qt, Signal, Slot
-from PySide6.QtGui import QIcon, QPixmap
+from PySide6.QtCore import Qt, Signal, Slot, QRect
+from PySide6.QtGui import QIcon, QPixmap, QScreen
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
     QPushButton, QCheckBox, QTabWidget, QWidget, QMessageBox,
     QFormLayout, QDialogButtonBox, QGroupBox, QSpacerItem,
-    QSizePolicy
+    QSizePolicy, QApplication
 )
 
 from localknowledge.db.user import UserDatabaseManager
@@ -45,6 +45,9 @@ class LoginDialog(QDialog):
 
         # Try to load saved login info
         self.load_saved_login()
+
+        # Center the dialog on the screen
+        self.center_on_screen()
 
     def setup_ui(self):
         """Set up the user interface."""
@@ -281,6 +284,21 @@ class LoginDialog(QDialog):
             Dictionary with user data or None if no user is logged in
         """
         return self.current_user
+
+    def center_on_screen(self):
+        """Center the dialog on the screen."""
+        # Get the screen geometry
+        screen = QApplication.primaryScreen().geometry()
+
+        # Get the dialog size
+        dialog_size = self.frameGeometry()
+
+        # Calculate the center point
+        center_point = screen.center()
+
+        # Move the dialog's top-left corner to the calculated position
+        dialog_size.moveCenter(center_point)
+        self.move(dialog_size.topLeft())
 
 
 # Example standalone usage

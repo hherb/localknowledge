@@ -564,6 +564,26 @@ class EmbeddingDatabaseManager(DatabaseManager):
         logger.debug("Legacy embeddings table no longer exists, nothing to delete")
         return 0
 
+    def get_models_with_embeddings(self) -> List[Dict[str, Any]]:
+        """Get a list of models that have embeddings in the database.
+
+        Returns:
+            List of dictionaries with model information (id and model_name)
+        """
+        query = """SELECT id, model_name from embedding_models where id in (SELECT distinct(model_id) from embedding_base);"""
+        result = self.execute(query)
+        models_list = []
+
+        if result:
+            for row in result:
+                models_list.append({
+                    'id': row['id'],
+                    'model_name': row['model_name']
+                })
+
+        logger.debug(f"Embedding models available: {models_list}")
+        return models_list
+
     @staticmethod
     @lru_cache(maxsize=100)
     def model_to_tablename(model_name: str) -> str:

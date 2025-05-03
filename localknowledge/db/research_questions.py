@@ -5,7 +5,11 @@ This module provides database operations for managing research questions
 and their associations with projects.
 """
 from typing import List, Dict, Any, Optional, Tuple
+import logging
 from localknowledge.db.base import DatabaseManager
+
+# Configure logging
+logger = logging.getLogger(__name__)
 
 
 class ResearchQuestionsManager(DatabaseManager):
@@ -287,3 +291,64 @@ class ResearchQuestionsManager(DatabaseManager):
             result = self.execute(query, (search_pattern, search_pattern))
 
         return result or []
+
+    def get_question_statistics(self, question_id: int, project_id: Optional[int] = None) -> Dict[str, Any]:
+        """
+        Get statistics for a research question.
+
+        Args:
+            question_id: Research question ID
+            project_id: Optional project ID to limit statistics to a specific project
+
+        Returns:
+            Dictionary with statistics including:
+            - bookmark_count: Number of bookmarks for this question
+            - evaluation_count: Number of evaluations for this question
+            - human_evaluation_count: Number of human evaluations for this question
+        """
+        try:
+            # Get bookmark count for this project
+            if project_id is not None:
+                bookmark_query = """
+                SELECT COUNT(DISTINCT b.id) as bookmark_count
+                FROM bookmarks b
+                WHERE b.project_id = %s
+                """
+                bookmark_result = self.execute(bookmark_query, (project_id,))
+                bookmark_count = bookmark_result[0]['bookmark_count'] if bookmark_result else 0
+            else:
+                bookmark_count = 0
+
+            # Get evaluation counts
+            eval_query = """
+            SELECT
+                COUNT(*) as evaluation_count,
+                SUM(CASE WHEN is_human_evaluator THEN 1 ELSE 0 END) as human_evaluation_count
+            FROM evaluations
+            WHERE research_question_id = %s
+            """
+
+            # Add project filter if provided
+            params = [question_id]
+
+            eval_result = self.execute(eval_query, tuple(params))
+
+            evaluation_count = 0
+            human_evaluation_count = 0
+
+            if eval_result:
+                evaluation_count = eval_result[0]['evaluation_count'] or 0
+                human_evaluation_count = eval_result[0]['human_evaluation_count'] or 0
+
+            return {
+                'bookmark_count': bookmark_count,
+                'evaluation_count': evaluation_count,
+                'human_evaluation_count': human_evaluation_count
+            }
+        except Exception as e:
+            logger.error(f"Error getting question statistics: {e}")
+            return {
+                'bookmark_count': 0,
+                'evaluation_count': 0,
+                'human_evaluation_count': 0
+            }

@@ -190,6 +190,13 @@ if REGISTER_PLUGIN_AVAILABLE:
             # Switch to the Current Project tab
             self.tab_widget.setCurrentIndex(1)
 
+        def refresh_projects(self):
+            """Refresh the project list and recent projects."""
+            current_user = get_current_user()
+            if current_user and 'id' in current_user:
+                self.project_list.load_projects(current_user['id'])
+                self.recent_projects.load_projects(current_user['id'])
+
         @Slot(int)
         def on_project_created(self, project_id: int):
             """
@@ -198,6 +205,9 @@ if REGISTER_PLUGIN_AVAILABLE:
             Args:
                 project_id: ID of the created project
             """
+            # Refresh the project list and recent projects
+            self.refresh_projects()
+
             # Select the new project
             self.on_project_selected(project_id)
 

@@ -353,6 +353,14 @@ class DocumentEvaluatorPlugin(PluginBase):
         self.rating_buttons = []
         rating_button_group = QButtonGroup(self)
 
+        # Add "n/a" button for not rated yet
+        na_btn = QRadioButton("n/a")
+        na_btn.setProperty("rating", -1)  # Use -1 to indicate not rated
+        na_btn.clicked.connect(self._on_rating_clicked)
+        human_rating_layout.addWidget(na_btn)
+        self.rating_buttons.append(na_btn)
+        rating_button_group.addButton(na_btn, -1)
+
         for i in range(4):  # 0-3 ratings
             btn = QRadioButton(str(i))
             btn.setProperty("rating", i)
@@ -362,7 +370,7 @@ class DocumentEvaluatorPlugin(PluginBase):
             rating_button_group.addButton(btn, i)
 
         # Rating explanation
-        human_rating_layout.addWidget(QLabel("0: Not relevant, 1: Somewhat relevant, 2: Very relevant, 3: Essential"))
+        human_rating_layout.addWidget(QLabel("n/a: Not rated, 0: Not relevant, 1: Somewhat relevant, 2: Very relevant, 3: Essential"))
 
         # Add human rating panel to evaluations layout
         evaluations_container_layout.addWidget(human_rating_panel)
@@ -786,6 +794,10 @@ class DocumentEvaluatorPlugin(PluginBase):
         # Store the current document
         self.current_document = document
 
+        # Reset all radio buttons when a new document is selected
+        for btn in self.rating_buttons:
+            btn.setChecked(False)
+
         # Display the document
         self.document_display.display_document(document)
 
@@ -903,9 +915,13 @@ class DocumentEvaluatorPlugin(PluginBase):
             if item.widget():
                 item.widget().deleteLater()
 
-        # Reset all radio buttons
+        # Reset all radio buttons to ensure none are checked
         for btn in self.rating_buttons:
             btn.setChecked(False)
+
+        # Make sure the "no evaluations" label is visible
+        if hasattr(self, 'no_evaluations_label') and self.no_evaluations_label:
+            self.no_evaluations_label.setVisible(True)
 
     def _load_human_rating(self, document_id: int, question_id: int):
         """
@@ -929,15 +945,22 @@ class DocumentEvaluatorPlugin(PluginBase):
             if not evaluator_id:
                 return
 
-            # Get existing evaluation
-            evaluation = self._get_existing_evaluation(document_id, question_id, evaluator_id)
-
             # Reset all radio buttons first
             for btn in self.rating_buttons:
                 btn.setChecked(False)
 
+            # Get existing evaluation
+            evaluation = self._get_existing_evaluation(document_id, question_id, evaluator_id)
+
             if not evaluation:
-                # No evaluation exists, leave all buttons unchecked
+                # No evaluation exists, select the "n/a" button
+                logger.info(f"No human rating found for document {document_id}")
+                for btn in self.rating_buttons:
+                    if btn.property("rating") == -1:  # The "n/a" button
+                        btn.blockSignals(True)
+                        btn.setChecked(True)
+                        btn.blockSignals(False)
+                        break
                 return
 
             # Update rating buttons based on the existing evaluation
@@ -945,13 +968,27 @@ class DocumentEvaluatorPlugin(PluginBase):
             for btn in self.rating_buttons:
                 btn_rating = btn.property("rating")
                 if btn_rating == rating:
+                    # Set checked without triggering the clicked signal
+                    btn.blockSignals(True)
                     btn.setChecked(True)
+                    btn.blockSignals(False)
                     break
 
             logger.info(f"Loaded human rating {rating} for document {document_id}")
 
         except Exception as e:
             logger.error(f"Error loading human rating: {e}")
+            # Select the "n/a" button in case of error
+            for btn in self.rating_buttons:
+                btn.setChecked(False)
+
+            # Select the "n/a" button
+            for btn in self.rating_buttons:
+                if btn.property("rating") == -1:  # The "n/a" button
+                    btn.blockSignals(True)
+                    btn.setChecked(True)
+                    btn.blockSignals(False)
+                    break
 
     def _get_human_evaluator_id(self, user_id: int) -> int:
         """
@@ -986,6 +1023,14 @@ class DocumentEvaluatorPlugin(PluginBase):
     @Slot()
     def _on_rating_clicked(self):
         """Handle rating button click."""
+        # Check if we have a current document
+        if not hasattr(self, 'current_document') or not self.current_document:
+            logger.warning("No current document to rate")
+            # Reset all buttons if there's no current document
+            for btn in self.rating_buttons:
+                btn.setChecked(False)
+            return
+
         # Get the clicked button
         button = self.sender()
         if not button:
@@ -1002,8 +1047,86 @@ class DocumentEvaluatorPlugin(PluginBase):
             if btn != button:
                 btn.setChecked(False)
 
-        # Save the human rating to the database
-        self._save_human_rating(rating)
+        # If "n/a" is selected, we need to remove any existing rating
+        if rating == -1:
+            self._remove_human_rating()
+        else:
+            # Save the human rating to the database
+            self._save_human_rating(rating)
+
+    def _remove_human_rating(self):
+        """
+        Remove existing human rating from the database.
+        """
+        try:
+            # Check if we have a current document
+            if not hasattr(self, 'current_document') or not self.current_document:
+                logger.warning("No current document to remove rating from")
+                return
+
+            document_id = self.current_document.get('id')
+
+            # Get the current research question
+            question_idx = self.question_combo.currentIndex()
+            if question_idx < 0:
+                logger.warning("No research question selected")
+                return
+
+            question_id = self.question_combo.itemData(question_idx)
+            if question_id is None:
+                logger.warning("Invalid research question selected")
+                return
+
+            # Get current user ID
+            user = get_current_user()
+            user_id = user.get('id') if user else None
+
+            if not user_id:
+                logger.warning("No current user")
+                return
+
+            # Get evaluator ID for this user
+            evaluator_id = self._get_human_evaluator_id(user_id)
+
+            if not evaluator_id:
+                logger.warning("Could not get human evaluator")
+                return
+
+            # Delete the evaluation from the database
+            try:
+                # Get chunks for this document
+                chunks = self._get_or_create_chunks(document_id)
+
+                if not chunks:
+                    logger.warning(f"No chunks found for document ID {document_id}")
+                    return
+
+                # Delete evaluations for each chunk
+                for chunk in chunks:
+                    chunk_id = chunk.chunk_id if hasattr(chunk, 'chunk_id') else chunk.get('id')
+
+                    # Delete the evaluation
+                    query = """
+                    DELETE FROM evaluations
+                    WHERE research_question_id = %s
+                    AND chunk_id = %s
+                    AND evaluator_id = %s
+                    """
+                    self.evaluations_manager.execute(query, (question_id, chunk_id, evaluator_id))
+
+                logger.info(f"Removed human rating for document {document_id}")
+                self.show_status_message("Your rating has been removed", success=True)
+
+                # Refresh the evaluations list
+                self._load_evaluations(document_id, question_id)
+
+            except Exception as e:
+                logger.error(f"Error removing evaluation from database: {e}")
+                self.show_status_message(f"Failed to remove rating: {str(e)}", success=False)
+
+        except Exception as e:
+            logger.error(f"Error removing human rating: {e}")
+            self.show_status_message(f"Failed to remove rating: {str(e)}", success=False)
 
     def _save_human_rating(self, rating: int):
         """
@@ -1080,7 +1203,13 @@ class DocumentEvaluatorPlugin(PluginBase):
 
     def _on_project_changed(self, project_data):
         """Handle project change from context system."""
-        self.project_id = project_data.get('id') if project_data else None
+        # Handle both cases: project_data can be an integer (project ID) or a dictionary with an 'id' key
+        if isinstance(project_data, dict):
+            self.project_id = project_data.get('id')
+        else:
+            # project_data is already the project ID
+            self.project_id = project_data
+
         logger.info(f"Project changed to ID: {self.project_id}")
 
         # Reload research questions for the new project
@@ -1774,6 +1903,9 @@ The rating must be a number (0, 1, 2, or 3) and the reason must be a string.
                 document_id=document_id,
                 research_question_id=question_id
             )
+
+            if not evaluations:
+                return None
 
             # Filter by evaluator ID
             for evaluation in evaluations:

@@ -83,8 +83,8 @@ class QuestionCard(QFrame):
         self.question_label.setWordWrap(True)
         content_layout.addWidget(self.question_label)
 
-        # Statistics placeholder (for future implementation)
-        stats_text = "No statistics available yet"
+        # Statistics display
+        stats_text = self._format_statistics()
         self.stats_label = QLabel(stats_text)
         self.stats_label.setStyleSheet("color: #666; font-size: 10px;")
         content_layout.addWidget(self.stats_label)
@@ -114,6 +114,30 @@ class QuestionCard(QFrame):
         """Handle mouse press event to emit clicked signal."""
         super().mousePressEvent(event)
         self.clicked.emit(self.question_id)
+
+    def _format_statistics(self) -> str:
+        """Format statistics for display."""
+        # Get statistics from the question_data if available
+        bookmark_count = self.question_data.get('bookmark_count', 0)
+        evaluation_count = self.question_data.get('evaluation_count', 0)
+        human_evaluation_count = self.question_data.get('human_evaluation_count', 0)
+
+        # Format the statistics text
+        stats = []
+
+        if bookmark_count > 0:
+            stats.append(f"{bookmark_count} bookmark{'s' if bookmark_count != 1 else ''}")
+
+        if evaluation_count > 0:
+            stats.append(f"{evaluation_count} evaluation{'s' if evaluation_count != 1 else ''}")
+
+        if human_evaluation_count > 0:
+            stats.append(f"{human_evaluation_count} human rating{'s' if human_evaluation_count != 1 else ''}")
+
+        if stats:
+            return " | ".join(stats)
+        else:
+            return "No statistics available yet"
 
     def _on_delete_clicked(self):
         """Handle delete button click."""
@@ -373,6 +397,13 @@ class ResearchQuestionWidget(QWidget):
         Args:
             question_data: Research question data dictionary
         """
+        # Get statistics for this question
+        question_id = question_data['id']
+        stats = self.db_manager.get_question_statistics(question_id, self.project_id)
+
+        # Add statistics to the question data
+        question_data.update(stats)
+
         # Create question card
         card = QuestionCard(question_data)
         card.deleteClicked.connect(self._on_delete_question)

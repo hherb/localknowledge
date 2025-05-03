@@ -49,6 +49,24 @@ class EmbeddingManager:
             logger.error(f"Error verifying model: {e}")
             raise
 
+    def get_models_with_embeddings(self) -> List[Dict[str, Any]]:
+        """Get a list of models that have embeddings in the database.
+
+        Returns:
+            List of dictionaries with model information (id and model_name)
+        """
+        return self.db.get_models_with_embeddings()
+
+    def set_embedding_model(self, model_name: str):
+        """
+        Set the embedding model to use for searches.
+
+        Args:
+            model_name: Name of the embedding model
+        """
+        self.model_name = model_name
+        logger.info(f"Set embedding model to: {model_name}")
+
     @backoff.on_exception(backoff.expo, Exception, max_tries=3)
     def create_embedding(self, text: str) -> List[float]:
         """

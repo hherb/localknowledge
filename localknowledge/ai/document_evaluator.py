@@ -11,6 +11,33 @@ from localknowledge.ai.ask_llm import generate_answer
 # Configure logging
 logger = logging.getLogger(__name__)
 
+DEFAULT_EVALUATIN_PROMPT = """
+You are writing a litearure review  for a medical journal and you need to decide on which publications 
+you want to include as citations, depending on how useful or critival they are to your research question. 
+You need to evaluate the relevance of each publication to your research question carefully.
+Do population and intervention in the publication match the population and intervention in the research question? 
+Consider carefully how likely the provided text will contribute towards answering the question directly, and
+not just in some tangential or circumferential way..
+
+The research question is: {question}
+The text is: {document}
+
+Please rate the text on a scale of 0 to 3, where:
+0 means the document is not relevant at all
+1 means the document is somewhat relevant. It would not be good to completely omit it from citations.
+2 means the document is very likely relevant to answer the question, it should be used as citation
+3 means the document answers the question, it is essential and must be included as citationin the paper
+
+Provide a brief reason for your rating in no more than 3 brief sentences. Keep it short.
+
+IMPORTANT: You must respond ONLY with a valid JSON object in the following format:
+{{"rating": <rating>, "reason": "<reason>"}}
+
+Do not include any other text, explanations, or formatting outside of this JSON object.
+The rating must be a number (0, 1, 2, or 3) and the reason must be a string.
+"""
+
+
 # Define Pydantic model for LLM response
 class EvaluationResponse(BaseModel):
     rating: int

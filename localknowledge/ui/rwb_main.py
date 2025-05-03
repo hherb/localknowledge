@@ -20,7 +20,7 @@ import logging
 
 # Configure logging
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.ERROR,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
@@ -148,9 +148,8 @@ class PluginBase(QWidget):
             orientation_value = 1 if orientation == Qt.Orientation.Horizontal else 2
             splitter_states[f"{name}_orientation"] = orientation_value
 
-            print(f"Saving splitter {name} with sizes {sizes}")
-
         return splitter_states
+    
 
     def restore_splitter_states(self, state: Dict[str, Any]) -> bool:
         """
@@ -178,12 +177,9 @@ class PluginBase(QWidget):
                         # Convert to integers if needed
                         sizes = [int(size) for size in sizes]
                         splitter.setSizes(sizes)
-                        print(f"Restored splitter {name} with sizes {sizes}")
                     else:
-                        print(f"Invalid splitter sizes for {name}: {sizes}")
                         success = False
                 except Exception as e:
-                    print(f"Error restoring splitter {name} sizes: {e}")
                     success = False
 
                     # Try individual sizes as fallback
@@ -196,9 +192,7 @@ class PluginBase(QWidget):
 
                         if sizes:
                             splitter.setSizes(sizes)
-                            print(f"Restored splitter {name} with individual sizes {sizes}")
                     except Exception as e2:
-                        print(f"Error restoring individual sizes for {name}: {e2}")
                         success = False
 
             # Try to restore orientation
@@ -209,7 +203,6 @@ class PluginBase(QWidget):
                     orientation = Qt.Orientation.Horizontal if orientation_value == 1 else Qt.Orientation.Vertical
                     splitter.setOrientation(orientation)
                 except Exception as e:
-                    print(f"Error restoring splitter {name} orientation: {e}")
                     success = False
 
         return success
@@ -365,46 +358,37 @@ class PluginManager(QObject):
         Returns:
             Dict[str, Type[PluginBase]]: Dictionary of plugin classes
         """
-        print(f"Looking for plugins in directories: {self.plugin_dirs}")
 
         for plugin_dir in self.plugin_dirs:
             if not os.path.exists(plugin_dir):
                 os.makedirs(plugin_dir, exist_ok=True)
-                print(f"Created plugin directory: {plugin_dir}")
                 continue
-            else:
-                print(f"Plugin directory exists: {plugin_dir}")
 
             sys.path.insert(0, plugin_dir)
-            print(f"Added {plugin_dir} to Python path")
 
             # Check if finder module exists, if not, skip this directory
             finder_path = os.path.join(plugin_dir, "plugin_finder.py")
             if not os.path.exists(finder_path):
-                print(f"Warning: plugin_finder.py not found in {plugin_dir}")
                 continue
 
             try:
                 # Import the plugin_finder module
-                print("Loading plugin finder module...")
+                logger.info("Loading plugin finder module...")
                 # Try absolute import first
                 try:
                     from localknowledge.ui.plugins.plugin_finder import get_plugin_classes
-                    print("Imported plugin finder using absolute import")
                 except ImportError:
                     # Fall back to direct import
                     sys.path.insert(0, os.path.dirname(plugin_dir))
                     from plugins.plugin_finder import get_plugin_classes
-                    print("Imported plugin finder using relative import")
 
                 # Get registered plugin classes
                 registered_plugins = get_plugin_classes()
-                print(f"Found {len(registered_plugins)} registered plugins: {list(registered_plugins.keys())}")
                 self.plugins.update(registered_plugins)
             except Exception as e:
-                print(f"Error loading plugins via plugin_finder: {e}")
+                logger.error(f"Error loading plugins via plugin_finder: {e}")
 
-        print(f"Discovered plugins: {list(self.plugins.keys())}")
+        logger.info(f"Discovered plugins: {list(self.plugins.keys())}")
         return self.plugins
 
     def load_plugin(self, plugin_name: str) -> Optional[PluginBase]:
@@ -418,7 +402,7 @@ class PluginManager(QObject):
             Optional[PluginBase]: Plugin instance or None if loading failed
         """
         if plugin_name not in self.plugins:
-            print(f"Plugin '{plugin_name}' not found")
+            logger.error(f"Plugin '{plugin_name}' not found")
             return None
 
         if plugin_name in self.active_plugins:
@@ -433,11 +417,11 @@ class PluginManager(QObject):
                 self.plugin_loaded.emit(plugin_name)
                 return plugin
             else:
-                print(f"Plugin '{plugin_name}' failed to initialize")
+                logger.error(f"Plugin '{plugin_name}' failed to initialize")
                 return None
 
         except Exception as e:
-            print(f"Error initializing plugin '{plugin_name}': {e}")
+            logger.error(f"Error initializing plugin '{plugin_name}': {e}")
             return None
 
     def unload_plugin(self, plugin_name: str) -> bool:
@@ -503,11 +487,12 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("RWB - Researcher's Workbench")
         self.setMinimumSize(1000, 700)
 
+        # Set window icon
+        icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "icons", "enthusiasticrobo_icon_yellow.png")
+        self.setWindowIcon(QIcon(icon_path))
+
         # Set up settings
         self.settings = QSettings("RWB", "ResearchersWorkbench")
-
-        # Print settings file location for debugging
-        print(f"Settings file location: {self.settings.fileName()}")
 
         # Import context management
         from localknowledge.context import register_context_listener, CURRENT_USER, CURRENT_PROJECT
@@ -571,7 +556,6 @@ class MainWindow(QMainWindow):
 
     def delayed_restore_window_state(self):
         """Restore window state after a short delay to ensure window is fully shown."""
-        print("Delayed window state restoration...")
         self.restore_window_state()
         self.window_state_restored = True
 
@@ -801,61 +785,48 @@ class MainWindow(QMainWindow):
         current_index = self.tab_widget.currentIndex()
         if current_index < 0:
             # No tabs open
-            print("update_config_panel_for_current_tab: No tabs open")
+            logger.info("update_config_panel_for_current_tab: No tabs open")
             return
 
         current_widget = self.tab_widget.widget(current_index)
-        print(f"update_config_panel_for_current_tab: Current widget = {current_widget}")
-        print(f"Current tab text: {self.tab_widget.tabText(current_index)}")
 
         # Find the plugin for this widget
         for plugin_name, plugin in self.plugin_manager.get_active_plugins().items():
-            print(f"Checking plugin: {plugin_name}, class: {plugin.__class__.__name__}")
 
             # Check if plugin has a main widget
             main_widget = plugin.get_main_widget()
-            print(f"Plugin main widget: {main_widget}")
 
             if main_widget == current_widget:
                 # Found the plugin, get its config widget
-                print(f"Found matching plugin: {plugin_name}")
 
                 try:
                     config_widget = plugin.get_config_widget()
-                    print(f"Plugin {plugin_name} get_config_widget() returned: {config_widget}")
 
                     if config_widget:
-                        print(f"Setting config panel content to widget: {config_widget}")
                         self.config_panel.set_content(config_widget)
                     else:
-                        print(f"Plugin {plugin_name} returned None for config widget")
+                        logger.warning(f"Plugin {plugin_name} returned None for config widget")
                 except Exception as e:
-                    print(f"Error calling get_config_widget() on plugin {plugin_name}: {e}")
+                    logger.error(f"Error calling get_config_widget() on plugin {plugin_name}: {e}")
                     import traceback
                     traceback.print_exc()
 
                 break
         else:
-            print("update_config_panel_for_current_tab: No matching plugin found")
+            logger.info("update_config_panel_for_current_tab: No matching plugin found")
 
     def update_config_button_state(self):
         """Update the config button state based on whether the current tab has a config widget."""
         has_config = self.has_config_widget_for_current_tab()
 
-        # Debug print
-        print(f"update_config_button_state: has_config = {has_config}")
-
-        # Get current tab info for debugging
         current_index = self.tab_widget.currentIndex()
         if current_index >= 0:
             tab_text = self.tab_widget.tabText(current_index)
-            print(f"Current tab: {tab_text} (index {current_index})")
 
             # Find the plugin for this tab
             current_widget = self.tab_widget.widget(current_index)
             for plugin_name, plugin in self.plugin_manager.get_active_plugins().items():
                 if plugin.get_main_widget() == current_widget:
-                    print(f"Plugin: {plugin_name}, has config widget: {plugin.get_config_widget() is not None}")
                     break
 
         # Enable/disable the config button
@@ -875,44 +846,37 @@ class MainWindow(QMainWindow):
         current_index = self.tab_widget.currentIndex()
         if current_index < 0:
             # No tabs open
-            print("has_config_widget_for_current_tab: No tabs open")
             return False
 
         current_widget = self.tab_widget.widget(current_index)
-        print(f"has_config_widget_for_current_tab: Current widget = {current_widget}")
-        print(f"Current tab text: {self.tab_widget.tabText(current_index)}")
 
         # Find the plugin for this widget
         for plugin_name, plugin in self.plugin_manager.get_active_plugins().items():
-            print(f"Checking plugin: {plugin_name}, class: {plugin.__class__.__name__}")
+            logger.info(f"Checking plugin: {plugin_name}, class: {plugin.__class__.__name__}")
 
             # Check if plugin has a main widget
             main_widget = plugin.get_main_widget()
-            print(f"Plugin main widget: {main_widget}")
 
             if main_widget == current_widget:
                 # Found the plugin, check if it has a config widget
-                print(f"Found matching plugin: {plugin_name}")
 
                 # Check if plugin has a has_config_widget method
                 if hasattr(plugin, 'has_config_widget'):
                     has_config = plugin.has_config_widget()
-                    print(f"Plugin {plugin_name} has_config_widget() returned: {has_config}")
                     if has_config:
                         return True
 
                 # Try to get the config widget
                 try:
                     config_widget = plugin.get_config_widget()
-                    print(f"Plugin {plugin_name} get_config_widget() returned: {config_widget}")
                     return config_widget is not None
                 except Exception as e:
-                    print(f"Error calling get_config_widget() on plugin {plugin_name}: {e}")
+                    logger.error(f"Error calling get_config_widget() on plugin {plugin_name}: {e}")
                     import traceback
                     traceback.print_exc()
                     return False
 
-        print("has_config_widget_for_current_tab: No matching plugin found")
+        logger.info("has_config_widget_for_current_tab: No matching plugin found")
         return False
 
     def get_config_panel_width(self):
@@ -1011,8 +975,6 @@ class MainWindow(QMainWindow):
             orientation_value = 1 if orientation == Qt.Orientation.Horizontal else 2
             splitter_states[f"{name}_orientation"] = orientation_value
 
-            print(f"Saving main window splitter {name} with sizes {sizes}")
-
         return splitter_states
 
     def restore_all_splitter_states(self, state: Dict[str, Any]) -> bool:
@@ -1041,12 +1003,9 @@ class MainWindow(QMainWindow):
                         # Convert to integers if needed
                         sizes = [int(size) for size in sizes]
                         splitter.setSizes(sizes)
-                        print(f"Restored main window splitter {name} with sizes {sizes}")
                     else:
-                        print(f"Invalid splitter sizes for {name}: {sizes}")
                         success = False
                 except Exception as e:
-                    print(f"Error restoring splitter {name} sizes: {e}")
                     success = False
 
                     # Try individual sizes as fallback
@@ -1059,9 +1018,7 @@ class MainWindow(QMainWindow):
 
                         if sizes:
                             splitter.setSizes(sizes)
-                            print(f"Restored main window splitter {name} with individual sizes {sizes}")
                     except Exception as e2:
-                        print(f"Error restoring individual sizes for {name}: {e2}")
                         success = False
 
             # Try to restore orientation
@@ -1072,30 +1029,23 @@ class MainWindow(QMainWindow):
                     orientation = Qt.Orientation.Horizontal if orientation_value == 1 else Qt.Orientation.Vertical
                     splitter.setOrientation(orientation)
                 except Exception as e:
-                    print(f"Error restoring splitter {name} orientation: {e}")
                     success = False
 
         return success
 
     def save_window_state(self):
         """Save window state to settings."""
-        # Add debug output
-        print("Saving window state to settings...")
 
         # Save window geometry and state
         geometry = self.saveGeometry()
-        print(f"Saving geometry: {type(geometry)}")
         self.settings.setValue("geometry", geometry)
 
         state = self.saveState()
-        print(f"Saving window state: {type(state)}")
         self.settings.setValue("windowState", state)
 
         # Save window size and position explicitly
         size = self.size()
         pos = self.pos()
-        print(f"Saving window size: {size.width()}x{size.height()}")
-        print(f"Saving window position: {pos.x()},{pos.y()}")
         self.settings.setValue("windowWidth", size.width())
         self.settings.setValue("windowHeight", size.height())
         self.settings.setValue("windowX", pos.x())
@@ -1104,7 +1054,6 @@ class MainWindow(QMainWindow):
 
         # Save main splitter sizes
         splitter_sizes = self.main_splitter.sizes()
-        print(f"Saving main splitter sizes: {splitter_sizes}")
         self.settings.setValue("mainSplitterSizes", splitter_sizes)
 
         # Also save as individual values for better compatibility
@@ -1119,12 +1068,10 @@ class MainWindow(QMainWindow):
 
         # Save active plugins
         active_plugins = list(self.plugin_manager.get_active_plugins().keys())
-        print(f"Saving active plugins: {active_plugins}")
         self.settings.setValue("activePlugins", active_plugins)
 
         # Force settings to be written to disk
         self.settings.sync()
-        print(f"Settings saved to: {self.settings.fileName()}")
 
         # Save plugin states
         for name, plugin in self.plugin_manager.get_active_plugins().items():
@@ -1133,8 +1080,6 @@ class MainWindow(QMainWindow):
 
     def restore_window_state(self):
         """Restore window state from settings."""
-        # Add debug output
-        print("Restoring window state from settings...")
 
         # First try to restore using explicit size and position
         if (self.settings.contains("windowWidth") and
@@ -1147,14 +1092,6 @@ class MainWindow(QMainWindow):
             x = self.settings.value("windowX", type=int)
             y = self.settings.value("windowY", type=int)
             maximized = self.settings.value("windowMaximized", False, type=bool)
-
-            print(f"Restoring window size: {width}x{height}")
-            print(f"Restoring window position: {x},{y}")
-            print(f"Window maximized: {maximized}")
-
-            # Set window size and position
-            print(f"Current window size before resize: {self.width()}x{self.height()}")
-            print(f"Current window position before move: {self.pos().x()},{self.pos().y()}")
 
             # Force the window to be visible
             self.show()
@@ -1170,9 +1107,6 @@ class MainWindow(QMainWindow):
             # Process events to ensure changes take effect
             QApplication.processEvents()
 
-            print(f"Window size after resize: {self.width()}x{self.height()}")
-            print(f"Window position after move: {self.pos().x()},{self.pos().y()}")
-
             # Set maximized state if needed
             if maximized:
                 self.showMaximized()
@@ -1180,12 +1114,10 @@ class MainWindow(QMainWindow):
         # Then try to restore using geometry and state
         elif self.settings.contains("geometry"):
             geometry = self.settings.value("geometry")
-            print(f"Restoring geometry: {type(geometry)}")
             self.restoreGeometry(geometry)
 
             if self.settings.contains("windowState"):
                 state = self.settings.value("windowState")
-                print(f"Restoring window state: {type(state)}")
                 self.restoreState(state)
 
         # Restore main splitter sizes
@@ -1196,22 +1128,18 @@ class MainWindow(QMainWindow):
             size1 = self.settings.value("splitterSize1", type=int)
             size2 = self.settings.value("splitterSize2", type=int)
             splitter_sizes = [size1, size2]
-            print(f"Restored main splitter sizes from individual values: {splitter_sizes}")
 
         # If that failed, try the regular way
         elif self.settings.contains("mainSplitterSizes"):
             # Get the saved splitter sizes and convert to list of integers
             splitter_sizes = self.settings.value("mainSplitterSizes")
-            print(f"Raw main splitter sizes: {splitter_sizes}, type: {type(splitter_sizes)}")
 
             # Convert to list of integers if needed
             if isinstance(splitter_sizes, list):
                 try:
                     # Convert each item to int
                     splitter_sizes = [int(size) for size in splitter_sizes]
-                    print(f"Converted list main splitter sizes: {splitter_sizes}")
                 except (TypeError, ValueError):
-                    print(f"Error converting list main splitter sizes: {splitter_sizes}")
                     splitter_sizes = None
             else:
                 # Not a list, try other methods
@@ -1220,10 +1148,8 @@ class MainWindow(QMainWindow):
         # If all else fails, use default
         if splitter_sizes is None or len(splitter_sizes) < 2:
             splitter_sizes = [0, self.width()]
-            print(f"Using default main splitter sizes: {splitter_sizes}")
 
         # Apply the splitter sizes
-        print(f"Setting main splitter sizes to: {splitter_sizes}")
         self.main_splitter.setSizes(splitter_sizes)
 
         # Restore all other splitter states
@@ -1238,11 +1164,9 @@ class MainWindow(QMainWindow):
 
         # Restore all splitter states
         if splitter_states:
-            print(f"Restoring {len(splitter_states)} splitter states")
             self.restore_all_splitter_states(splitter_states)
 
         # Ensure config panel is hidden on start
-        print("Ensuring config panel is hidden on start")
         self.config_panel.setVisible(False)
         self.config_button.setChecked(False)
         self.toggle_config_action.setChecked(False)
@@ -1271,7 +1195,7 @@ class MainWindow(QMainWindow):
         Args:
             event: Close event
         """
-        print("Window closing, saving state...")
+        logger.info("Window closing, saving state...")
 
         # Save window state
         self.save_window_state()
@@ -1292,12 +1216,12 @@ class MainWindow(QMainWindow):
         """
         available_plugins = self.plugin_manager.get_available_plugins()
         if not available_plugins:
-            print("No plugins available to auto-load")
+            logger.info("No plugins available to auto-load")
             return
 
-        print(f"Auto-loading {len(available_plugins)} discovered plugins...")
+        logger.info(f"Auto-loading {len(available_plugins)} discovered plugins...")
         for plugin_name in available_plugins:
-            print(f"Auto-loading plugin: {plugin_name}")
+            logger.info(f"Auto-loading plugin: {plugin_name}")
             self.load_plugin(plugin_name)
 
     def _on_user_changed(self, _):
@@ -1479,6 +1403,10 @@ def main():
     app.setOrganizationName("RWB")
     app.setOrganizationDomain("rwb.org")
 
+    # Set application icon for macOS task bar
+    icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "icons", "enthusiasticrobo_icon_yellow.png")
+    app.setWindowIcon(QIcon(icon_path))
+
     # Check for pending migrations
     has_pending, current_version, pending_count = check_database_migrations()
 
@@ -1487,6 +1415,10 @@ def main():
         temp_window = QWidget()
         temp_window.setWindowTitle("RWB - Database Migrations")
         temp_window.resize(400, 200)
+
+        # Set window icon
+        icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "icons", "enthusiasticrobo_icon_yellow.png")
+        temp_window.setWindowIcon(QIcon(icon_path))
 
         # Show the migrations dialog
         if show_migrations_dialog(temp_window, pending_count, current_version):
