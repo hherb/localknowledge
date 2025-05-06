@@ -26,6 +26,51 @@ class EmbeddingDatabaseManager(DatabaseManager):
         #self.create_tables()
         #self.create_indices()
 
+    def get_embedder_for_model(self, model_name: str) -> str:
+        """
+        Get the embedder type for a given model name.
+
+        Args:
+            model_name: Name of the embedding model
+
+        Returns:
+            String indicating the embedder type ('ollama' or 'pubmedbert')
+        """
+        # Simple heuristic based on model name
+        if 'pubmed' in model_name.lower() or 'biobert' in model_name.lower() or 'biomed' in model_name.lower():
+            return 'pubmedbert'
+        else:
+            return 'ollama'
+
+    def get_models_with_embeddings(self) -> List[Dict[str, Any]]:
+        """
+        Get a list of models that have embeddings in the database.
+
+        Returns:
+            List of dictionaries with model information (id and model_name)
+        """
+        # Return default models if we can't query the database
+        try:
+            # Try to query the database for models
+            query = """
+            SELECT DISTINCT model_name, COUNT(*) as count
+            FROM embeddings
+            GROUP BY model_name
+            ORDER BY count DESC
+            """
+            results = self.execute(query)
+
+            if results:
+                return [{'id': i+1, 'model_name': row['model_name']} for i, row in enumerate(results)]
+        except Exception as e:
+            logger.warning(f"Error getting models with embeddings: {e}")
+
+        # Return default models if no results or error
+        return [
+            {'id': 1, 'model_name': 'snowflake-arctic-embed2:latest'},
+            {'id': 2, 'model_name': 'microsoft/BiomedNLP-PubMedBERT-base-uncased-abstract-fulltext'}
+        ]
+
     def create_tables(self) -> None:
         """Create embedding-related tables if they don't exist."""
         logger.info("Creating or verifying embedding-related tables")
@@ -320,7 +365,8 @@ class EmbeddingDatabaseManager(DatabaseManager):
                        query_embedding: List[float],
                        limit: int = 10,
                        threshold: float = 0.7,
-                       source_id: Optional[str] = None) -> List[Dict[str, Any]]:
+                       source_id: Optional[str] = None,
+                       model_name: Optional[str] = None) -> List[Dict[str, Any]]:
         """
         Search for similar documents using vector similarity.
 
@@ -329,6 +375,7 @@ class EmbeddingDatabaseManager(DatabaseManager):
             limit: Maximum number of results to return
             threshold: Similarity threshold (0-1)
             source_id: Filter by source ID (optional)
+            model_name: Name of the embedding model (optional)
 
         Returns:
             List of similar documents with similarity scores
@@ -344,16 +391,36 @@ class EmbeddingDatabaseManager(DatabaseManager):
             # Prepare the source filter for the main query
             source_filter = ""
             source_params = []
+            where_clause = ""
+
+            # Build WHERE clause conditions
+            conditions = []
 
             if source_id:
                 # If source_id is a string, we need to join with the sources table
                 if isinstance(source_id, str):
-                    source_filter = " JOIN sources src ON d.source_id = src.id WHERE src.name = %s"
+                    source_filter = " JOIN sources src ON d.source_id = src.id"
+                    conditions.append("src.name = %s")
                     source_params.append(source_id)
                 else:
                     # If source_id is an integer, use it directly
-                    source_filter = " WHERE d.source_id = %s"
+                    conditions.append("d.source_id = %s")
                     source_params.append(source_id)
+
+            # We'll handle model_name filtering in the subquery instead
+
+            # Construct the WHERE clause if we have conditions
+            if conditions:
+                where_clause = " WHERE " + " AND ".join(conditions)
+                source_filter = source_filter + where_clause
+
+            # Build the subquery WHERE clause for model_name filtering
+            # The threshold is a float value, not a vector
+            subquery_where = f"WHERE 1 - (e.embedding <=> %s::vector) > {threshold}"
+
+            # Add model_name filter to the subquery if provided
+            if model_name:
+                subquery_where += f" AND e.model_name = '{model_name}'"
 
             query = f"""
             WITH similar_embeddings AS (
@@ -361,7 +428,7 @@ class EmbeddingDatabaseManager(DatabaseManager):
                        e.text, e.keywords, e.model_name,
                        1 - (e.embedding <=> %s::vector) AS similarity
                 FROM unified_multiembeddings e
-                WHERE 1 - (e.embedding <=> %s::vector) > %s
+                {subquery_where}
                 ORDER BY similarity DESC
                 LIMIT %s
             )
@@ -376,7 +443,16 @@ class EmbeddingDatabaseManager(DatabaseManager):
             """
 
             # Parameters for the optimized query
-            params = [embedding_str, embedding_str, threshold, limit * 2]  # Double the limit for better results
+            # First parameter is for the embedding in the WHERE clause
+            params = [embedding_str]
+
+            # Add embedding_str again for the similarity calculation in the SELECT
+            params.append(embedding_str)
+
+            # Add limit parameter
+            params.append(limit * 2)  # Double the limit for better results
+
+            # Add source parameters for the main query
             params.extend(source_params)
 
             # Note: We've already included the threshold and limit in the subquery
@@ -402,9 +478,17 @@ class EmbeddingDatabaseManager(DatabaseManager):
                     # Try with a much lower threshold
                     low_threshold = 0.1
 
-                    # Modify the query with a lower threshold
+                    # We need to update the subquery WHERE clause with the lower threshold
+                    # but keep all other conditions the same
+                    modified_subquery_where = f"WHERE 1 - (e.embedding <=> %s::vector) > {low_threshold}"
+
+                    # Add model_name filter to the modified subquery if provided
+                    if model_name:
+                        modified_subquery_where += f" AND e.model_name = '{model_name}'"
+
                     # Create a new query with the lower threshold
-                    modified_query = query.replace(f"> {threshold}", f"> {low_threshold}")
+                    modified_query = query.replace(subquery_where, modified_subquery_where)
+
                     # Use the same parameters
                     modified_results = self.execute(modified_query, tuple(params), timeout=60)
 

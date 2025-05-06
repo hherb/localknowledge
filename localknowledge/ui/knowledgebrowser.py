@@ -46,7 +46,7 @@ except ImportError:
         return text  # Just return the original text
 
 from localknowledge.db.document import DocumentDatabaseManager
-from localknowledge.embeddings.embedding_manager import EmbeddingManager
+from localknowledge.embeddings import get_embedding_manager
 from localknowledge.context import set_current_project
 
 # Try to import rerankers
@@ -76,117 +76,124 @@ class PublicationItemDelegate(QStyledItemDelegate):
 
     def paint(self, painter, option, index):
         """Paint the item with custom formatting."""
-        # Get the item data directly from the model
-        item = index.model().itemFromIndex(index) if hasattr(index.model(), 'itemFromIndex') else None
+        try:
+            # Get the item data directly from the model
+            item = index.model().itemFromIndex(index) if hasattr(index.model(), 'itemFromIndex') else None
 
-        # If we can't get the item directly, try to get it from the list widget
-        if not item or not isinstance(item, PublicationItem):
-            # Try to get the list widget and the item from it
-            list_widget = self.parent()
-            if isinstance(list_widget, QListWidget):
-                item = list_widget.item(index.row())
-
-            # If we still don't have a valid item, fall back to default rendering
+            # If we can't get the item directly, try to get it from the list widget
             if not item or not isinstance(item, PublicationItem):
+                # Try to get the list widget and the item from it
+                list_widget = self.parent()
+                if isinstance(list_widget, QListWidget):
+                    item = list_widget.item(index.row())
+
+                # If we still don't have a valid item, fall back to default rendering
+                if not item or not isinstance(item, PublicationItem):
+                    super().paint(painter, option, index)
+                    return
+
+            # Get the item data
+            item_data = index.data()
+            if not item_data:
                 super().paint(painter, option, index)
                 return
 
-        # Get the item data
-        item_data = index.data()
-        if not item_data:
-            super().paint(painter, option, index)
-            return
+            # Split the text into lines
+            lines = item_data.split('\n')
+            if len(lines) < 2:
+                super().paint(painter, option, index)
+                return
 
-        # Split the text into lines
-        lines = item_data.split('\n')
-        if len(lines) < 2:
-            super().paint(painter, option, index)
-            return
+            # Extract title, authors, and date
+            title = lines[0]
+            authors = lines[1] if len(lines) > 1 else ''
+            date = lines[2] if len(lines) > 2 else ''
 
-        # Extract title, authors, and date
-        title = lines[0]
-        authors = lines[1] if len(lines) > 1 else ''
-        date = lines[2] if len(lines) > 2 else ''
+            # Save painter state
+            painter.save()
 
-        # Save painter state
-        painter.save()
-
-        # Draw selection background if selected
-        if option.state & QStyle.StateFlag.State_Selected:
-            painter.fillRect(option.rect, option.palette.highlight())
-            painter.setPen(option.palette.highlightedText().color())
-        else:
-            painter.setPen(option.palette.text().color())
-
-        # Calculate icon and text positions
-        rect = option.rect.adjusted(5, 5, -5, -5)  # Add some padding
-        icon_size = QSize(16, 16)  # Size of the source icon
-
-        # Draw source icon if available
-        source_id = item.publication.get('source_id')
-        icon_rect = QRect(rect.left(), rect.top() + (rect.height() - icon_size.height()) // 2,
-                         icon_size.width(), icon_size.height())
-
-        if source_id == 1:  # PubMed
-            self.pubmed_icon.paint(painter, icon_rect)
-        elif source_id == 2:  # medRxiv
-            self.medrxiv_icon.paint(painter, icon_rect)
-
-        # Draw bookmark icons if this is a bookmarked publication
-        bookmark_type = item.publication.get('bookmark_type')
-        if bookmark_type:
-            # Calculate position for bookmark icons (to the right of the source icon)
-            bookmark_icon_rect = QRect(icon_rect.right() + 4, icon_rect.top(),
-                                      icon_size.width(), icon_size.height())
-
-            # Draw personal bookmark icon (user emoji)
-            if bookmark_type in ('personal', 'both'):
-                self.personal_bookmark_icon.paint(painter, bookmark_icon_rect)
-
-            # Draw project bookmark icon (book icon)
-            if bookmark_type in ('project', 'both'):
-                # If we already drew a personal bookmark icon, move this one to the right
-                if bookmark_type == 'both':
-                    bookmark_icon_rect = QRect(bookmark_icon_rect.right() + 4, bookmark_icon_rect.top(),
-                                             icon_size.width(), icon_size.height())
-                self.project_bookmark_icon.paint(painter, bookmark_icon_rect)
-
-        # Calculate text position (after the icons)
-        text_left = icon_rect.right() + 8
-
-        # If we have bookmark icons, adjust the text position
-        bookmark_type = item.publication.get('bookmark_type')
-        if bookmark_type:
-            # Add space for one or two bookmark icons
-            if bookmark_type == 'both':
-                text_left += (icon_size.width() + 4) * 2  # Space for two icons
+            # Draw selection background if selected
+            if option.state & QStyle.StateFlag.State_Selected:
+                painter.fillRect(option.rect, option.palette.highlight())
+                painter.setPen(option.palette.highlightedText().color())
             else:
-                text_left += icon_size.width() + 4  # Space for one icon
+                painter.setPen(option.palette.text().color())
 
-        # Calculate text rectangles with adjusted left position
-        title_height = painter.fontMetrics().height() + 2
-        authors_height = painter.fontMetrics().height() + 2
-        date_height = painter.fontMetrics().height()
+            # Calculate icon and text positions
+            rect = option.rect.adjusted(5, 5, -5, -5)  # Add some padding
+            icon_size = QSize(16, 16)  # Size of the source icon
 
-        title_rect = QRect(text_left, rect.top(), rect.width() - (text_left - rect.left()), title_height)
-        authors_rect = QRect(text_left, rect.top() + title_height, rect.width() - (text_left - rect.left()), authors_height)
-        date_rect = QRect(text_left, rect.top() + title_height + authors_height, rect.width() - (text_left - rect.left()), date_height)
+            # Draw source icon if available
+            source_id = item.publication.get('source_id')
+            icon_rect = QRect(rect.left(), rect.top() + (rect.height() - icon_size.height()) // 2,
+                             icon_size.width(), icon_size.height())
 
-        # Draw title with bold font
-        bold_font = painter.font()
-        bold_font.setBold(True)
-        painter.setFont(bold_font)
-        painter.drawText(title_rect, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, title)
+            if source_id == 1:  # PubMed
+                self.pubmed_icon.paint(painter, icon_rect)
+            elif source_id == 2:  # medRxiv
+                self.medrxiv_icon.paint(painter, icon_rect)
 
-        # Draw authors and date with normal font
-        normal_font = painter.font()
-        normal_font.setBold(False)
-        painter.setFont(normal_font)
-        painter.drawText(authors_rect, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, authors)
-        painter.drawText(date_rect, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, date)
+            # Draw bookmark icons if this is a bookmarked publication
+            bookmark_type = item.publication.get('bookmark_type')
+            if bookmark_type:
+                # Calculate position for bookmark icons (to the right of the source icon)
+                bookmark_icon_rect = QRect(icon_rect.right() + 4, icon_rect.top(),
+                                          icon_size.width(), icon_size.height())
 
-        # Restore painter state
-        painter.restore()
+                # Draw personal bookmark icon (user emoji)
+                if bookmark_type in ('personal', 'both'):
+                    self.personal_bookmark_icon.paint(painter, bookmark_icon_rect)
+
+                # Draw project bookmark icon (book icon)
+                if bookmark_type in ('project', 'both'):
+                    # If we already drew a personal bookmark icon, move this one to the right
+                    if bookmark_type == 'both':
+                        bookmark_icon_rect = QRect(bookmark_icon_rect.right() + 4, bookmark_icon_rect.top(),
+                                                 icon_size.width(), icon_size.height())
+                    self.project_bookmark_icon.paint(painter, bookmark_icon_rect)
+
+            # Calculate text position (after the icons)
+            text_left = icon_rect.right() + 8
+
+            # If we have bookmark icons, adjust the text position
+            if bookmark_type:
+                # Add space for one or two bookmark icons
+                if bookmark_type == 'both':
+                    text_left += (icon_size.width() + 4) * 2  # Space for two icons
+                else:
+                    text_left += icon_size.width() + 4  # Space for one icon
+
+            # Calculate text rectangles with adjusted left position
+            title_height = painter.fontMetrics().height() + 2
+            authors_height = painter.fontMetrics().height() + 2
+            date_height = painter.fontMetrics().height()
+
+            title_rect = QRect(text_left, rect.top(), rect.width() - (text_left - rect.left()), title_height)
+            authors_rect = QRect(text_left, rect.top() + title_height, rect.width() - (text_left - rect.left()), authors_height)
+            date_rect = QRect(text_left, rect.top() + title_height + authors_height, rect.width() - (text_left - rect.left()), date_height)
+
+            # Draw title with bold font
+            bold_font = painter.font()
+            bold_font.setBold(True)
+            painter.setFont(bold_font)
+            painter.drawText(title_rect, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, title)
+
+            # Draw authors and date with normal font
+            normal_font = painter.font()
+            normal_font.setBold(False)
+            painter.setFont(normal_font)
+            painter.drawText(authors_rect, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, authors)
+            painter.drawText(date_rect, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, date)
+
+            # Restore painter state
+            painter.restore()
+        except Exception:
+            # If anything goes wrong, fall back to default rendering
+            try:
+                painter.restore()  # Try to restore the painter state if we saved it
+            except:
+                pass
+            super().paint(painter, option, index)
 
     def sizeHint(self, option, index):
         """
@@ -199,9 +206,13 @@ class PublicationItemDelegate(QStyledItemDelegate):
         Returns:
             QSize with the recommended size
         """
-        size = super().sizeHint(option, index)
-        # Make items a bit taller to accommodate icons
-        return QSize(size.width(), max(size.height(), 60))
+        try:
+            size = super().sizeHint(option, index)
+            # Make items a bit taller to accommodate icons
+            return QSize(size.width(), max(size.height(), 60))
+        except Exception:
+            # Fallback in case of error
+            return QSize(300, 60)
 
 
 class PublicationItem(QListWidgetItem):
@@ -289,7 +300,8 @@ class KnowledgeBrowser(QWidget):
         # Try to initialize the embedding manager, but make it optional
         self.embedding_manager = None
         try:
-            # Just create the manager but don't test it yet
+            # Get the EmbeddingManager class and instantiate it
+            EmbeddingManager = get_embedding_manager()
             self.embedding_manager = EmbeddingManager()
             print("Semantic search enabled")
         except Exception as e:
@@ -513,11 +525,19 @@ class KnowledgeBrowser(QWidget):
         Returns:
             List of dictionaries with model information
         """
+        # Default model if embedding manager is not available
+        if not self.embedding_manager:
+            return [{'id': 1, 'model_name': 'snowflake-arctic-embed2:latest'}]
 
-        models = self.embedding_manager.get_models_with_embeddings()
-        print(f"Available embedding models: {models}")
-        return models
-       
+        try:
+            models = self.embedding_manager.get_models_with_embeddings()
+            print(f"Available embedding models: {models}")
+            return models
+        except Exception as e:
+            print(f"Error getting embedding models: {e}")
+            # Return a default model if we can't get the list from the database
+            return [{'id': 1, 'model_name': 'snowflake-arctic-embed2:latest'}]
+
 
     def _update_search_placeholder(self):
         """Update the search input placeholder text based on the selected search mode."""
@@ -1392,34 +1412,34 @@ class KnowledgeBrowser(QWidget):
         # This method is now handled by the document display widget
         pass
 
-    def _toggle_personal_bookmark(self, state):
+    def _toggle_personal_bookmark(self, _):
         """Toggle personal bookmark for the current publication."""
         # This method is now handled by the document display widget
         pass
 
-    def _toggle_project_bookmark(self, state):
+    def _toggle_project_bookmark(self, _):
         """Toggle project bookmark for the current publication."""
         # This method is now handled by the document display widget
         pass
 
-    def _on_document_rated(self, document, rating):
+    def _on_document_rated(self, _, rating):
         """
         Handle document rating from the document display widget.
 
         Args:
-            document: Document data dictionary
+            _: Document data dictionary (unused)
             rating: Rating value (1 for positive, -1 for negative)
         """
         # The document display widget already handles the database update,
         # so we just need to update the UI if needed
         self.status_bar.showMessage(f"Document rated {'positively' if rating > 0 else 'negatively'}")
 
-    def _on_document_bookmarked(self, document, bookmark_type, is_bookmarked):
+    def _on_document_bookmarked(self, _, bookmark_type, is_bookmarked):
         """
         Handle document bookmarking from the document display widget.
 
         Args:
-            document: Document data dictionary
+            _: Document data dictionary (unused)
             bookmark_type: Type of bookmark ("personal" or "project")
             is_bookmarked: Whether the document was bookmarked or unbookmarked
         """

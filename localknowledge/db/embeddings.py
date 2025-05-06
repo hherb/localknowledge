@@ -118,7 +118,6 @@ class EmbeddingsDatabaseManager(DatabaseManager):
 
         if result and len(result) > 0:
             return result[0]['id']
-
         logger.warning(f"Model not found: {model_name}")
         return -1
 
@@ -168,6 +167,23 @@ class EmbeddingsDatabaseManager(DatabaseManager):
             logger.info(f"Created table {tablename} for vector size {vector_size}")
 
         return tablename
+
+    def get_embedder_for_model(self, model_name : str) -> str:
+        query = """SELECT p.provider_name FROM embedding_models m, embedding_provider p
+        WHERE m.model_name=%s AND  m.provider_id=p.id"""
+        result = self.execute(query, (model_name,))
+        if result and len(result) > 0:
+            provider = result[0]['provider_name']
+            print(f">>> PROVIDER FOR MODEL {model_name} IS {result[0]}")
+            if provider == 'ollama':
+                return 'ollama'
+            elif provider.startswith('pubmedbert'):
+                return 'pubmedbert'
+            else:
+                logger.error('unknown ebedding provider: {provider}')
+                return 'unknown provider'
+        logger.warning(f"Model not found: {model_name}")
+        return -1
 
 
     def add_embedding(
@@ -718,10 +734,10 @@ class EmbeddingsDatabaseManager(DatabaseManager):
 
         Args:
             embedding: Query embedding vector
-            embed_source: Name of the embedding source or source ID
+            embed_source: Name of the embedding source or source ID, eg 'abstract', 'fulltext'
             model_name: Name of the model
             limit: Maximum number of results
-            threshold: Similarity threshold (0-1)
+            threshold: Similarity threshold (0.0-1.0)
 
         Returns:
             List of similar embedding records with similarity scores

@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Any
 import sys
 import traceback
+import logging
 
 from PySide6.QtCore import Qt, Signal, Slot, QUrl, QPointF, QObject, QRunnable, QThreadPool
 from PySide6.QtGui import QFont, QIntValidator
@@ -37,6 +38,8 @@ from localknowledge.document import DocumentClient
 # The SummaryItemDelegate and SummaryItem classes have been replaced by
 # the DocumentItemDelegate and DocumentItem classes in document_list_widget.py
 
+logging.basicConfig(level=logging.WARNING)
+logger = logging.getLogger(__name__)
 
 class NewsBrowser(QWidget):
     """A PySide6 widget for browsing publication summaries like an email client."""
@@ -72,7 +75,6 @@ class NewsBrowser(QWidget):
         from localknowledge.context import get_current_user
         user = get_current_user()
         self.user_id = user.get('id', 1) if user else 1  # Default to user_id 1
-        print(f"Using user_id={self.user_id}")
 
         self.pdf_base_dir = self._get_pdf_base_dir()
         self.read_summaries = set()  # Local cache of read summaries for performance
@@ -81,7 +83,6 @@ class NewsBrowser(QWidget):
         from localknowledge.context import get_current_project
         project = get_current_project()
         self.current_project_id = project.get('id') if project else None
-        print(f"Using project_id={self.current_project_id}")
 
         # Register listeners for user and project changes
         register_context_listener(CURRENT_USER, self._on_user_changed)
@@ -89,7 +90,7 @@ class NewsBrowser(QWidget):
 
         # Initialize thread pool for background tasks
         self.threadpool = QThreadPool()
-        print(f"Multithreading with maximum {self.threadpool.maxThreadCount()} threads")
+        logger.info(f"Multithreading with maximum {self.threadpool.maxThreadCount()} threads")
 
         self._init_ui()
 
@@ -256,7 +257,7 @@ class NewsBrowser(QWidget):
 
         # Print debug info about the PDF directory
         if not pdf_path.exists():
-            print(f"Directory {pdf_path} does not exist")
+            logger.warning(f"Directory {pdf_path} does not exist")
 
         return pdf_path
 
@@ -283,7 +284,6 @@ class NewsBrowser(QWidget):
             from localknowledge.context import get_current_user
             user = get_current_user()
             self.user_id = user.get('id', 1) if user else 1  # Default to user_id 1
-            print(f"Using user_id={self.user_id}")
 
             # Get current project from context
             from localknowledge.context import get_current_project
@@ -295,8 +295,6 @@ class NewsBrowser(QWidget):
             else:
                 self.current_project_id = project  # project is already the ID or None
 
-            print(f"Loading documents for user_id={self.user_id}, project_id={self.current_project_id}")
-
             # Get documents based on filter
             documents = []
             suggestions_map = {}  # Map of document_id to suggestion
@@ -306,10 +304,6 @@ class NewsBrowser(QWidget):
                 try:
                     # Clear existing documents list
                     documents = []
-
-                    # Get suggestions from the suggestions manager
-                    print(f"Getting reading suggestions for user_id={self.user_id}")
-
                     # Get suggestions for this user
                     suggestions = self.suggestions_manager.get_reading_suggestions(
                         user_id=self.user_id,
@@ -317,12 +311,6 @@ class NewsBrowser(QWidget):
                         min_strength=0,      # Include all strengths
                         limit=max_results
                     )
-
-                    # Debug: Print the first suggestion to see its structure
-                    if suggestions and len(suggestions) > 0:
-                        print(f"First suggestion keys: {suggestions[0].keys()}")
-                    else:
-                        print("No reading suggestions found")
 
                     if suggestions:
                         for row in suggestions:
@@ -360,11 +348,11 @@ class NewsBrowser(QWidget):
                                     'evaluator_name': row.get('evaluator_name', 'Unknown')
                                 }
                             else:
-                                print(f"Warning: Suggestion without document ID: {row}")
+                                logger.warning(f"Warning: Suggestion without document ID: {row}")
 
-                    print(f"Found {len(documents)} reading suggestions")
+                    logger.info(f"Found {len(documents)} reading suggestions")
                 except Exception as e:
-                    print(f"Error getting reading suggestions: {e}")
+                    logger.error(f"Error getting reading suggestions: {e}")
                     traceback.print_exc()
 
             elif filter_idx == 1:  # Bookmarked
@@ -383,8 +371,6 @@ class NewsBrowser(QWidget):
             elif filter_idx == 2:  # PubMed
                 # Get recent documents from pubmed source
                 documents = self.db_manager.get_recent_documents(limit=max_results, source_name='pubmed')
-                print(f"Loaded {len(documents)} recent PubMed documents")
-
                 # Get suggestions for these documents
                 if documents:
                     doc_ids = [doc['id'] for doc in documents]
@@ -393,8 +379,6 @@ class NewsBrowser(QWidget):
             elif filter_idx == 3:  # MedRxiv
                 # Get recent documents from medrxiv source
                 documents = self.db_manager.get_recent_documents(limit=max_results, source_name='medrxiv')
-                print(f"Loaded {len(documents)} recent MedRxiv documents")
-
                 # Get suggestions for these documents
                 if documents:
                     doc_ids = [doc['id'] for doc in documents]
@@ -410,7 +394,7 @@ class NewsBrowser(QWidget):
 
         except Exception as e:
             self.status_bar.showMessage(f"Error: {str(e)}")
-            print(f"Error loading documents: {str(e)}")
+            logger.error(f"Error loading documents: {str(e)}")
             traceback.print_exc()
 
 
@@ -447,9 +431,7 @@ class NewsBrowser(QWidget):
             # try to get suggestion for user_id=1 (for demo purposes)
             if not self.current_suggestion and self.user_id != 1:
                 self.current_suggestion = self.suggestions_manager.get_suggestion_by_document(document_id, 1)
-                if self.current_suggestion:
-                    print(f"Using suggestion from user_id=1 for display")
-
+                
         # Update recommendation buttons based on current suggestion
         if self.current_suggestion:
             user_agreement = self.current_suggestion.get('user_agreement')
@@ -536,7 +518,7 @@ class NewsBrowser(QWidget):
                 # Update the status bar
                 self.status_bar.showMessage(f"Marked as read: {self.current_document.get('title', 'Unknown')}")
             except Exception as e:
-                print(f"Error marking as read: {e}")
+                logger.error(f"Error marking as read: {e}")
                 traceback.print_exc()
 
     def _mark_as_read(self):
@@ -582,7 +564,7 @@ class NewsBrowser(QWidget):
                 # Update the status bar
                 self.status_bar.showMessage(f"Marked as read: {self.current_document.get('title', 'Unknown')}")
             except Exception as e:
-                print(f"Error marking as read: {e}")
+                logger.error(f"Error marking as read: {e}")
                 traceback.print_exc()
 
     def _mark_as_unread(self):
@@ -611,7 +593,7 @@ class NewsBrowser(QWidget):
                 # Update the status bar
                 self.status_bar.showMessage(f"Marked as unread: {self.current_document.get('title', 'Unknown')}")
             except Exception as e:
-                print(f"Error marking as unread: {e}")
+                logger.error(f"Error marking as unread: {e}")
                 traceback.print_exc()
 
     def _refresh_read_status_cache(self):
@@ -636,10 +618,8 @@ class NewsBrowser(QWidget):
                 document_id = record.get('document_id')
                 if document_id:
                     self.read_summaries.add(document_id)
-
-            print(f"Refreshed read status cache: {len(self.read_summaries)} read items")
         except Exception as e:
-            print(f"Error refreshing read status cache: {e}")
+            logger.error(f"Error refreshing read status cache: {e}")
             traceback.print_exc()
 
     def _load_suggestions_for_documents(self, doc_ids: List[int], suggestions_map: Dict[int, Dict[str, Any]]):
@@ -651,10 +631,8 @@ class NewsBrowser(QWidget):
             suggestions_map: Dictionary to store suggestions, keyed by document ID
         """
         if not doc_ids:
-            print("No document IDs provided to _load_suggestions_for_documents")
+            logger.info("No document IDs provided to _load_suggestions_for_documents")
             return
-
-        print(f"Loading suggestions for {len(doc_ids)} documents")
 
         # Get suggestions for these documents
         for doc_id in doc_ids:
@@ -665,14 +643,9 @@ class NewsBrowser(QWidget):
             # try to get suggestion for user_id=1 (for demo purposes)
             if not suggestion and self.user_id != 1:
                 suggestion = self.suggestions_manager.get_suggestion_by_document(doc_id, 1)
-                if suggestion:
-                    print(f"Found suggestion for document_id={doc_id} from user_id=1: {suggestion.get('recommendation_strength', 0)}/5")
-
             if suggestion:
-                print(f"Found suggestion for document_id={doc_id}: {suggestion.get('recommendation_strength', 0)}/5")
                 suggestions_map[doc_id] = suggestion
 
-        print(f"Loaded {len(suggestions_map)} suggestions for documents")
 
     def _filter_summaries(self):
         """Filter the summaries based on the selected filter."""
@@ -708,11 +681,8 @@ class NewsBrowser(QWidget):
 
         # If we're currently viewing bookmarked documents, refresh the list
         if self.filter_combo.currentIndex() == 1:  # Bookmarked
-            print(f"Refreshing bookmarked documents list after {action} action")
             self._load_summaries()
-        else:
-            print(f"Not refreshing list since we're not in bookmarked view")
-
+       
     def close_database(self):
         """Close the database connections."""
         if hasattr(self, 'db_manager'):
@@ -813,7 +783,7 @@ class NewsBrowser(QWidget):
                 self.status_bar.showMessage("Notes saved")
 
         except Exception as e:
-            print(f"Error handling notes: {e}")
+            logger.error(f"Error handling notes: {e}")
             traceback.print_exc()
             self.status_bar.showMessage("Error saving notes")
 
@@ -841,7 +811,7 @@ class NewsBrowser(QWidget):
                 self.agree_btn.setEnabled(False)
                 self.disagree_btn.setEnabled(True)
         except Exception as e:
-            print(f"Error agreeing with recommendation: {e}")
+            logger.error(f"Error agreeing with recommendation: {e}")
             traceback.print_exc()
             self.status_bar.showMessage("Error updating recommendation feedback")
 
@@ -869,7 +839,7 @@ class NewsBrowser(QWidget):
                 self.agree_btn.setEnabled(True)
                 self.disagree_btn.setEnabled(False)
         except Exception as e:
-            print(f"Error disagreeing with recommendation: {e}")
+            logger.error(f"Error disagreeing with recommendation: {e}")
             traceback.print_exc()
             self.status_bar.showMessage("Error updating recommendation feedback")
 
@@ -938,7 +908,7 @@ class NewsBrowser(QWidget):
                 self.status_bar.showMessage("Removed from personal bookmarks")
 
         except Exception as e:
-            print(f"Error toggling personal bookmark: {e}")
+            logger.error(f"Error toggling personal bookmark: {e}")
             traceback.print_exc()
             self.status_bar.showMessage("Error updating bookmark")
 
@@ -993,7 +963,7 @@ class NewsBrowser(QWidget):
                 self.status_bar.showMessage("Removed from project bookmarks")
 
         except Exception as e:
-            print(f"Error toggling project bookmark: {e}")
+            logger.error(f"Error toggling project bookmark: {e}")
             traceback.print_exc()
             self.status_bar.showMessage("Error updating bookmark")
 
@@ -1031,9 +1001,6 @@ class NewsBrowser(QWidget):
         # Update context with the new project ID
         from localknowledge.context import set_current_project
         set_current_project(project_id)
-
-        # Print debug info
-        print(f"Setting current project to {project_id}")
 
 
 class NewsBrowserWindow(QMainWindow):
