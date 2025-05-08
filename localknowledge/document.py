@@ -11,7 +11,7 @@ from typing import Dict, Any, List, Optional, Tuple, Union
 import datetime
 
 from localknowledge.db.document import DocumentDatabaseManager
-from localknowledge.embeddings.database import EmbeddingDatabaseManager
+from localknowledge.db.embeddings import EmbeddingsDatabaseManager
 
 logger = logging.getLogger(__name__)
 
@@ -83,7 +83,7 @@ class DocumentClient:
     def __init__(self):
         """Initialize the client."""
         self.document_db = DocumentDatabaseManager()
-        self.embedding_db = EmbeddingDatabaseManager()
+        self.embedding_db = EmbeddingsDatabaseManager()
 
     def get_document(self, source: str, external_id: str) -> Optional[Document]:
         """

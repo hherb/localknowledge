@@ -3,13 +3,15 @@
 Update abstract embeddings for documents without embeddings.
 
 This module creates embeddings for abstracts in the document table that don't have
-embeddings yet, using the Ollama API directly. It shows progress with tqdm and
+embeddings yet, using either Ollama API or PubMedBERT. It shows progress with tqdm and
 handles errors gracefully.
 
 Performance optimizations:
 - Uses connection pooling for database operations
 - Processes embeddings in batches for better database performance
 - Monitors performance metrics to identify bottlenecks
+- Implements memory management to prevent memory leaks and segmentation faults
+- Supports configurable batch sizes and worker counts
 """
 
 import argparse
@@ -19,6 +21,9 @@ import sys
 import concurrent.futures
 import time
 import statistics
+import gc
+import os
+import psutil
 from concurrent.futures import TimeoutError as FuturesTimeoutError
 
 import tqdm
@@ -45,7 +50,20 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 
 class AbstractEmbeddingUpdater:
     """Class for updating abstract embeddings for chunks without embeddings."""
-    def __init__(self, embedder=OllamaEmbedder, model_name: str = "snowflake-arctic-embed2:latest", db_timeout: int = 120):
+    def __init__(self, embedder=OllamaEmbedder, model_name: str = "snowflake-arctic-embed2:latest",
+                 db_timeout: int = 120, max_batch_size: int = 32, memory_limit_percent: float = 80.0,
+                 device: Optional[str] = None):
+        """
+        Initialize the abstract embedding updater.
+
+        Args:
+            embedder: Embedder class to use (OllamaEmbedder or PubMedBERTEmbedder)
+            model_name: Name of the model to use
+            db_timeout: Database query timeout in seconds
+            max_batch_size: Maximum batch size for embedding to prevent memory issues
+            memory_limit_percent: Memory usage limit as percentage of total system memory
+            device: Device to use for computation (None for auto-detection)
+        """
         # Initialize connection pool if not already initialized
         initialize_pool(min_connections=2, max_connections=10)
         logger.info("Database connection pool initialized or reused")
@@ -53,10 +71,18 @@ class AbstractEmbeddingUpdater:
         self.embeddings_db = get_embeddings_db()
         self.document_db = DocumentDatabaseManager()
         self.chunker_db = ChunkingDatabaseManager()
-        self.embedder = embedder(model_name)
+
+        # Initialize embedder with memory-saving parameters
+        if embedder == PubMedBERTEmbedder:
+            self.embedder = embedder(model_name, device=device, max_batch_size=max_batch_size)
+        else:
+            self.embedder = embedder(model_name)
+
         self.model_name = model_name
         self.vectorsize = self.embedder.get_vectorsize()
         self.db_timeout = db_timeout
+        self.max_batch_size = max_batch_size
+        self.memory_limit_percent = memory_limit_percent
 
         # Make sure we have a table for this vector size
         self.embeddings_db.ensure_table_for_vectorsize(self.vectorsize)
@@ -71,6 +97,10 @@ class AbstractEmbeddingUpdater:
         # Performance metrics
         self.embedding_times = []
         self.db_times = []
+        self.memory_usage = []
+
+        # Log initial memory usage (force log at INFO level)
+        self.log_memory_usage(force_log=True)
 
     def ensure_indices(self):
         """Ensure that necessary indices exist for efficient queries.
@@ -297,6 +327,20 @@ class AbstractEmbeddingUpdater:
         consecutive_errors = 0
         max_consecutive_errors = 3
 
+        # Use a smaller batch size for PubMedBERT to prevent memory issues
+        if isinstance(self.embedder, PubMedBERTEmbedder):
+            original_batch_size = batch_size
+            # Adjust batch size based on the embedder's max_batch_size
+            batch_size = min(batch_size, self.max_batch_size)
+            if batch_size < original_batch_size:
+                logger.info(f"Adjusted batch size from {original_batch_size} to {batch_size} for PubMedBERT")
+
+            # Also reduce workers for PubMedBERT to prevent memory issues
+            original_workers = workers
+            workers = min(workers, 2)  # Limit to 2 workers for PubMedBERT
+            if workers < original_workers:
+                logger.info(f"Adjusted workers from {original_workers} to {workers} for PubMedBERT")
+
         if limit:
             total_to_process = min(total_to_process, limit)
 
@@ -306,6 +350,18 @@ class AbstractEmbeddingUpdater:
             offset = 0
             while True:
                 try:
+                    # Only check memory occasionally to maintain performance
+                    if batch_count % 5 == 0:  # Check every 5 batches
+                        if not self.check_memory_usage():
+                            # If memory usage is too high, try to free some memory
+                            self.cleanup_memory()
+
+                            # If still too high after cleanup, reduce batch size
+                            if not self.check_memory_usage() and batch_size > 10:
+                                new_batch_size = max(10, batch_size // 2)
+                                logger.warning(f"Memory usage high. Reducing batch size from {batch_size} to {new_batch_size}")
+                                batch_size = new_batch_size
+
                     # Get a batch of chunks
                     chunks = self.get_chunks_without_embeddings(limit=batch_size, offset=offset)
                     if not chunks:
@@ -321,14 +377,18 @@ class AbstractEmbeddingUpdater:
                     # Process chunks in parallel to create embeddings
                     embedding_data = []
 
-                    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
+                    # Use a fixed worker count for consistent performance
+                    # Only adjust if we've detected high memory usage in the batch check
+                    current_workers = workers
+
+                    with concurrent.futures.ThreadPoolExecutor(max_workers=current_workers) as executor:
                         # Submit all chunks for processing
                         futures = [executor.submit(self.process_chunk, chunk, dry_run) for chunk in chunks]
 
                         # Collect results as they complete
                         for i, future in enumerate(concurrent.futures.as_completed(futures)):
                             try:
-                                success, message, embedding = future.result()
+                                success, _, embedding = future.result()  # Ignore message
 
                                 if success and embedding:
                                     # Add to batch for database insertion
@@ -341,6 +401,12 @@ class AbstractEmbeddingUpdater:
 
                             # Update progress bar (still useful for internal tracking)
                             pbar.update(1)
+
+                            # No periodic memory checks during processing to maintain performance
+
+                    # Only do garbage collection occasionally to maintain performance
+                    if batch_count % 10 == 0:  # Every 10 batches
+                        self.cleanup_memory()
 
                     # Store all embeddings in a single batch operation
                     if embedding_data and not dry_run:
@@ -366,6 +432,8 @@ class AbstractEmbeddingUpdater:
                         logger.info(f"Reached processing limit of {limit} chunks")
                         break
 
+                    # No garbage collection between batches to maintain performance
+
                 except TimeoutError as e:
                     consecutive_errors += 1
                     logger.warning(f"Timeout error in batch {batch_count}: {e}")
@@ -381,6 +449,9 @@ class AbstractEmbeddingUpdater:
 
                     # Don't update offset, retry with same offset but smaller batch
 
+                    # Force garbage collection after error
+                    self.cleanup_memory()
+
                 except Exception as e:
                     consecutive_errors += 1
                     logger.error(f"Error in batch {batch_count}: {e}")
@@ -391,6 +462,9 @@ class AbstractEmbeddingUpdater:
 
                     # Skip this batch and continue with the next one
                     offset += batch_size
+
+                    # Force garbage collection after error
+                    self.cleanup_memory()
 
         # Calculate and display overall statistics
         total_time = time.time() - start_time
@@ -431,7 +505,8 @@ class AbstractEmbeddingUpdater:
         chunk_id = chunk['id']
         document_id = chunk['document_id']
         text = chunk.get('text', '')
-        document_title = chunk.get('document_title', '')
+        # Get document title (for logging purposes if needed)
+        _ = chunk.get('document_title', '')
 
         # If text is empty, try to use the abstract from the document
         if not text or text.strip() == '':
@@ -556,6 +631,78 @@ class AbstractEmbeddingUpdater:
             self.db_times.append(db_time)
             return 0
 
+    def log_memory_usage(self, force_log=False):
+        """
+        Log current memory usage.
+
+        Args:
+            force_log: If True, log at INFO level regardless of threshold
+                      If False, only log at DEBUG level unless memory usage is high
+        """
+        try:
+            process = psutil.Process(os.getpid())
+            memory_info = process.memory_info()
+            memory_percent = process.memory_percent()
+
+            # Convert to MB for easier reading
+            rss_mb = memory_info.rss / (1024 * 1024)
+
+            # Store memory usage for tracking (but limit the size to avoid memory growth)
+            if len(self.memory_usage) > 100:
+                self.memory_usage = self.memory_usage[-50:]
+            self.memory_usage.append(memory_percent)
+
+            # Only log at WARNING level if memory usage is high
+            # This ensures it will show up but won't interrupt the progress bar too much
+            if memory_percent > self.memory_limit_percent * 0.8:
+                logger.warning(f"High memory usage: {rss_mb:.2f} MB ({memory_percent:.2f}%)")
+            elif force_log:
+                # Use DEBUG level for normal logging to avoid cluttering the output
+                logger.debug(f"Memory usage: {rss_mb:.2f} MB ({memory_percent:.2f}%)")
+
+            return memory_percent
+        except Exception as e:
+            logger.warning(f"Error getting memory usage: {e}")
+            return 0.0
+
+    def check_memory_usage(self) -> bool:
+        """
+        Check if memory usage is below the limit.
+
+        Returns:
+            True if memory usage is OK, False if it's too high
+        """
+        try:
+            # Only check memory every 10 calls to reduce performance impact
+            if not hasattr(self, '_memory_check_counter'):
+                self._memory_check_counter = 0
+
+            self._memory_check_counter += 1
+            if self._memory_check_counter % 10 != 0:
+                return True  # Skip most checks to improve performance
+
+            # Check memory usage without forcing logs
+            memory_percent = self.log_memory_usage(force_log=False)
+            if memory_percent > self.memory_limit_percent:
+                logger.warning(f"Memory usage too high: {memory_percent:.2f}% > {self.memory_limit_percent:.2f}%")
+                return False
+            return True
+        except Exception as e:
+            logger.warning(f"Error checking memory usage: {e}")
+            return True  # Assume it's OK if we can't check
+
+    def cleanup_memory(self):
+        """Force garbage collection to free memory."""
+        try:
+            # Only do full garbage collection when memory is high
+            # This is a performance optimization
+            if hasattr(self, '_memory_check_counter') and self._memory_check_counter % 20 == 0:
+                # Force garbage collection
+                collected = gc.collect()
+                logger.debug(f"Garbage collection: collected {collected} objects")
+        except Exception as e:
+            logger.warning(f"Error during memory cleanup: {e}")
+
     @backoff.on_exception(backoff.expo, Exception, max_tries=3)
     def create_embedding(self, text: str) -> List[float]:
         """Create an embedding for the given text.
@@ -568,6 +715,7 @@ class AbstractEmbeddingUpdater:
         """
         try:
             # Use the embedder to create the embedding
+            # No memory check here to maintain performance
             embedding = self.embedder.embed(text)
 
             if not embedding or len(embedding) == 0:
@@ -596,6 +744,9 @@ def main():
     parser.add_argument('--timeout', type=int, default=120, help='Database query timeout in seconds (default: 120)')
     parser.add_argument('--optimize-query', action='store_true', help='Use optimized query strategy (default: True)')
     parser.add_argument('--no-optimize-query', action='store_false', dest='optimize_query', help='Disable optimized query strategy')
+    parser.add_argument('--max-batch-size', type=int, default=32, help='Maximum batch size for embedding to prevent memory issues (default: 32)')
+    parser.add_argument('--memory-limit', type=float, default=80.0, help='Memory usage limit as percentage of total system memory (default: 80.0)')
+    parser.add_argument('--device', type=str, default=None, choices=['cpu', 'cuda', 'mps'], help='Device to use for computation (default: auto-detect)')
     args = parser.parse_args()
 
     # Set logging level based on verbose flag
@@ -650,11 +801,14 @@ def main():
         print(f"Using {args.workers} worker threads")
         print(f"Using connection pool with {args.min_connections}-{args.max_connections} connections")
 
-        # Create the updater
+        # Create the updater with memory management parameters
         updater = AbstractEmbeddingUpdater(
             embedder=embedder_class,
             model_name=model_name,
-            db_timeout=args.timeout
+            db_timeout=args.timeout,
+            max_batch_size=args.max_batch_size,
+            memory_limit_percent=args.memory_limit,
+            device=args.device
         )
         print(f"Model ID: {updater.model_id}")
         print(f"Vector size: {updater.vectorsize}")

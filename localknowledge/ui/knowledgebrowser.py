@@ -46,7 +46,7 @@ except ImportError:
         return text  # Just return the original text
 
 from localknowledge.db.document import DocumentDatabaseManager
-from localknowledge.embeddings import get_embedding_manager
+from localknowledge.embeddings import EmbeddingManager
 from localknowledge.context import set_current_project
 
 # Try to import rerankers
@@ -301,7 +301,6 @@ class KnowledgeBrowser(QWidget):
         self.embedding_manager = None
         try:
             # Get the EmbeddingManager class and instantiate it
-            EmbeddingManager = get_embedding_manager()
             self.embedding_manager = EmbeddingManager()
             print("Semantic search enabled")
         except Exception as e:
