@@ -1,4 +1,0 @@
-Objective: To evaluate the long-term neurological effects of COVID-19 infection.
-Methods: A prospective cohort study of 1,000 patients with confirmed COVID-19 was conducted with 12-month follow-up.
-Results: Neurological symptoms persisted in 30% of patients, with fatigue, cognitive impairment, and headaches being most common.
-Conclusion: COVID-19 has significant long-term neurological effects that require ongoing monitoring and management.

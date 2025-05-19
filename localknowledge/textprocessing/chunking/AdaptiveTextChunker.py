@@ -94,7 +94,7 @@ class AdaptiveTextChunker(BaseChunker):
 
         # For short texts, create a single chunk
         if len(text) <= max_chunk_size:
-            chunk_text = formatted_title + text.strip()
+            chunk_text = f"{formatted_title}{text.strip()}"
             chunk_metadata = metadata.copy()
             chunk_metadata.update({
                 'chunk_number': 0,
@@ -258,7 +258,7 @@ class AdaptiveTextChunker(BaseChunker):
         if len(text) <= effective_max_size:
             logger.debug("Text fits in a single chunk, returning immediately")
             chunk_content = text.strip()
-            full_chunk = formatted_title + chunk_content
+            full_chunk = f"{formatted_title}{chunk_content}"
             metadata = {
                 'chunk_number': 0,
                 'start_char': 0,
