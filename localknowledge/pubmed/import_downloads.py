@@ -24,7 +24,7 @@ from localknowledge.pubmed.file_verification import verify_and_handle_corrupt_fi
 # Set up logging - Configure file handler for all logs, and stream handler only for errors
 # Create logger
 logger = logging.getLogger()
-logger.setLevel(logging.INFO)
+logger.setLevel(logging.WARNING)
 
 # Remove any existing handlers
 for handler in logger.handlers[:]:
@@ -51,32 +51,32 @@ def extract_date(date_elem) -> Optional[str]:
     """Extract date from a PubMed date element."""
     if date_elem is None:
         return None
-    
+
     year = date_elem.find('Year')
     month = date_elem.find('Month')
     day = date_elem.find('Day')
-    
+
     if year is not None and year.text:
         year_text = year.text
         month_text = month.text if month is not None and month.text else "01"
         day_text = day.text if day is not None and day.text else "01"
-        
+
         try:
             # Try to parse as ISO format
             return f"{year_text}-{month_text.zfill(2)}-{day_text.zfill(2)}"
         except Exception:
             return year_text
-    
+
     return None
 
 
 def process_article(article_elem) -> Optional[Dict[str, Any]]:
     """
     Process a single PubMedArticle XML element.
-    
+
     Args:
         article_elem: ElementTree element for a PubMedArticle
-        
+
     Returns:
         Dictionary with article data or None if error
     """
@@ -85,68 +85,68 @@ def process_article(article_elem) -> Optional[Dict[str, Any]]:
         pmid_elem = article_elem.find('.//PMID')
         if pmid_elem is None or not pmid_elem.text:
             return None
-            
+
         pmid = pmid_elem.text
-        
+
         # Extract title
         title_elem = article_elem.find('.//ArticleTitle')
         title = title_elem.text if title_elem is not None and title_elem.text else ""
-        
+
         # Extract abstract
         abstract_texts = article_elem.findall('.//AbstractText')
         abstract = " ".join([t.text for t in abstract_texts if t is not None and t.text is not None])
-        
+
         # Extract authors
         author_elems = article_elem.findall('.//Author')
         authors = []
         for author in author_elems:
             last_name = author.find('.//LastName')
             fore_name = author.find('.//ForeName')
-            
+
             author_name = ""
             if last_name is not None and last_name.text:
                 author_name += last_name.text
             if fore_name is not None and fore_name.text:
                 author_name += f" {fore_name.text}" if author_name else fore_name.text
-                
+
             if author_name:
                 authors.append(author_name)
-        
+
         author_string = ", ".join(authors)
-        
+
         # Extract publication year
         year_elem = article_elem.find('.//PubDate/Year')
         if year_elem is None:
             # Try alternate locations for year
             year_elem = article_elem.find('.//PubMedPubDate[@PubStatus="pubmed"]/Year')
-            
+
         year = year_elem.text if year_elem is not None and year_elem.text else ""
-        
+
         # Extract journal
         journal_elem = article_elem.find('.//Journal/Title')
         journal = journal_elem.text if journal_elem is not None and journal_elem.text else ""
-        
+
         # Extract MeSH terms
         mesh_elems = article_elem.findall('.//MeshHeading/DescriptorName')
         mesh_terms = ", ".join([m.text for m in mesh_elems if m is not None and m.text is not None])
-        
+
         # Extract keywords
         keyword_elems = article_elem.findall('.//Keyword')
         keywords = ", ".join([k.text for k in keyword_elems if k is not None and k.text is not None])
-        
+
         # Extract DOI
         doi_elem = article_elem.find('.//ArticleId[@IdType="doi"]')
         doi = doi_elem.text if doi_elem is not None and doi_elem.text else ""
-        
+
         # Extract dates
         date_created_elem = article_elem.find('.//DateCreated')
         date_completed_elem = article_elem.find('.//DateCompleted')
         date_revised_elem = article_elem.find('.//DateRevised')
-        
+
         date_created = extract_date(date_created_elem)
         date_completed = extract_date(date_completed_elem)
         date_revised = extract_date(date_revised_elem)
-        
+
         article_data = {
             'pmid': pmid,
             'title': title,
@@ -162,9 +162,9 @@ def process_article(article_elem) -> Optional[Dict[str, Any]]:
             'date_revised': date_revised,
             'pdf_path': ""
         }
-        
+
         return article_data
-    
+
     except Exception as e:
         logger.error(f"Error processing article: {e}")
         return None
@@ -173,12 +173,12 @@ def process_article(article_elem) -> Optional[Dict[str, Any]]:
 def process_xml_file(xml_file_path: str, db_manager: PubMedDatabaseManager, batch_size: int = 100) -> Tuple[int, int]:
     """
     Process a PubMed XML file and store articles in database.
-    
+
     Args:
         xml_file_path: Path to the XML file
         db_manager: Database manager instance
         batch_size: Batch size for database inserts
-        
+
     Returns:
         Tuple of (processed_count, successful_count)
     """
@@ -187,75 +187,96 @@ def process_xml_file(xml_file_path: str, db_manager: PubMedDatabaseManager, batc
         logger.info(f"Processing {file_name}...")
         processed_count = 0
         successful_count = 0
-        
+
         # First count the number of articles for the progress bar
         article_count = 0
-        with gzip.open(xml_file_path, 'rb') as count_f:
-            for _, line in enumerate(count_f):
-                if b'<PubmedArticle>' in line:
-                    article_count += 1
-        
+        try:
+            with gzip.open(xml_file_path, 'rb') as count_f:
+                for _, line in enumerate(count_f):
+                    if b'<PubmedArticle>' in line:
+                        article_count += 1
+        except Exception as e:
+            # If we can't even count the articles, the file is likely corrupt
+            error_msg = str(e)
+            if "CRC check failed" in error_msg or "decompressing data" in error_msg:
+                logger.error(f"CRC check failed while counting articles in {file_name}: {error_msg}")
+                raise ValueError(f"File {file_name} appears to be corrupt (decompression error): {error_msg}")
+            else:
+                logger.error(f"Error counting articles in {file_name}: {error_msg}")
+                raise
+
         # Now process with a progress bar
-        with gzip.open(xml_file_path, 'rb') as f:
-            # Use iterparse to avoid loading entire file into memory
-            context = ET.iterparse(f, events=('end',))
-            
-            batch = []
-            
-            # Create article processing progress bar
-            article_pbar = tqdm(
-                total=article_count,
-                desc=f"Articles in {file_name}",
-                unit="article", 
-                position=1,  # Position below the main progress bar
-                leave=False  # Don't leave this bar when done
-            )
-            
-            for event, elem in context:
-                if elem.tag == 'PubmedArticle':
-                    processed_count += 1
-                    
-                    article_data = process_article(elem)
-                    # Update the progress bar
-                    article_pbar.update(1)
-                    if article_data:
-                        batch.append(article_data)
-                        successful_count += 1
-                    
-                    # Process batches to avoid excessive memory use
-                    if len(batch) >= batch_size:
-                        db_manager.store_articles_batch(batch)
-                        batch = []
-                    
-                    # Clear element to free up memory
-                    elem.clear()
-                
-                # Show periodic progress
-                if processed_count % 1000 == 0:
-                    logger.info(f"Processed {processed_count} articles from {os.path.basename(xml_file_path)}...")
-            
-            # Process any remaining articles
-            if batch:
-                db_manager.store_articles_batch(batch)
-                
+        try:
+            with gzip.open(xml_file_path, 'rb') as f:
+                # Use iterparse to avoid loading entire file into memory
+                context = ET.iterparse(f, events=('end',))
+
+                batch = []
+
+                # Create article processing progress bar
+                article_pbar = tqdm(
+                    total=article_count,
+                    desc=f"Articles in {file_name}",
+                    unit="article",
+                    position=1,  # Position below the main progress bar
+                    leave=False  # Don't leave this bar when done
+                )
+
+                for _, elem in context:
+                    if elem.tag == 'PubmedArticle':
+                        processed_count += 1
+
+                        article_data = process_article(elem)
+                        # Update the progress bar
+                        article_pbar.update(1)
+                        if article_data:
+                            batch.append(article_data)
+                            successful_count += 1
+
+                        # Process batches to avoid excessive memory use
+                        if len(batch) >= batch_size:
+                            db_manager.store_articles_batch(batch)
+                            batch = []
+
+                        # Clear element to free up memory
+                        elem.clear()
+
+                    # Show periodic progress
+                    if processed_count % 1000 == 0:
+                        logger.info(f"Processed {processed_count} articles from {os.path.basename(xml_file_path)}...")
+
+                # Process any remaining articles
+                if batch:
+                    db_manager.store_articles_batch(batch)
+
+        except Exception as e:
+            # If we can't open the file for processing, it's likely corrupt
+            error_msg = str(e)
+            if "CRC check failed" in error_msg or "decompressing data" in error_msg:
+                logger.error(f"CRC check failed while processing {file_name}: {error_msg}")
+                raise ValueError(f"File {file_name} appears to be corrupt (decompression error): {error_msg}")
+            else:
+                logger.error(f"Error processing {file_name}: {error_msg}")
+                raise
+
         logger.info(f"Completed processing {os.path.basename(xml_file_path)}: "
                    f"{successful_count} articles stored out of {processed_count} processed")
         return processed_count, successful_count
-        
+
     except Exception as e:
         logger.error(f"Error processing file {xml_file_path}: {e}")
         return processed_count, successful_count
 
 
-def import_downloads(download_dir: str = None, 
-                     imported_dir: str = None, 
+def import_downloads(download_dir: str = None,
+                     imported_dir: str = None,
                      create_imported_dir: bool = True,
                      tracker: PubMedDownloadTracker = None,
                      only_unprocessed: bool = False,
                      file_type: str = None) -> Tuple[int, int]:
     """
     Process downloaded PubMed XML files, import them into database, and move to 'imported' folder.
-    
+
     Args:
         download_dir: Directory containing downloaded PubMed XML files
                      (defaults to ~/knowledgebase/pubmed_data/baseline)
@@ -265,26 +286,26 @@ def import_downloads(download_dir: str = None,
         tracker: Optional PubMedDownloadTracker instance for tracking processed files
         only_unprocessed: Only process files that haven't been marked as processed in the tracker
         file_type: Optional filter by file type ('baseline' or 'update')
-        
+
     Returns:
         Tuple of (total_articles_processed, total_articles_stored)
     """
     # Set default paths if not provided
     if download_dir is None:
         download_dir = os.path.expanduser('~/knowledgebase/pubmed_data/baseline')
-    
+
     if imported_dir is None:
         imported_dir = os.path.expanduser('~/knowledgebase/pubmed_data/imported')
-    
+
     # Ensure paths are fully expanded
     download_dir = os.path.abspath(os.path.expanduser(download_dir))
     imported_dir = os.path.abspath(os.path.expanduser(imported_dir))
-    
+
     logger.info(f"Starting PubMed import from {download_dir}")
-    
+
     # Determine if we're using database tracking
     using_db_tracker = tracker is not None
-    
+
     # Create imported directory if it doesn't exist
     if create_imported_dir and not os.path.exists(imported_dir):
         try:
@@ -293,12 +314,12 @@ def import_downloads(download_dir: str = None,
         except Exception as e:
             logger.error(f"Error creating imported directory {imported_dir}: {e}")
             return 0, 0
-    
+
     # Check if download directory exists
     if not os.path.exists(download_dir):
         logger.error(f"Download directory {download_dir} does not exist")
         return 0, 0
-    
+
     # Get list of files to process based on tracking status
     if using_db_tracker and only_unprocessed:
         # Get files from the tracker that are downloaded but not processed
@@ -315,23 +336,23 @@ def import_downloads(download_dir: str = None,
     else:
         # Get all XML.gz files in the directory
         xml_files = [f for f in os.listdir(download_dir) if f.endswith('.xml.gz')]
-        
+
         # If using tracker but not restricted to unprocessed, still filter out already processed files
         if using_db_tracker:
             original_count = len(xml_files)
-            xml_files = [f for f in xml_files if not tracker.is_file_downloaded(f) or 
+            xml_files = [f for f in xml_files if not tracker.is_file_downloaded(f) or
                         f in tracker.get_unprocessed_files()]
             logger.info(f"Filtered out {original_count - len(xml_files)} already processed files")
-    
+
     if not xml_files:
         logger.info(f"No files to process in {download_dir}")
         return 0, 0
-    
+
     # Sort files to process them in order
     xml_files.sort()
-    
+
     logger.info(f"Found {len(xml_files)} files to process")
-    
+
 
     # Create database manager
     try:
@@ -340,45 +361,54 @@ def import_downloads(download_dir: str = None,
     except Exception as e:
         logger.error(f"ERROR creating database manager: {e}")
         raise
-        
+
     total_processed = 0
     total_stored = 0
-    
+
     # Process files with a progress bar
-    main_pbar = tqdm(total=len(xml_files), desc="Importing PubMed files", 
-                    unit="file", position=0, leave=True, 
+    main_pbar = tqdm(total=len(xml_files), desc="Importing PubMed files",
+                    unit="file", position=0, leave=True,
                     bar_format="{desc}: {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]")
     logger.info("Starting file processing...")
-    for i, xml_file in enumerate(xml_files):
+    for xml_file in xml_files:
         xml_path = os.path.join(download_dir, xml_file)
-        
+
         # Update progress bar description to show current file
         main_pbar.set_description(f"Processing {xml_file}")
-        
+
         # Verify file integrity before processing
         try:
             # Display that we're checking file integrity
             main_pbar.set_postfix(status="Checking integrity")
-            
+
             # Perform thorough integrity check - this will read the entire file to ensure it's valid
             if not check_xml_integrity(xml_path):
                 logger.warning(f"File {xml_file} appears to be corrupt (decompression error)")
                 main_pbar.set_postfix(status="Attempting repair")
-                
+                tqdm.write(f"⚠️ File integrity check failed for {xml_file}, attempting repair...")
+
                 # Verify MD5 and handle corrupt file - this will delete and re-download if needed
                 is_repaired = verify_and_handle_corrupt_file(
-                    xml_path, 
+                    xml_path,
                     updates_dir=os.path.dirname(xml_path) if file_type == 'update' else None,
                     baseline_dir=os.path.dirname(xml_path) if file_type == 'baseline' else None,
                     tracker=tracker
                 )
-                
+
                 if is_repaired:
                     logger.info(f"Successfully repaired corrupt file {xml_file}")
                     tqdm.write(f"✓ Successfully repaired corrupt file {xml_file}")
                     # Update the path in case the file was moved during repair
                     xml_path = os.path.join(download_dir, xml_file)
                     main_pbar.set_postfix(status="Repaired successfully")
+
+                    # Verify again after repair
+                    if not check_xml_integrity(xml_path):
+                        logger.error(f"File {xml_file} still corrupt after repair, skipping")
+                        tqdm.write(f"✗ File {xml_file} still corrupt after repair, skipping")
+                        main_pbar.set_postfix(status="Repair failed")
+                        main_pbar.update(1)
+                        continue
                 else:
                     logger.error(f"Failed to repair corrupt file {xml_file}, skipping")
                     tqdm.write(f"✗ Failed to repair corrupt file {xml_file}, skipping")
@@ -389,19 +419,85 @@ def import_downloads(download_dir: str = None,
             logger.error(f"Error during file verification: {e}")
             tqdm.write(f"✗ Error checking file integrity for {xml_file}: {e}")
             main_pbar.set_postfix(status="Verification error")
-            
+
         # Try processing the file, but only if not already known to be corrupt
         try:
             # Show that we're now processing articles
             main_pbar.set_postfix(status="Processing articles")
-            
-            processed, stored = process_xml_file(xml_path, db_manager)
-            
+
+            try:
+                processed, stored = process_xml_file(xml_path, db_manager)
+            except Exception as process_error:
+                logger.error(f"Error processing file {xml_file}: {process_error}")
+                tqdm.write(f"✗ Error processing file {xml_file}: {process_error}")
+
+                # If there's a decompression error, try to repair the file one more time
+                if "decompressing data" in str(process_error):
+                    logger.warning(f"Decompression error detected, attempting final repair for {xml_file}")
+                    main_pbar.set_postfix(status="Final repair attempt")
+
+                    # Try to delete the file
+                    try:
+                        os.remove(xml_path)
+                        logger.info(f"Removed corrupt file {xml_path}")
+                    except Exception as e:
+                        logger.warning(f"Could not remove corrupt file: {e}")
+
+                    # Determine if it's a baseline or update file
+                    import re
+                    match = re.search(r'pubmed\d+n(\d+)\.xml\.gz', xml_file)
+                    if match:
+                        seq_number = int(match.group(1))
+                        is_update = seq_number >= 1275  # For 2025, updates start at 1275
+                        ftp_path = '/pubmed/updatefiles' if is_update else '/pubmed/baseline'
+
+                        # Try one more direct download
+                        try:
+                            from ftplib import FTP
+                            ftp = FTP('ftp.ncbi.nlm.nih.gov', timeout=180)
+                            ftp.login()
+                            ftp.cwd(ftp_path)
+
+                            # Download directly
+                            with open(xml_path, 'wb') as f:
+                                def callback(data):
+                                    f.write(data)
+                                ftp.retrbinary(f'RETR {xml_file}', callback)
+
+                            ftp.quit()
+
+                            # Try processing again
+                            try:
+                                processed, stored = process_xml_file(xml_path, db_manager)
+                                logger.info(f"Successfully processed file {xml_file} after final repair")
+                                tqdm.write(f"✓ Successfully processed file {xml_file} after final repair")
+                            except Exception as final_error:
+                                logger.error(f"Final repair attempt also failed: {final_error}")
+                                processed, stored = 0, 0
+                                main_pbar.set_postfix(status="Final repair failed")
+                                tqdm.write(f"⚠️ Could not process file {xml_file} after multiple repair attempts")
+                        except Exception as ftp_error:
+                            logger.error(f"Error during final download attempt: {ftp_error}")
+                            processed, stored = 0, 0
+                            main_pbar.set_postfix(status="Final repair failed")
+
+                            # Mark the file as processed anyway to avoid repeated failures
+                            if using_db_tracker:
+                                logger.warning(f"Marking file {xml_file} as processed despite failure to avoid repeated attempts")
+                                tracker.mark_as_processed(xml_file)
+                                tqdm.write(f"⚠️ Marked {xml_file} as processed despite failure to avoid repeated attempts")
+                    else:
+                        processed, stored = 0, 0
+                        main_pbar.set_postfix(status="Processing failed")
+                else:
+                    processed, stored = 0, 0
+                    main_pbar.set_postfix(status="Processing failed")
+
             total_processed += processed
             total_stored += stored
-            
+
             # Update progress bar to include article counts
-            main_pbar.set_postfix(articles=f"{stored}/{processed}", 
+            main_pbar.set_postfix(articles=f"{stored}/{processed}",
                                  total=f"{total_stored}/{total_processed}")
         except Exception as e:
             logger.error(f"Error processing file {xml_file}: {e}")
@@ -410,23 +506,23 @@ def import_downloads(download_dir: str = None,
             main_pbar.set_postfix(status="Processing failed")
             # Update progress bar to show error
             main_pbar.set_postfix(error=f"Failed to process")
-        
+
         # Mark as processed in the tracker if available
         if using_db_tracker and processed > 0:
             tracker.mark_as_processed(xml_file)
-        
+
         # Move file and corresponding MD5 to imported directory if successful
         if processed > 0:
             try:
                 # Move the XML file
                 dest_path = os.path.join(imported_dir, xml_file)
                 shutil.move(xml_path, dest_path)
-                
+
                 # Move the corresponding MD5 file if it exists
                 md5_path = xml_path + '.md5'
                 md5_file = xml_file + '.md5'
                 md5_dest_path = os.path.join(imported_dir, md5_file)
-                
+
                 if os.path.exists(md5_path):
                     shutil.move(md5_path, md5_dest_path)
                     # Use tqdm.write for logging to avoid disrupting progress bar
@@ -435,33 +531,33 @@ def import_downloads(download_dir: str = None,
                     tqdm.write(f"✓ Moved {xml_file} to {imported_dir} (no MD5 file found)")
             except Exception as e:
                 tqdm.write(f"✗ Error moving files to {imported_dir}: {e}")
-        
+
         # Update the main progress bar
         main_pbar.update(1)
-        
+
         # Sleep a tiny bit to avoid overwhelming the database
         time.sleep(0.1)
-    
+
     # Close progress bar
     main_pbar.close()
-    
+
     # Show final statistics
     logger.info(f"Import completed: {total_stored} articles stored out of {total_processed} processed")
-    
+
     # Get updated statistics from the database
     stats = db_manager.get_stats()
     logger.info(f"Total articles in database: {stats['total_articles']}")
-    
+
     # Close the database connection
     db_manager.close()
-    
+
     return total_processed, total_stored
 
 
 if __name__ == "__main__":
     # Set up command line arguments
     parser = argparse.ArgumentParser(description='Import PubMed XML files into database')
-    parser.add_argument('--baseline_dir', 
+    parser.add_argument('--baseline_dir',
                         help='Directory containing baseline files (default: ~/knowledgebase/pubmed_data/baseline)')
     parser.add_argument('--updates_dir',
                         help='Directory containing update files (default: ~/knowledgebase/pubmed_data/updates)')
@@ -475,9 +571,9 @@ if __name__ == "__main__":
                         help='Process files even if they are already marked as processed')
     parser.add_argument('--show_stats', action='store_true',
                         help='Show statistics about downloaded and processed files')
-    
+
     args = parser.parse_args()
-    
+
     # Initialize database tracker if not disabled
     tracker = None
     if not args.no_db_tracking:
@@ -487,7 +583,7 @@ if __name__ == "__main__":
         except Exception as e:
             logger.error(f"Failed to initialize database tracking: {e}")
             logger.info("Continuing without database tracking")
-    
+
     # Show statistics if requested
     if args.show_stats and tracker:
         stats = tracker.get_download_stats()
@@ -497,43 +593,43 @@ if __name__ == "__main__":
         logger.info(f"Processed files: {stats['processed_files']}")
         logger.info(f"Baseline files: {stats['baseline_files']}")
         logger.info(f"Update files: {stats['update_files']}")
-        
+
         if stats['last_download_date']:
             logger.info(f"Last download: {stats['last_download_date']}")
         if stats['last_process_date']:
             logger.info(f"Last processing: {stats['last_process_date']}")
         logger.info("=======================================")
-        
+
         # If only showing stats, exit
         if args.process_type == 'none':
             sys.exit(0)
-    
+
     # Set up directories
     baseline_dir = os.path.expanduser(args.baseline_dir) if args.baseline_dir else os.path.expanduser('~/knowledgebase/pubmed_data/baseline')
     updates_dir = os.path.expanduser(args.updates_dir) if args.updates_dir else os.path.expanduser('~/knowledgebase/pubmed_data/updates')
     imported_dir = os.path.expanduser(args.imported_dir) if args.imported_dir else os.path.expanduser('~/knowledgebase/pubmed_data/imported')
-    
+
     only_unprocessed = not args.force_reprocess
-    
+
     # Process files based on the selected type
     if args.process_type == 'baseline' or args.process_type == 'both':
         logger.info("Processing baseline files")
         import_downloads(
-            download_dir=baseline_dir, 
+            download_dir=baseline_dir,
             imported_dir=imported_dir,
             tracker=tracker,
             only_unprocessed=only_unprocessed,
             file_type='baseline'
         )
-    
+
     if args.process_type == 'updates' or args.process_type == 'both':
         logger.info("Processing update files")
         import_downloads(
-            download_dir=updates_dir, 
+            download_dir=updates_dir,
             imported_dir=imported_dir,
             tracker=tracker,
             only_unprocessed=only_unprocessed,
             file_type='update'
         )
-    
+
     logger.info("Import process completed")
