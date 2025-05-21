@@ -51,7 +51,7 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 class AbstractEmbeddingUpdater:
     """Class for updating abstract embeddings for chunks without embeddings."""
     def __init__(self, embedder=OllamaEmbedder, model_name: str = "snowflake-arctic-embed2:latest",
-                 db_timeout: int = 120, max_batch_size: int = 32, memory_limit_percent: float = 80.0,
+                 db_timeout: int = 120, max_batch_size: int = 100, memory_limit_percent: float = 80.0,
                  device: Optional[str] = None):
         """
         Initialize the abstract embedding updater.
@@ -337,7 +337,7 @@ class AbstractEmbeddingUpdater:
 
             # Also reduce workers for PubMedBERT to prevent memory issues
             original_workers = workers
-            workers = min(workers, 2)  # Limit to 2 workers for PubMedBERT
+            workers = min(workers, 4)  # Limit to 2 workers for PubMedBERT
             if workers < original_workers:
                 logger.info(f"Adjusted workers from {original_workers} to {workers} for PubMedBERT")
 
@@ -744,7 +744,7 @@ def main():
     parser.add_argument('--timeout', type=int, default=120, help='Database query timeout in seconds (default: 120)')
     parser.add_argument('--optimize-query', action='store_true', help='Use optimized query strategy (default: True)')
     parser.add_argument('--no-optimize-query', action='store_false', dest='optimize_query', help='Disable optimized query strategy')
-    parser.add_argument('--max-batch-size', type=int, default=32, help='Maximum batch size for embedding to prevent memory issues (default: 32)')
+    parser.add_argument('--max-batch-size', type=int, default=100, help='Maximum batch size for embedding to prevent memory issues (default: 32)')
     parser.add_argument('--memory-limit', type=float, default=80.0, help='Memory usage limit as percentage of total system memory (default: 80.0)')
     parser.add_argument('--device', type=str, default=None, choices=['cpu', 'cuda', 'mps'], help='Device to use for computation (default: auto-detect)')
     args = parser.parse_args()
