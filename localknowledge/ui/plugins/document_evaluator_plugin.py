@@ -1220,20 +1220,28 @@ class DocumentEvaluatorPlugin(PluginBase):
         logger.debug("DocumentEvaluatorPlugin.get_config_widget() called")
 
         # Create a simple configuration widget
-        from PySide6.QtWidgets import QLabel, QVBoxLayout, QWidget, QPushButton, QComboBox, QFormLayout, QTextEdit, QDoubleSpinBox, QSpinBox, QSlider, QHBoxLayout, QLineEdit
+        from PySide6.QtWidgets import QLabel, QVBoxLayout, QWidget, QPushButton, QComboBox, QFormLayout, QTextEdit, QDoubleSpinBox, QSpinBox, QSlider, QHBoxLayout, QLineEdit, QSplitter, QSizePolicy
         from PySide6.QtCore import Qt
 
-        # Create a container widget that will persist
+        # Create a widget that can expand in both directions
         config_widget = QWidget()
 
         # Store a reference to this widget to prevent premature garbage collection
         self._config_widget = config_widget
 
+        # Set size policy to allow expansion with a high stretch factor
+        config_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        # Set minimum width to ensure it's not too narrow
+        config_widget.setMinimumWidth(300)
+        # Remove any maximum width constraint
+        config_widget.setMaximumWidth(16777215)  # Qt's QWIDGETSIZE_MAX
+
+        # Main layout for the container
         config_layout = QVBoxLayout(config_widget)
         config_layout.setContentsMargins(10, 10, 10, 10)
         config_layout.setSpacing(10)
 
-        # Title
+        # Title at the top
         title_label = QLabel("<h3>Evaluator Configuration</h3>")
         config_layout.addWidget(title_label)
 
@@ -1241,7 +1249,11 @@ class DocumentEvaluatorPlugin(PluginBase):
         form_widget = QWidget()
         # Store a reference to prevent garbage collection
         self._form_widget = form_widget
+        # Make sure the form widget can expand
+        form_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         form_layout = QFormLayout(form_widget)
+        # Allow form layout to stretch horizontally
+        form_layout.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
 
         # Name field
         name_label = QLabel("Name:")
@@ -1289,6 +1301,8 @@ class DocumentEvaluatorPlugin(PluginBase):
         temp_widget = QWidget()
         # Store a reference to prevent garbage collection
         self._temp_widget = temp_widget
+        # Make sure the temperature widget can expand
+        temp_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         temp_layout = QHBoxLayout(temp_widget)
         temp_layout.setContentsMargins(0, 0, 0, 0)
 
@@ -1304,11 +1318,13 @@ class DocumentEvaluatorPlugin(PluginBase):
         temperature_slider = QSlider(Qt.Horizontal)
         # Store a reference to prevent garbage collection
         self._temperature_slider = temperature_slider
+        # Make sure the slider can expand
+        temperature_slider.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         temperature_slider.setRange(0, 200)  # 0.0 to 2.0 with 100 steps per unit
         temperature_slider.setValue(70)      # 0.7 default
         temperature_slider.setTickPosition(QSlider.TicksBelow)
         temperature_slider.setTickInterval(10)
-        temp_layout.addWidget(temperature_slider)
+        temp_layout.addWidget(temperature_slider, 1)  # Add with stretch factor
 
         # Connect slider and spin box
         temperature_slider.valueChanged.connect(lambda value: self._on_temp_slider_changed(value, temperature_spin))
@@ -1330,6 +1346,8 @@ class DocumentEvaluatorPlugin(PluginBase):
         top_p_widget = QWidget()
         # Store a reference to prevent garbage collection
         self._top_p_widget = top_p_widget
+        # Make sure the top-p widget can expand
+        top_p_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         top_p_layout = QHBoxLayout(top_p_widget)
         top_p_layout.setContentsMargins(0, 0, 0, 0)
 
@@ -1345,11 +1363,13 @@ class DocumentEvaluatorPlugin(PluginBase):
         top_p_slider = QSlider(Qt.Horizontal)
         # Store a reference to prevent garbage collection
         self._top_p_slider = top_p_slider
+        # Make sure the slider can expand
+        top_p_slider.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         top_p_slider.setRange(0, 100)  # 0.0 to 1.0 with 100 steps
         top_p_slider.setValue(90)      # 0.9 default
         top_p_slider.setTickPosition(QSlider.TicksBelow)
         top_p_slider.setTickInterval(10)
-        top_p_layout.addWidget(top_p_slider)
+        top_p_layout.addWidget(top_p_slider, 1)  # Add with stretch factor
 
         # Connect slider and spin box
         top_p_slider.valueChanged.connect(lambda value: self._on_top_p_slider_changed(value, top_p_spin))
@@ -1364,6 +1384,8 @@ class DocumentEvaluatorPlugin(PluginBase):
         prompt_edit = QTextEdit()
         # Store a reference to prevent garbage collection
         self._prompt_edit = prompt_edit
+        # Make sure the text edit can expand in both directions
+        prompt_edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         prompt_edit.setMinimumHeight(150)
         prompt_edit.setPlaceholderText("Enter a custom prompt for the evaluator...")
 
