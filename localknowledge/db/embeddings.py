@@ -1181,16 +1181,30 @@ class EmbeddingsDatabaseManager(DatabaseManager):
 
         return stats
 
-    #list all embedding models that have already got embedded data in our database
-    def get_models_with_embeddings(self):
+    def get_models_with_embeddings(self) -> Dict[int, str]:
+        """
+        Get a dictionary of models that have embeddings in the database.
 
-        """Get a list of models that have embeddings in the database."""
-        query = """SELECT id, model_name from embedding_models where  id in (SELECT distinct(model_id) from embedding_base);"""
+        Returns:
+            Dictionary with model_id as key and model_name as value
+        """
+        query = """SELECT id, model_name from embedding_models where id in (SELECT distinct(model_id) from embedding_base);"""
         result = self.execute(query)
-        result=dict(result)
-        print(f"Embedding models available: {result}")
-        return result
-    
+
+        if not result:
+            logger.warning("No embedding models found in database")
+            return {}
+
+        # Convert the result to a dictionary with id as key and model_name as value
+        models_dict = {}
+        for model in result:
+            # Convert id to int to ensure it works as a dictionary key
+            model_id = int(model['id'])
+            models_dict[model_id] = model['model_name']
+
+        logger.info(f"Found {len(models_dict)} embedding models with data: {models_dict}")
+        return models_dict
+
     @staticmethod
     @lru_cache(maxsize=100)
     def model_to_tablename(model_name: str) -> str:
@@ -1230,7 +1244,7 @@ class EmbeddingsDatabaseManager(DatabaseManager):
         return f"{prefix}{clean_name}"
 
 
-    
+
 
 
 # Singleton instance

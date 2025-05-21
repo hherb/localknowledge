@@ -12,7 +12,7 @@ from typing import List, Dict, Any, Optional, Tuple, Union, Callable
 import numpy as np
 import backoff
 
-from localknowledge.embeddings.database import EmbeddingDatabaseManager
+from localknowledge.db.embeddings import EmbeddingsDatabaseManager
 from localknowledge.embeddings.ollama_embedder import OllamaEmbedder
 from localknowledge.embeddings.pubmed_embedder import PubMedBERTEmbedder
 from localknowledge.textprocessing.chunking import TextChunker, MarkdownChunker, BaseChunker
@@ -33,7 +33,7 @@ class EmbeddingManager:
             chunker: Custom chunker to use (default: TextChunker)
         """
         # Initialize database first to avoid circular dependency issues
-        self.db = EmbeddingDatabaseManager()
+        self.db = EmbeddingsDatabaseManager()
 
         # Initialize other attributes
         self.embedder = None
@@ -52,7 +52,7 @@ class EmbeddingManager:
         """
         # Make sure db is initialized
         if not hasattr(self, 'db') or self.db is None:
-            self.db = EmbeddingDatabaseManager()
+            self.db = EmbeddingsDatabaseManager()
 
         try:
             return self.db.get_models_with_embeddings()
@@ -75,7 +75,7 @@ class EmbeddingManager:
 
         # Make sure db is initialized
         if not hasattr(self, 'db') or self.db is None:
-            self.db = EmbeddingDatabaseManager()
+            self.db = EmbeddingsDatabaseManager()
 
         try:
             embedder_name = self.db.get_embedder_for_model(model_name)
@@ -310,13 +310,35 @@ class EmbeddingManager:
 
         # Search for similar documents
         logger.info(f"Searching for similar documents with threshold={threshold}")
-        results = self.db.search_similar(
-            query_embedding=query_embedding,
-            model_name=self.model_name,
-            limit=limit,
-            threshold=threshold,
-            source_id=source_id
-        )
+
+        # The EmbeddingsDatabaseManager.search_similar method expects 'embedding' and 'embed_source' parameters
+        # not 'query_embedding' and 'source_id'
+        try:
+            results = self.db.search_similar(
+                embedding=query_embedding,
+                embed_source='abstract',  # Default to abstract as the embedding source
+                model_name=self.model_name,
+                limit=limit,
+                threshold=threshold
+            )
+
+            # Filter results by source_id if provided
+            if source_id and results:
+                filtered_results = []
+                for result in results:
+                    # Check if the result has a source_id that matches the requested source_id
+                    if (result.get('source_id') == source_id or
+                        result.get('source_name') == source_id):
+                        filtered_results.append(result)
+                results = filtered_results
+        except Exception as e:
+            logger.error(f"Error in search: {e}")
+            return [{
+                'error': 'Search failed',
+                'document_id': 'error',
+                'text': f'Failed to search for similar documents: {str(e)}',
+                'similarity': 0.0
+            }]
 
         print(f"Search returned {len(results)} results")
         if results:

@@ -105,9 +105,18 @@ class AbstractDisplayWidget(QWidget):
         source = self.current_document.get('source_name', '').capitalize()
         doi = self.current_document.get('doi', '')
         abstract = self.current_document.get('abstract', 'No abstract available')
+
+        # Escape HTML special characters in the abstract to prevent issues with < and > characters
+        if abstract:
+            import html
+            abstract = html.escape(abstract)
+
         keywords = self.current_document.get('keywords', [])
         journal = self.current_document.get('journal', '')
         url = self.current_document.get('url', '')
+
+        # Debug log the abstract length
+        logger.info(f"Abstract length for DOI {doi}: {len(abstract) if abstract else 0} characters")
 
         # Format keywords as a list
         keywords_text = ', '.join(keywords) if keywords else 'None'
@@ -169,7 +178,7 @@ class AbstractDisplayWidget(QWidget):
             {recommendation_html}
 
             <h2 style="color: #2c3e50; border-bottom: 1px solid #ddd; padding-bottom: 5px;">Abstract</h2>
-            <div style="line-height: 1.6; text-align: justify;">
+            <div style="line-height: 1.6; text-align: justify; white-space: pre-wrap;">
                 {abstract}
             </div>
         </div>

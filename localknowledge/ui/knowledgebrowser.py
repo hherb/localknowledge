@@ -46,7 +46,7 @@ except ImportError:
         return text  # Just return the original text
 
 from localknowledge.db.document import DocumentDatabaseManager
-from localknowledge.embeddings import EmbeddingManager
+from localknowledge.embeddings import get_embedding_manager  # Use lazy import function instead of direct import
 from localknowledge.context import set_current_project
 
 # Try to import rerankers
@@ -300,11 +300,20 @@ class KnowledgeBrowser(QWidget):
         # Try to initialize the embedding manager, but make it optional
         self.embedding_manager = None
         try:
-            # Get the EmbeddingManager class and instantiate it
+            # Get the EmbeddingManager class and instantiate it using the lazy import
+            EmbeddingManager = get_embedding_manager()
             self.embedding_manager = EmbeddingManager()
+
+            # Ensure the database connection is initialized
+            if not hasattr(self.embedding_manager, 'db') or self.embedding_manager.db is None:
+                from localknowledge.db.embeddings import EmbeddingsDatabaseManager
+                self.embedding_manager.db = EmbeddingsDatabaseManager()
+
             print("Semantic search enabled")
         except Exception as e:
             print(f"Semantic search disabled: {e}")
+            import traceback
+            traceback.print_exc()
 
         # Default search settings
         self.search_settings = {
@@ -416,7 +425,8 @@ class KnowledgeBrowser(QWidget):
         print(f"Adding {len(self.available_embedding_models)} models to combo box")
         for model in self.available_embedding_models:
             print(f"Adding model to combo box: {model['model_name']}")
-            self.embedding_model_combo.addItem(model['model_name'], model['id'])
+            # Use model_name for both display text and data
+            self.embedding_model_combo.addItem(model['model_name'], model['model_name'])
 
         # Hide by default (will be shown when semantic search is selected)
         self.embedding_model_combo.setVisible(False)
@@ -529,11 +539,25 @@ class KnowledgeBrowser(QWidget):
             return [{'id': 1, 'model_name': 'snowflake-arctic-embed2:latest'}]
 
         try:
-            models = self.embedding_manager.get_models_with_embeddings()
-            print(f"Available embedding models: {models}")
-            return models
+            # Get models from the embedding manager (returns a dictionary)
+            models_dict = self.embedding_manager.get_models_with_embeddings()
+            print(f"Available embedding models: {models_dict}")
+
+            # If no models were found, return the default model
+            if not models_dict:
+                print("No embedding models found, using default")
+                return [{'id': 1, 'model_name': 'snowflake-arctic-embed2:latest'}]
+
+            # Convert the dictionary to a list of dictionaries
+            models_list = []
+            for model_id, model_name in models_dict.items():
+                models_list.append({'id': model_id, 'model_name': model_name})
+
+            return models_list
         except Exception as e:
             print(f"Error getting embedding models: {e}")
+            import traceback
+            traceback.print_exc()
             # Return a default model if we can't get the list from the database
             return [{'id': 1, 'model_name': 'snowflake-arctic-embed2:latest'}]
 
