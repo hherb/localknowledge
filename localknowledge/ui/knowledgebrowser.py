@@ -368,6 +368,9 @@ class KnowledgeBrowser(QWidget):
         # Current project ID for project bookmarks
         self.current_project_id = None
 
+        # Track the current search worker for cancellation
+        self.current_search_worker = None
+
         self._init_ui()
 
     def _init_ui(self):
@@ -791,8 +794,6 @@ class KnowledgeBrowser(QWidget):
             self.publication_list.addItem("Semantic search is not available. Please install Ollama and required models.")
             return
 
-
-
         # Get source filter based on settings
         source_id = None
         if self.search_sources.get('medrxiv', True) and not self.search_sources.get('pubmed', True):
@@ -813,8 +814,15 @@ class KnowledgeBrowser(QWidget):
         self.publication_list.addItem("Searching...")
         QApplication.processEvents()  # Ensure the UI updates
 
-        # Create a worker for the semantic search
-        worker = SemanticSearchWorker(
+        # Change the search button to "Cancel Search"
+        self.search_button.setText("Cancel Search")
+        self.search_button.setStyleSheet("QPushButton { background-color: #ffcccc; }")
+        self.search_button.clicked.disconnect()  # Disconnect existing connections
+        self.search_button.clicked.connect(self._cancel_search)
+        QApplication.processEvents()  # Ensure the UI updates
+
+        # Create a worker for the semantic search with 3-minute timeout
+        self.current_search_worker = SemanticSearchWorker(
             embedding_manager=self.embedding_manager,
             query=search_text,
             limit=self.search_settings['max_results'],
@@ -822,15 +830,31 @@ class KnowledgeBrowser(QWidget):
             source_id=source_id,
             use_hyde=self.search_settings.get('use_hyde', False),
             hyde_model=self.search_settings.get('hyde_model', 'gemma3:4b'),
-            embedding_model=self.search_settings.get('embedding_model', 'snowflake-arctic-embed2:latest')
+            embedding_model=self.search_settings.get('embedding_model', 'snowflake-arctic-embed2:latest'),
+            timeout=180  # 3 minutes timeout
         )
 
         # Connect signals
-        worker.signals.result.connect(self._handle_semantic_search_results)
-        worker.signals.error.connect(self._handle_semantic_search_error)
+        self.current_search_worker.signals.result.connect(self._handle_semantic_search_results)
+        self.current_search_worker.signals.error.connect(self._handle_semantic_search_error)
+        self.current_search_worker.signals.finished.connect(self._reset_search_button)
 
         # Execute the worker
-        self.threadpool.start(worker)
+        self.threadpool.start(self.current_search_worker)
+
+    def _cancel_search(self):
+        """Cancel the current search operation."""
+        if hasattr(self, 'current_search_worker') and self.current_search_worker:
+            print("Cancelling search...")
+            self.current_search_worker.cancel()
+            self.status_bar.showMessage("Cancelling search...")
+
+    def _reset_search_button(self):
+        """Reset the search button to its original state."""
+        self.search_button.setText("Search")
+        self.search_button.setStyleSheet("")  # Reset style
+        self.search_button.clicked.disconnect()  # Disconnect cancel handler
+        self.search_button.clicked.connect(self._on_search)  # Reconnect search handler
 
     def _handle_semantic_search_results(self, results):
         """Handle the results from semantic search."""
@@ -970,8 +994,6 @@ class KnowledgeBrowser(QWidget):
             self.publication_list.addItem("Hybrid search requires semantic search capabilities. Please install Ollama and required models.")
             return
 
-
-
         # Get the selected embedding model
         selected_model = self.embedding_model_combo.currentText()
         if selected_model:
@@ -984,20 +1006,32 @@ class KnowledgeBrowser(QWidget):
         self.publication_list.addItem("Searching...")
         QApplication.processEvents()  # Ensure the UI updates
 
+        # Change the search button to "Cancel Search"
+        self.search_button.setText("Cancel Search")
+        self.search_button.setStyleSheet("QPushButton { background-color: #ffcccc; }")
+        self.search_button.clicked.disconnect()  # Disconnect existing connections
+        self.search_button.clicked.connect(self._cancel_search)
+        QApplication.processEvents()  # Ensure the UI updates
+
+        # Update search settings to include timeout
+        search_settings = self.search_settings.copy()
+        search_settings['timeout'] = 180  # 3 minutes timeout
+
         # Create a worker for the hybrid search
-        worker = HybridSearchWorker(
+        self.current_search_worker = HybridSearchWorker(
             db_manager=self.db_manager,
             embedding_manager=self.embedding_manager,
             query=search_text,
-            search_settings=self.search_settings
+            search_settings=search_settings
         )
 
         # Connect signals
-        worker.signals.result.connect(self._handle_hybrid_search_results)
-        worker.signals.error.connect(self._handle_hybrid_search_error)
+        self.current_search_worker.signals.result.connect(self._handle_hybrid_search_results)
+        self.current_search_worker.signals.error.connect(self._handle_hybrid_search_error)
+        self.current_search_worker.signals.finished.connect(self._reset_search_button)
 
         # Execute the worker
-        self.threadpool.start(worker)
+        self.threadpool.start(self.current_search_worker)
 
     def _handle_hybrid_search_results(self, result):
         """Handle the results from hybrid search."""
@@ -1643,7 +1677,8 @@ class SemanticSearchWorker(QRunnable):
     """
 
     def __init__(self, embedding_manager, query, limit=10, threshold=0.7, source_id=None,
-                 use_hyde=False, hyde_model=None, embedding_model='snowflake-arctic-embed2:latest'):
+                 use_hyde=False, hyde_model=None, embedding_model='snowflake-arctic-embed2:latest',
+                 timeout=180):  # Default timeout of 3 minutes (180 seconds)
         """
         Initialize the worker.
 
@@ -1656,6 +1691,7 @@ class SemanticSearchWorker(QRunnable):
             use_hyde: Whether to use HyDE (Hypothetical Document Embeddings)
             hyde_model: Model to use for HyDE
             embedding_model: Model to use for embeddings
+            timeout: Timeout in seconds for the search operation (default: 180 seconds)
         """
         super().__init__()
         self.embedding_manager = embedding_manager
@@ -1666,20 +1702,43 @@ class SemanticSearchWorker(QRunnable):
         self.use_hyde = use_hyde
         self.hyde_model = hyde_model
         self.embedding_model = embedding_model
+        self.timeout = timeout
         self.signals = WorkerSignals()
+        self.is_cancelled = False
+
+    def cancel(self):
+        """Cancel the search operation."""
+        self.is_cancelled = True
+        print("Semantic search cancellation requested")
 
     @Slot()
     def run(self):
         """
         Perform semantic search.
         """
+        import time
+
+        class TimeoutError(Exception):
+            """Exception raised when a timeout occurs."""
+            pass
+
+        def check_timeout(start_time, timeout_seconds):
+            """Check if the operation has timed out."""
+            if time.time() - start_time > timeout_seconds:
+                raise TimeoutError(f"Semantic search timed out after {timeout_seconds} seconds")
+
         try:
             # Perform the search with the specified embedding model
             print(f"Using embedding model: {self.embedding_model}")
+            start_time = time.time()
 
             # Set the embedding model in the embedding manager
             if hasattr(self.embedding_manager, 'set_embedding_model'):
                 self.embedding_manager.set_embedding_model(self.embedding_model)
+
+            # Check for cancellation
+            if self.is_cancelled:
+                raise InterruptedError("Search was cancelled by user")
 
             # Check if HyDE is enabled
             if self.use_hyde and self.hyde_model:
@@ -1692,6 +1751,11 @@ class SemanticSearchWorker(QRunnable):
                     query=self.query,
                     model=self.hyde_model
                 )
+
+                # Check for cancellation and timeout
+                if self.is_cancelled:
+                    raise InterruptedError("Search was cancelled by user")
+                check_timeout(start_time, self.timeout)
 
                 # Use the hypothetical document for search
                 results = self.embedding_manager.search(
@@ -1709,8 +1773,35 @@ class SemanticSearchWorker(QRunnable):
                     source_id=self.source_id
                 )
 
+            # Check for timeout
+            check_timeout(start_time, self.timeout)
+
+            # Calculate search time
+            search_time = time.time() - start_time
+            print(f"Semantic search completed in {search_time:.2f} seconds")
+
+            # Check for cancellation one more time before emitting results
+            if self.is_cancelled:
+                raise InterruptedError("Search was cancelled by user")
+
             # Emit the result
             self.signals.result.emit(results)
+
+        except TimeoutError as e:
+            # Handle timeout specifically
+            print(f"Semantic search timed out: {e}")
+            self.signals.error.emit(
+                f"Search timed out after {self.timeout} seconds. Please try a more specific query or adjust search parameters.",
+                "The search operation exceeded the maximum allowed time."
+            )
+
+        except InterruptedError as e:
+            # Handle cancellation
+            print(f"Semantic search cancelled: {e}")
+            self.signals.error.emit(
+                "Search was cancelled.",
+                "The search operation was cancelled by the user."
+            )
 
         except Exception as e:
             # Get the traceback
@@ -1929,16 +2020,40 @@ class HybridSearchWorker(QRunnable):
         self.query = query
         self.search_settings = search_settings
         self.signals = WorkerSignals()
+        self.is_cancelled = False
+        self.timeout = search_settings.get('timeout', 180)  # Default 3 minutes timeout
+
+    def cancel(self):
+        """Cancel the search operation."""
+        self.is_cancelled = True
+        print("Hybrid search cancellation requested")
 
     @Slot()
     def run(self):
         """
         Perform hybrid search by combining keyword and semantic search results.
         """
+        import time
+
+        class TimeoutError(Exception):
+            """Exception raised when a timeout occurs."""
+            pass
+
+        def check_timeout(start_time, timeout_seconds):
+            """Check if the operation has timed out."""
+            if time.time() - start_time > timeout_seconds:
+                raise TimeoutError(f"Hybrid search timed out after {timeout_seconds} seconds")
         try:
+            # Start timing
+            start_time = time.time()
+
             # Process search terms for keyword search
             search_terms = []
             remaining_text = self.query
+
+            # Check for cancellation
+            if self.is_cancelled:
+                raise InterruptedError("Search was cancelled by user")
 
             # Extract quoted terms first
             quoted_terms = []
@@ -1966,7 +2081,7 @@ class HybridSearchWorker(QRunnable):
 
             # Step 1: Perform keyword search
             keyword_results = []
-            if search_terms:
+            if search_terms and not self.is_cancelled:
                 # Convert the search terms into an appropriate query
                 query = " & ".join(search_terms)
 
@@ -1990,10 +2105,17 @@ class HybridSearchWorker(QRunnable):
                 for pub in keyword_results:
                     pub['search_source'] = 'keyword'
 
+            # Check for cancellation
+            if self.is_cancelled:
+                raise InterruptedError("Search was cancelled by user")
+
             # Step 2: Perform semantic search
             semantic_results = []
-            if self.embedding_manager:
+            if self.embedding_manager and not self.is_cancelled:
                 try:
+                    # Check for timeout
+                    check_timeout(start_time, self.timeout)
+
                     # Get source filter based on settings
                     source_id = None
                     if self.search_settings.get('sources', {}).get('medrxiv', True) and not self.search_settings.get('sources', {}).get('pubmed', True):
@@ -2010,6 +2132,13 @@ class HybridSearchWorker(QRunnable):
                     if hasattr(self.embedding_manager, 'set_embedding_model'):
                         self.embedding_manager.set_embedding_model(embedding_model)
 
+                    # Check for cancellation
+                    if self.is_cancelled:
+                        raise InterruptedError("Search was cancelled by user")
+
+                    # Check for timeout again before the potentially long operation
+                    check_timeout(start_time, self.timeout)
+
                     # Get raw semantic search results
                     raw_results = self.embedding_manager.search(
                         query=self.query,
@@ -2020,6 +2149,13 @@ class HybridSearchWorker(QRunnable):
 
                     # Process semantic results
                     for result in raw_results:
+                        # Check for cancellation
+                        if self.is_cancelled:
+                            raise InterruptedError("Search was cancelled by user")
+
+                        # Check for timeout periodically
+                        check_timeout(start_time, self.timeout)
+
                         document_id = result.get('document_id')
                         similarity = result.get('similarity', 0)
                         chunk_text = result.get('text', '')
@@ -2060,16 +2196,34 @@ class HybridSearchWorker(QRunnable):
                                 semantic_results.append(publication)
                         except Exception as e:
                             print(f"Error retrieving publication {document_id}: {e}")
+                except TimeoutError as e:
+                    print(f"Semantic search part of hybrid search timed out: {e}")
+                    raise
                 except Exception as e:
                     print(f"Semantic search error: {e}")
+
+            # Check for cancellation
+            if self.is_cancelled:
+                raise InterruptedError("Search was cancelled by user")
+
+            # Check for timeout
+            check_timeout(start_time, self.timeout)
 
             # Step 3: Combine and deduplicate results
             combined_results = self._combine_results(keyword_results, semantic_results)
 
+            # Check for cancellation
+            if self.is_cancelled:
+                raise InterruptedError("Search was cancelled by user")
+
+            # Check for timeout
+            check_timeout(start_time, self.timeout)
+
             # Step 4: Rerank if enabled
             if (RERANKERS_AVAILABLE and
                 self.search_settings.get('use_reranker', False) and
-                combined_results):
+                combined_results and
+                not self.is_cancelled):
                 try:
                     # Import the reranker module
                     from localknowledge.ai.rerankers import get_reranker
@@ -2078,6 +2232,9 @@ class HybridSearchWorker(QRunnable):
                     reranker = get_reranker(self.search_settings.get('reranker_model', 'BAAI/bge-reranker-base'))
 
                     if reranker:
+                        # Check for timeout before reranking
+                        check_timeout(start_time, self.timeout)
+
                         # Rerank the documents
                         combined_results = reranker.rerank(self.query, combined_results)
 
@@ -2087,6 +2244,14 @@ class HybridSearchWorker(QRunnable):
                 except Exception as e:
                     print(f"Reranking error: {e}")
 
+            # Calculate search time
+            search_time = time.time() - start_time
+            print(f"Hybrid search completed in {search_time:.2f} seconds")
+
+            # Final cancellation check
+            if self.is_cancelled:
+                raise InterruptedError("Search was cancelled by user")
+
             # Emit the result
             self.signals.result.emit({
                 'combined_results': combined_results,
@@ -2094,6 +2259,22 @@ class HybridSearchWorker(QRunnable):
                 'semantic_count': len(semantic_results),
                 'reranked': self.search_settings.get('use_reranker', False) and RERANKERS_AVAILABLE
             })
+
+        except TimeoutError as e:
+            # Handle timeout specifically
+            print(f"Hybrid search timed out: {e}")
+            self.signals.error.emit(
+                f"Search timed out after {self.timeout} seconds. Please try a more specific query or adjust search parameters.",
+                "The search operation exceeded the maximum allowed time."
+            )
+
+        except InterruptedError as e:
+            # Handle cancellation
+            print(f"Hybrid search cancelled: {e}")
+            self.signals.error.emit(
+                "Search was cancelled.",
+                "The search operation was cancelled by the user."
+            )
 
         except Exception as e:
             # Get the traceback

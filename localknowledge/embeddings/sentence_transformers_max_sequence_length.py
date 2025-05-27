@@ -2,7 +2,7 @@ import argparse
 from sentence_transformers import SentenceTransformer
 
 class SentenceTransformerHelper:
-    def __init__(self, model_name="microsoft/BiomedNLP-PubMedBERT-base-uncased-abstract-fulltext"):
+    def __init__(self, model_name="pritamdeka/BioBERT-mnli-snli-scinli-scitail-mednli-stsb"):
         self.model_name = model_name
         self.model = SentenceTransformer(self.model_name)
         self.tokenizer = self.model.tokenizer
@@ -67,7 +67,7 @@ def check_max_sequence_length(model_name):
     return None
 
 
-def count_tokens_for_model(text, model_name="microsoft/BiomedNLP-PubMedBERT-base-uncased-abstract-fulltext"):
+def count_tokens_for_model(text, model_name="pritamdeka/BioBERT-mnli-snli-scinli-scitail-mednli-stsb"):
     """
     Calculate the number of tokens in a text for a specific SentenceTransformers model.
     
@@ -115,7 +115,7 @@ def main():
     """
     parser = argparse.ArgumentParser(description='Check the maximum sequence length of a sentence transformer model')
     parser.add_argument('--model', type=str,
-                        default="microsoft/BiomedNLP-PubMedBERT-base-uncased-abstract-fulltext",
+                        default="cambridgeltl/SapBERT-from-PubMedBERT-fulltext",
                         help='Name or path of the sentence transformer model')
 
     args = parser.parse_args()

@@ -776,7 +776,7 @@ def main():
         # Define default models for each embedder type
         default_models = {
             "ollama": "snowflake-arctic-embed2:latest",
-            "pubmedbert": "microsoft/BiomedNLP-PubMedBERT-base-uncased-abstract-fulltext"
+            "pubmedbert": "cambridgeltl/SapBERT-from-PubMedBERT-fulltext"
         }
 
         # Choose the embedder based on the argument

@@ -9,7 +9,6 @@ export TOKENIZERS_PARALLELISM=false
 # Increased batch size and workers for better performance
 python update_embeddings_for_abstracts.py \
   --embedder pubmedbert \
-  --model "microsoft/BiomedNLP-PubMedBERT-base-uncased-abstract-fulltext" \
   --batch-size 100 \
   --workers 4 \
   --max-batch-size 100 \

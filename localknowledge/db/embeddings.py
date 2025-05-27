@@ -805,9 +805,11 @@ class EmbeddingsDatabaseManager(DatabaseManager):
             LIMIT %s;
             """
 
+            # Use a longer timeout (180 seconds = 3 minutes) for semantic search queries
             result = self.execute(
                 query,
-                (embedding_str, embedding_str, embed_source_name, model_id, embedding_str, threshold, limit)
+                (embedding_str, embedding_str, embed_source_name, model_id, embedding_str, threshold, limit),
+                timeout=180  # 3 minutes timeout for semantic search
             )
 
             return result or []

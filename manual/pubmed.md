@@ -4,6 +4,26 @@
 
 The PubMed Module provides functionality for working with publications from the PubMed database. It includes capabilities for downloading, parsing, storing, and analyzing publication data from PubMed.
 
+## Recent Fixes
+
+### Abstract Truncation Fix (2024)
+
+**Issue**: Abstracts were being truncated when encountering special characters like subscripts, superscripts, or other XML formatting elements. For example, text like "We developed a water-soluble adhesive photoswitch (Gluen-Azo-SA, average n<sub>5</sub>)" would be truncated to "We developed a water-soluble adhesive photoswitch (Gluen-Azo-SA, average n".
+
+**Root Cause**: The original code used `element.text` to extract text content from XML elements, but this only returns text before the first child element, not the complete text content including text after child elements.
+
+**Solution**: Implemented a new `get_element_text()` function in `localknowledge.pubmed.import_downloads` that recursively extracts all text content from XML elements, including:
+- Text before child elements (`element.text`)
+- Text content from child elements (recursive)
+- Text after child elements (`child.tail`)
+
+**Files Modified**:
+- `localknowledge/pubmed/import_downloads.py`: Added `get_element_text()` function and updated text extraction for titles, abstracts, authors, journal names, MeSH terms, keywords, and DOIs.
+
+**Testing**: Added comprehensive unit tests in `tests/test_pubmed_text_extraction.py` and verified with real PubMed article PMID 28675679.
+
+**Impact**: This fix ensures that all text content from PubMed abstracts is properly imported, including complex chemical formulas, mathematical expressions, and other formatted content that was previously being truncated.
+
 ## Core Components
 
 ### PubMed Client

@@ -47,6 +47,42 @@ logger.addHandler(console_handler)
 
 
 
+def get_element_text(elem) -> str:
+    """
+    Get complete text from an XML element, handling mixed content.
+
+    This function properly extracts text from elements that contain both
+    text and child elements (like subscripts, superscripts, etc.).
+    Unlike elem.text which only returns text before the first child element,
+    this function returns all text content.
+
+    Args:
+        elem: XML element to extract text from
+
+    Returns:
+        Complete text content of the element
+    """
+    if elem is None:
+        return ""
+
+    # If element has no children, just return its text
+    if not list(elem):
+        return elem.text or ""
+
+    # Build text from element text + all child text + tail text
+    text = elem.text or ""
+    for child in elem:
+        # Get text from child element recursively
+        child_text = get_element_text(child)
+        text += child_text
+
+        # Add tail text (text that comes after the child element)
+        if child.tail:
+            text += child.tail
+
+    return text
+
+
 def extract_date(date_elem) -> Optional[str]:
     """Extract date from a PubMed date element."""
     if date_elem is None:
@@ -90,11 +126,17 @@ def process_article(article_elem) -> Optional[Dict[str, Any]]:
 
         # Extract title
         title_elem = article_elem.find('.//ArticleTitle')
-        title = title_elem.text if title_elem is not None and title_elem.text else ""
+        title = get_element_text(title_elem) if title_elem is not None else ""
 
-        # Extract abstract
+        # Extract abstract - use proper text extraction to handle mixed content
         abstract_texts = article_elem.findall('.//AbstractText')
-        abstract = " ".join([t.text for t in abstract_texts if t is not None and t.text is not None])
+        abstract_parts = []
+        for t in abstract_texts:
+            if t is not None:
+                text = get_element_text(t)
+                if text:
+                    abstract_parts.append(text)
+        abstract = " ".join(abstract_parts)
 
         # Extract authors
         author_elems = article_elem.findall('.//Author')
@@ -104,10 +146,14 @@ def process_article(article_elem) -> Optional[Dict[str, Any]]:
             fore_name = author.find('.//ForeName')
 
             author_name = ""
-            if last_name is not None and last_name.text:
-                author_name += last_name.text
-            if fore_name is not None and fore_name.text:
-                author_name += f" {fore_name.text}" if author_name else fore_name.text
+            if last_name is not None:
+                last_name_text = get_element_text(last_name)
+                if last_name_text:
+                    author_name += last_name_text
+            if fore_name is not None:
+                fore_name_text = get_element_text(fore_name)
+                if fore_name_text:
+                    author_name += f" {fore_name_text}" if author_name else fore_name_text
 
             if author_name:
                 authors.append(author_name)
@@ -124,19 +170,31 @@ def process_article(article_elem) -> Optional[Dict[str, Any]]:
 
         # Extract journal
         journal_elem = article_elem.find('.//Journal/Title')
-        journal = journal_elem.text if journal_elem is not None and journal_elem.text else ""
+        journal = get_element_text(journal_elem) if journal_elem is not None else ""
 
         # Extract MeSH terms
         mesh_elems = article_elem.findall('.//MeshHeading/DescriptorName')
-        mesh_terms = ", ".join([m.text for m in mesh_elems if m is not None and m.text is not None])
+        mesh_parts = []
+        for m in mesh_elems:
+            if m is not None:
+                text = get_element_text(m)
+                if text:
+                    mesh_parts.append(text)
+        mesh_terms = ", ".join(mesh_parts)
 
         # Extract keywords
         keyword_elems = article_elem.findall('.//Keyword')
-        keywords = ", ".join([k.text for k in keyword_elems if k is not None and k.text is not None])
+        keyword_parts = []
+        for k in keyword_elems:
+            if k is not None:
+                text = get_element_text(k)
+                if text:
+                    keyword_parts.append(text)
+        keywords = ", ".join(keyword_parts)
 
         # Extract DOI
         doi_elem = article_elem.find('.//ArticleId[@IdType="doi"]')
-        doi = doi_elem.text if doi_elem is not None and doi_elem.text else ""
+        doi = get_element_text(doi_elem) if doi_elem is not None else ""
 
         # Extract dates
         date_created_elem = article_elem.find('.//DateCreated')

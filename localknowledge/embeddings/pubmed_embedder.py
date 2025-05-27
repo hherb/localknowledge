@@ -19,15 +19,17 @@ from localknowledge.embeddings.base_embedder import BaseEmbedder
 # Configure logging
 logger = logging.getLogger(__name__)
 
-MODELS = ["microsoft/BiomedNLP-PubMedBERT-base-uncased-abstract-fulltext",
+MODELS = [ #"microsoft/BiomedNLP-PubMedBERT-base-uncased-abstract-fulltext", #-- not suited for semantc searches
+          "pritamdeka/S-BioBERT-snli-mnli-scitail-mednli-stsb", #-- recommended for semantic search
           "pritamdeka/BioBERT-mnli-snli-scinli-scitail-mednli-stsb",
-          "NeuML/pubmedbert-base-embeddings"
+          "NeuML/pubmedbert-base-embeddings",
+          "cambridgeltl/SapBERT-from-PubMedBERT-fulltext"
           ]
 
 class PubMedBERTEmbedder(BaseEmbedder):
     """Class for creating vector embeddings using PubMedBERT models with memory optimization."""
-    def __init__(self, model_name: str = "microsoft/BiomedNLP-PubMedBERT-base-uncased-abstract-fulltext",
-                 device: Optional[str] = None, max_batch_size: int = 32):
+    def __init__(self, model_name: str = "cambridgeltl/SapBERT-from-PubMedBERT-fulltext",
+                 device: Optional[str] = None, max_batch_size: int = 100):
         """
         Initialize the PubMedBERT embedder.
 
