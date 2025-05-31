@@ -197,89 +197,17 @@ def download_file_from_ftp(ftp_path: str, file_name: str, local_path: str) -> bo
                     if os.path.exists(local_path):
                         os.remove(local_path)
 
-            # Download the file with size limit
-            with open(local_path, 'ab' if rest_pos > 0 else 'wb') as f:
-                # Track total bytes downloaded
-                downloaded_bytes = rest_pos
-                expected_size = file_size
-
-                # Define callback function that will be called for each chunk of data
+            # Download the file with simplified logic (no resume for now to avoid corruption)
+            with open(local_path, 'wb') as f:
                 def callback(data):
-                    nonlocal downloaded_bytes
-                    chunk_size = len(data)
+                    f.write(data)
 
-                    # Check if adding this chunk would exceed the expected file size
-                    if downloaded_bytes + chunk_size > expected_size:
-                        # Only write the portion that fits within the expected size
-                        bytes_to_write = expected_size - downloaded_bytes
-                        if bytes_to_write > 0:
-                            f.write(data[:bytes_to_write])
-                            downloaded_bytes += bytes_to_write
+                # Perform the download
+                ftp.retrbinary(f'RETR {file_name}', callback)
 
-                        # Signal to stop the download by raising a custom exception
-                        raise StopDownloadException("Expected file size reached")
-                    else:
-                        # Normal case - write the whole chunk
-                        f.write(data)
-                        downloaded_bytes += chunk_size
-
-                # Custom exception to cleanly stop the download when size is reached
-                class StopDownloadException(Exception):
-                    pass
-
-                # Download the file
-                try:
-                    if rest_pos > 0:
-                        try:
-                            ftp.retrbinary(f'RETR {file_name}', callback, rest=rest_pos)
-                        except StopDownloadException:
-                            logger.info(f"Download stopped at expected size of {expected_size} bytes")
-                        except Exception as e:
-                            # If we get an invalid REST error, restart from beginning
-                            if "invalid REST argument" in str(e):
-                                logger.warning(f"Invalid resume position for {file_name}, restarting download from beginning")
-                                # Close and reopen file in write mode
-                                f.close()
-                                with open(local_path, 'wb') as f:
-                                    # Reset download counter
-                                    downloaded_bytes = 0
-
-                                    def callback_restart(data):
-                                        nonlocal downloaded_bytes
-                                        chunk_size = len(data)
-
-                                        # Check if adding this chunk would exceed the expected file size
-                                        if downloaded_bytes + chunk_size > expected_size:
-                                            # Only write the portion that fits within the expected size
-                                            bytes_to_write = expected_size - downloaded_bytes
-                                            if bytes_to_write > 0:
-                                                f.write(data[:bytes_to_write])
-                                                downloaded_bytes += bytes_to_write
-
-                                            # Signal to stop the download
-                                            raise StopDownloadException("Expected file size reached")
-                                        else:
-                                            # Normal case - write the whole chunk
-                                            f.write(data)
-                                            downloaded_bytes += chunk_size
-
-                                    try:
-                                        ftp.retrbinary(f'RETR {file_name}', callback_restart)
-                                    except StopDownloadException:
-                                        logger.info(f"Download stopped at expected size of {expected_size} bytes")
-                            else:
-                                raise
-                    else:
-                        try:
-                            ftp.retrbinary(f'RETR {file_name}', callback)
-                        except StopDownloadException:
-                            logger.info(f"Download stopped at expected size of {expected_size} bytes")
-
-                    # Ensure all data is written to disk
-                    f.flush()
-                    os.fsync(f.fileno())
-                except StopDownloadException:
-                    logger.info(f"Download stopped at expected size of {expected_size} bytes")
+                # Ensure all data is written to disk
+                f.flush()
+                os.fsync(f.fileno())
 
             try:
                 ftp.quit()

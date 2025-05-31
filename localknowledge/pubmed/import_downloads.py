@@ -84,7 +84,12 @@ def get_element_text(elem) -> str:
 
 
 def extract_date(date_elem) -> Optional[str]:
-    """Extract date from a PubMed date element."""
+    """
+    Extract date from a PubMed date element.
+
+    Handles both administrative dates (DateCreated, DateCompleted, DateRevised)
+    and publication dates (PubDate) which may have different structures.
+    """
     if date_elem is None:
         return None
 
@@ -94,12 +99,38 @@ def extract_date(date_elem) -> Optional[str]:
 
     if year is not None and year.text:
         year_text = year.text
-        month_text = month.text if month is not None and month.text else "01"
+
+        # Handle month - could be numeric or text (e.g., "Jan", "Feb")
+        month_text = "01"  # Default to January
+        if month is not None and month.text:
+            month_val = month.text.strip()
+            # Try to convert month name to number
+            month_map = {
+                'Jan': '01', 'Feb': '02', 'Mar': '03', 'Apr': '04',
+                'May': '05', 'Jun': '06', 'Jul': '07', 'Aug': '08',
+                'Sep': '09', 'Oct': '10', 'Nov': '11', 'Dec': '12'
+            }
+            if month_val in month_map:
+                month_text = month_map[month_val]
+            elif month_val.isdigit():
+                month_text = month_val.zfill(2)
+            else:
+                # Try to parse as full month name
+                month_val_lower = month_val.lower()
+                for name, num in month_map.items():
+                    if month_val_lower.startswith(name.lower()):
+                        month_text = num
+                        break
+
         day_text = day.text if day is not None and day.text else "01"
+        if day_text.isdigit():
+            day_text = day_text.zfill(2)
+        else:
+            day_text = "01"
 
         try:
             # Try to parse as ISO format
-            return f"{year_text}-{month_text.zfill(2)}-{day_text.zfill(2)}"
+            return f"{year_text}-{month_text}-{day_text}"
         except Exception:
             return year_text
 
@@ -160,13 +191,23 @@ def process_article(article_elem) -> Optional[Dict[str, Any]]:
 
         author_string = ", ".join(authors)
 
-        # Extract publication year
-        year_elem = article_elem.find('.//PubDate/Year')
-        if year_elem is None:
-            # Try alternate locations for year
-            year_elem = article_elem.find('.//PubMedPubDate[@PubStatus="pubmed"]/Year')
+        # Extract publication date from PubDate element
+        pubdate_elem = article_elem.find('.//PubDate')
+        publication_date = None
+        year = ""
 
-        year = year_elem.text if year_elem is not None and year_elem.text else ""
+        if pubdate_elem is not None:
+            # Try to extract full publication date
+            publication_date = extract_date(pubdate_elem)
+
+            # Also extract year for backward compatibility
+            year_elem = pubdate_elem.find('Year')
+            year = year_elem.text if year_elem is not None and year_elem.text else ""
+
+        # If no PubDate found, try alternate locations for year only
+        if not year:
+            year_elem = article_elem.find('.//PubMedPubDate[@PubStatus="pubmed"]/Year')
+            year = year_elem.text if year_elem is not None and year_elem.text else ""
 
         # Extract journal
         journal_elem = article_elem.find('.//Journal/Title')
@@ -211,6 +252,7 @@ def process_article(article_elem) -> Optional[Dict[str, Any]]:
             'abstract': abstract,
             'authors': author_string,
             'publication_year': year,
+            'publication_date': publication_date,
             'journal': journal,
             'mesh_terms': mesh_terms,
             'keywords': keywords,

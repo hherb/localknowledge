@@ -62,7 +62,7 @@ class PubMedDatabaseManager(DatabaseManager):
             'title': article.get('title', ''),
             'abstract': article.get('abstract', ''),
             'authors': article.get('authors', '').split(', ') if article.get('authors') else [],
-            'publication_date': article.get('date_created', ''),
+            'publication_date': article.get('publication_date', ''),  # Use actual publication date
             'publication': article.get('journal', ''),
             'mesh_terms': article.get('mesh_terms', '').split('; ') if article.get('mesh_terms') else [],
             'keywords': article.get('keywords', '').split('; ') if article.get('keywords') else [],

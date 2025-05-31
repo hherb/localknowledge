@@ -8,7 +8,11 @@ It includes functionality for:
 - Configuring the Ollama API URL
 """
 import ollama
+import logging
 from localknowledge.embeddings.base_embedder import BaseEmbedder
+
+# Configure logging
+logger = logging.getLogger(__name__)
 
 MODELS=["snowflake-arctic-embed2:latest",
         "nomic-embed-text",
@@ -25,18 +29,24 @@ class OllamaEmbedder(BaseEmbedder):
         super().__init__(model_name)
         self.ollama_host = ollama_host
         self.vectorsize=0
+
+        logger.info(f"Initializing OllamaEmbedder with model: {model_name}")
+
         try:
             response=ollama.embed(model_name, "test")
             self.vectorsize = len(response.embeddings[0])
+            logger.info(f"Successfully initialized OllamaEmbedder for {model_name}, vector size: {self.vectorsize}")
         except Exception as e:
-            print(f"Error initializing OllamaEmbedder: {e}")
-            print(f"Trying to download model {model_name}")
+            logger.warning(f"Error initializing OllamaEmbedder: {e}")
+            logger.info(f"Trying to download model {model_name}")
             try:
                 ollama.pull(model_name)
                 response=ollama.embed(model_name, "test")
                 self.vectorsize = len(response.embeddings[0])
+                logger.info(f"Successfully downloaded and initialized OllamaEmbedder for {model_name}, vector size: {self.vectorsize}")
             except Exception as e:
-                print(f"Error pulling and initializing OllamaEmbedder: {e}")
+                logger.error(f"Error pulling and initializing OllamaEmbedder: {e}")
+                raise
 
     def list_available_models(self) -> list[str]:
         """List available models."""
@@ -52,16 +62,18 @@ class OllamaEmbedder(BaseEmbedder):
             response = ollama.embed(model=self.model_name, input=text)
             return response.embeddings[0]
         except Exception as e:
-            print(f"Error creating embedding: {e}")
+            logger.error(f"Error creating embedding: {e}")
             return []
 
     def embed_batch(self, texts: list[str]) -> list[list[float]]:
         """Create embeddings for multiple texts at once."""
         try:
+            logger.debug(f"Creating embeddings for batch of {len(texts)} texts using {self.model_name}")
             response = ollama.embed(model=self.model_name, input=texts)
+            logger.debug(f"Successfully created {len(response.embeddings)} embeddings")
             return response.embeddings
         except Exception as e:
-            print(f"Error creating embeddings: {e}")
+            logger.error(f"Error creating batch embeddings: {e}")
             return []
 
 if __name__== "__main__":

@@ -24,6 +24,113 @@ The PubMed Module provides functionality for working with publications from the 
 
 **Impact**: This fix ensures that all text content from PubMed abstracts is properly imported, including complex chemical formulas, mathematical expressions, and other formatted content that was previously being truncated.
 
+### Import Tracking System (2024)
+
+**Purpose**: The import tracking system prevents reprocessing of the same files when restarting interrupted import or fix processes, improving efficiency and avoiding duplicate work.
+
+**Components**:
+- `localknowledge.db.import_tracker.ImportTracker`: Database manager for tracking file processing status
+- `import_tracker` table: Database table storing processing status for each XML file
+
+**Tracking States**:
+- `imported`: File has been successfully imported into the database
+- `chunked`: File's content has been chunked for embedding processing
+- `embedded`: File's chunks have been embedded with vector representations
+- `md5checked`: File's MD5 checksum has been verified
+
+**Integration**:
+- **PubMed Import**: `localknowledge.pubmed.import_downloads` now uses import tracking to skip already imported files and mark successful imports
+- **Corruption Fix**: `localknowledge.pubmed.fix_corrupt_pubmed_imports` uses import tracking to only process files that have been imported and to mark re-chunked/re-embedded files
+
+**Usage Example**:
+```python
+from localknowledge.db.import_tracker import ImportTracker
+
+# Create tracker
+tracker = ImportTracker()
+
+# Check if file has been imported
+if not tracker.is_file_imported('pubmed24n0001.xml.gz'):
+    # Process the file
+    process_file('pubmed24n0001.xml.gz')
+    # Mark as imported
+    tracker.mark_file_imported('pubmed24n0001.xml.gz')
+
+# Get processing statistics
+stats = tracker.get_processing_stats()
+print(f"Total files: {stats['total_files']}")
+print(f"Imported files: {stats['imported_files']}")
+print(f"Embedded files: {stats['embedded_files']}")
+
+tracker.close()
+```
+
+### Download Corruption Fixes (2025-05-29)
+
+**Issue**: The PubMed download system was experiencing corruption issues including:
+- File size mismatches between downloaded and expected sizes
+- Block decoding errors during gzip decompression
+- MD5 checksum verification failures
+- CRC check failures during file reading
+
+**Root Causes**:
+1. **Complex Size-Limiting Logic**: The original download code used a `StopDownloadException` mechanism that could cause premature termination and incomplete writes
+2. **Overly Complex Resume Logic**: Nested file handling during resume operations could cause state inconsistencies
+3. **Multiple Conflicting Integrity Checks**: Integrity checks performed during download could interfere with the download process
+4. **Insufficient Error Recovery**: Failed downloads didn't properly clean up state for retries
+
+**Solution**: Implemented a simplified, more robust download system:
+
+**Files Modified**:
+- `localknowledge/pubmed/download.py`: Completely refactored `download_single_file()` function with simplified logic
+- `localknowledge/pubmed/file_verification.py`: Simplified download logic to avoid corruption
+- Added comprehensive test script: `localknowledge/pubmed/test_download_fix.py`
+
+**Key Improvements**:
+1. **Simplified Download Logic**: Removed complex size-limiting mechanisms and implemented straightforward download approach
+2. **Enhanced File Validation**: Comprehensive verification after download completion including size checks and complete gzip integrity testing
+3. **Better Error Recovery**: Proper cleanup on failures with improved retry logic and FTP connection management
+4. **Separated Concerns**: Clear separation between download and verification processes
+
+**Testing**: The fixes have been verified with real PubMed file downloads, showing successful detection and recovery from corruption issues.
+
+**Impact**: This fix eliminates download corruption issues and provides more reliable file integrity, ensuring complete and valid PubMed data downloads.
+
+### Publication Date Extraction Fix (2025-01-03)
+
+**Issue**: The `publication_date` field in imported PubMed records was always empty, causing problems with date-based searches and statistics.
+
+**Root Cause**: The code was incorrectly mapping the administrative `DateCreated` field (when the PubMed record was created in the database) to the `publication_date` field instead of using the actual publication date from the `<PubDate>` element.
+
+**Date Fields in PubMed XML**:
+- `<PubDate>`: The actual publication date of the article (what should be used for `publication_date`)
+- `<DateCreated>`: When the PubMed record was added to the database (administrative date)
+- `<DateCompleted>`: When PubMed indexing was completed (administrative date)
+- `<DateRevised>`: When the PubMed record was last updated (administrative date)
+
+**Solution**: Modified the import process to properly extract and use the publication date:
+
+**Files Modified**:
+- `localknowledge/pubmed/import_downloads.py`: Updated `process_article()` to extract publication date from `<PubDate>` element
+- `localknowledge/db/pubmed.py`: Updated `store_article()` to use `publication_date` instead of `date_created`
+- `localknowledge/pubmed/import_to_tmpdocument.py`: Applied same fixes for consistency
+
+**Key Improvements**:
+1. **Correct Date Source**: `publication_date` now comes from `<PubDate>` element (actual publication date)
+2. **Enhanced Date Parsing**: Improved `extract_date()` function handles both numeric and text month formats (e.g., "03", "Mar", "March")
+3. **Robust Defaults**: Provides sensible defaults for missing day/month information
+4. **Preserved Administrative Dates**: Administrative dates (`date_created`, `date_completed`, `date_revised`) are still extracted and stored separately
+
+**Date Format Handling**:
+- Numeric months: `<Month>03</Month>` → "2023-03-15"
+- Text months: `<Month>Mar</Month>` → "2023-03-15"
+- Year only: `<Year>2023</Year>` → "2023-01-01"
+- Year and month: `<Year>2023</Year><Month>Jun</Month>` → "2023-06-01"
+
+**Testing**: Comprehensive unit tests verify correct extraction of publication dates from various PubMed XML date formats.
+
+**Impact**: This fix ensures that publication dates are properly populated, enabling accurate date-based searches, statistics, and chronological sorting of PubMed articles.
+
 ## Core Components
 
 ### PubMed Client
@@ -231,6 +338,75 @@ python -m localknowledge.pubmed.update_qaembeddings_cli --qa-model "llama3:8b"
 # Use a different embedding model
 python -m localknowledge.pubmed.update_qaembeddings_cli --embedding-model "nomic-embed-text:latest"
 ```
+
+### Import Downloads with Tracking
+
+```bash
+# Import PubMed XML files with automatic import tracking
+python -m localknowledge.pubmed.import_downloads --process_type updates
+
+# Import baseline files with tracking
+python -m localknowledge.pubmed.import_downloads --process_type baseline
+
+# Force reprocess all files (ignoring tracking)
+python -m localknowledge.pubmed.import_downloads --force_reprocess
+
+# Import from specific directories
+python -m localknowledge.pubmed.import_downloads \
+    --baseline_dir /path/to/baseline \
+    --updates_dir /path/to/updates \
+    --imported_dir /path/to/imported
+```
+
+### Fix Corrupt Imports with Tracking
+
+```bash
+# Fix corrupt imports (only processes files that have been imported)
+python -m localknowledge.pubmed.fix_corrupt_pubmed_imports --xml-dir /path/to/xml
+
+# Dry run to identify corruption without fixing
+python -m localknowledge.pubmed.fix_corrupt_pubmed_imports --xml-dir /path/to/xml --dry-run
+
+# Fix corruption in first 10 files
+python -m localknowledge.pubmed.fix_corrupt_pubmed_imports --xml-dir /path/to/xml --max-files 10
+
+# Fix with larger batch size
+python -m localknowledge.pubmed.fix_corrupt_pubmed_imports --xml-dir /path/to/xml --batch-size 2000
+```
+
+### Import to tmpdocument Table (Data Recovery)
+
+For data recovery purposes, a specialized import script is available that imports PubMed data into a temporary `tmpdocument` table without affecting any other tables or tracking systems:
+
+```bash
+# Import all PubMed files from backup directory into tmpdocument table
+python localknowledge/pubmed/import_to_tmpdocument.py /path/to/backup/directory
+
+# Example with specific backup directory
+python localknowledge/pubmed/import_to_tmpdocument.py ~/backup/pubmed_data/
+```
+
+**Key Features**:
+- **Safe Import**: Only affects the `tmpdocument` table, no other tables are modified
+- **No Tracking**: Does not use or modify any tracking systems
+- **No File Movement**: Source files remain untouched in the backup directory
+- **Comprehensive Processing**: Processes both baseline and update files
+- **Progress Tracking**: Shows detailed progress with file-by-file and article-by-article progress bars
+- **Error Handling**: Skips corrupt files and continues processing
+- **Detailed Logging**: Creates logs in `pubmed_import_tmpdocument.log`
+
+**Use Cases**:
+- Data recovery from backup files
+- Testing import processes without affecting production data
+- Comparing data integrity between main and backup sources
+- Rebuilding corrupted document tables
+
+**Prerequisites**:
+- The `tmpdocument` table must exist with the same structure as the `document` table
+- Backup directory must contain PubMed XML.gz files
+- Database connection must be properly configured
+
+See `localknowledge/pubmed/README_tmpdocument_import.md` for detailed documentation.
 
 ## Configuration
 

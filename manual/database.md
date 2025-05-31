@@ -40,6 +40,7 @@ The system includes several specialized database managers:
 | reading_tracker | Tracks reading history and annotations |
 | embeddings | Stores vector embeddings for semantic search |
 | qaembeddings | Stores question-answer pairs and their embeddings |
+| import_tracker | Tracks PubMed file processing status (imported, chunked, embedded, md5checked) |
 
 ### Schema Management
 
@@ -101,11 +102,11 @@ db.begin_transaction()
 
 try:
     # Execute multiple queries as part of the transaction
-    db.execute("INSERT INTO users (username, email) VALUES (%s, %s)", 
+    db.execute("INSERT INTO users (username, email) VALUES (%s, %s)",
                ("user1", "user1@example.com"), commit=False)
     db.execute("INSERT INTO user_preferences (user_id, key, value) VALUES (%s, %s, %s)",
                (1, "theme", "dark"), commit=False)
-    
+
     # Commit the transaction
     db.commit_transaction()
 except Exception as e:

@@ -102,6 +102,7 @@ def ftp_download(ftp, xml_file, callback, rest_pos=0):
 def download_single_file(ftp, xml_file, local_file, file_type='baseline', i=0, total_files=0):
     """
     Download a single file with progress bar and integrity checks.
+    Simplified version that avoids complex size-limiting logic that can cause corruption.
 
     Args:
         ftp: FTP connection
@@ -119,49 +120,15 @@ def download_single_file(ftp, xml_file, local_file, file_type='baseline', i=0, t
 
     while download_retries < max_retries:
         try:
-            # Check if file exists and determine resume position
-            rest_pos = 0
+            # First, check if file already exists and is valid
             if os.path.exists(local_file):
-                try:
-                    # Get remote file size for comparison
-                    ftp.voidcmd('TYPE I')  # Switch to binary mode
-                    remote_size = ftp.size(xml_file)
-                    local_size = os.path.getsize(local_file)
-
-                    # If local file is significantly larger than remote (corrupt), delete it
-                    if local_size > remote_size * 1.1:
-                        logger.warning(f"File {local_file} appears corrupt (local: {local_size} bytes, remote: {remote_size} bytes) - removing and downloading fresh")
-                        os.remove(local_file)
-                    # If file size matches, check if it's a valid gzip file
-                    elif local_size == remote_size:
-                        try:
-                            with gzip.open(local_file, 'rb') as test_f:
-                                # Read a small chunk to verify it's a valid gzip file
-                                test_f.read(4096)
-
-                                # For files that have issues later in the file, try to read the entire file
-                                # This provides a more thorough check at the expense of performance
-                                # Reset file pointer first
-                                test_f.seek(0)
-
-                                # Read in chunks to avoid memory issues with large files
-                                chunk_size = 1024 * 1024  # 1MB chunks
-                                while test_f.read(chunk_size):
-                                    pass
-                            # File is complete and valid, no need to download
-                            logger.info(f"File {xml_file} already exists and is valid, skipping download")
-                            return True, None
-                        except Exception as gz_error:
-                            logger.warning(f"File {local_file} appears corrupt (gzip error: {gz_error}) - removing and downloading fresh")
-                            os.remove(local_file)
-                    else:
-                        # File is incomplete but not corrupt, resume download
-                        rest_pos = local_size
-                        logger.info(f"Resuming download of {xml_file} from position {rest_pos}")
-                except Exception as e:
-                    logger.warning(f"Error checking file size for {xml_file}: {e} - restarting download")
-                    if os.path.exists(local_file):
-                        os.remove(local_file)
+                if _is_file_complete_and_valid(ftp, xml_file, local_file):
+                    logger.info(f"File {xml_file} already exists and is valid, skipping download")
+                    return True, None
+                else:
+                    # Remove invalid/incomplete file
+                    logger.info(f"Removing invalid/incomplete file {local_file}")
+                    os.remove(local_file)
 
             # Get file size for progress bar
             try:
@@ -180,201 +147,53 @@ def download_single_file(ftp, xml_file, local_file, file_type='baseline', i=0, t
                 ftp.voidcmd('TYPE I')
                 file_size = ftp.size(xml_file)
 
-            # Create progress bar
-            file_desc = f"File {i}/{total_files}: {xml_file}"
-            pbar = tqdm(
-                total=file_size,
-                initial=rest_pos,
-                unit='B',
-                unit_scale=True,
-                desc=file_desc,
-                ncols=100
-            )
+            # Perform the download with simplified logic
+            success = _download_file_simple(ftp, xml_file, local_file, file_size, i, total_files)
 
-            # Open file for writing
-            with open(local_file, 'ab' if rest_pos > 0 else 'wb') as fp:
-                # Track total bytes downloaded
-                downloaded_bytes = rest_pos
-                expected_size = file_size
+            if not success:
+                download_retries += 1
+                logger.warning(f"Download failed for {xml_file}, attempt {download_retries}/{max_retries}")
 
-                # Define callback function that will be called for each chunk of data
-                def callback(data):
-                    nonlocal downloaded_bytes
-                    chunk_size = len(data)
+                # Clean up partial file
+                if os.path.exists(local_file):
+                    os.remove(local_file)
 
-                    # Check if adding this chunk would exceed the expected file size
-                    if downloaded_bytes + chunk_size > expected_size:
-                        # Only write the portion that fits within the expected size
-                        bytes_to_write = expected_size - downloaded_bytes
-                        if bytes_to_write > 0:
-                            fp.write(data[:bytes_to_write])
-                            pbar.update(bytes_to_write)
-                            downloaded_bytes += bytes_to_write
+                # Sleep before retrying
+                time.sleep(5)
 
-                        # Signal to stop the download by raising a custom exception
-                        raise StopDownloadException("Expected file size reached")
-                    else:
-                        # Normal case - write the whole chunk
-                        fp.write(data)
-                        pbar.update(chunk_size)
-                        downloaded_bytes += chunk_size
-
-                # Custom exception to cleanly stop the download when size is reached
-                class StopDownloadException(Exception):
+                # Reconnect
+                try:
+                    ftp.quit()
+                except:
                     pass
+                ftp = create_ftp_connection()
+                if file_type == 'update':
+                    ftp.cwd('/pubmed/updatefiles')
+                continue
 
-                # Download the file
-                try:
-                    if rest_pos > 0:
-                        try:
-                            ftp.retrbinary(f'RETR {xml_file}', callback, rest=rest_pos)
-                        except StopDownloadException:
-                            logger.info(f"Download stopped at expected size of {expected_size} bytes")
-                        except Exception as e:
-                            # If we get an invalid REST error, restart from beginning
-                            if "invalid REST argument" in str(e):
-                                logger.warning(f"Invalid resume position for {xml_file}, restarting download from beginning")
-                                # Close and reopen file in write mode
-                                fp.close()
-                                with open(local_file, 'wb') as fp:
-                                    # Reset download counter
-                                    downloaded_bytes = 0
+            # Verify the downloaded file integrity
+            if not _verify_downloaded_file(ftp, xml_file, local_file):
+                download_retries += 1
+                logger.warning(f"File verification failed for {xml_file}, attempt {download_retries}/{max_retries}")
 
-                                    def callback_restart(data):
-                                        nonlocal downloaded_bytes
-                                        chunk_size = len(data)
-
-                                        # Check if adding this chunk would exceed the expected file size
-                                        if downloaded_bytes + chunk_size > expected_size:
-                                            # Only write the portion that fits within the expected size
-                                            bytes_to_write = expected_size - downloaded_bytes
-                                            if bytes_to_write > 0:
-                                                fp.write(data[:bytes_to_write])
-                                                pbar.update(bytes_to_write)
-                                                downloaded_bytes += bytes_to_write
-
-                                            # Signal to stop the download
-                                            raise StopDownloadException("Expected file size reached")
-                                        else:
-                                            # Normal case - write the whole chunk
-                                            fp.write(data)
-                                            pbar.update(chunk_size)
-                                            downloaded_bytes += chunk_size
-
-                                    try:
-                                        ftp.retrbinary(f'RETR {xml_file}', callback_restart)
-                                    except StopDownloadException:
-                                        logger.info(f"Download stopped at expected size of {expected_size} bytes")
-                            else:
-                                raise
-                    else:
-                        try:
-                            ftp.retrbinary(f'RETR {xml_file}', callback)
-                        except StopDownloadException:
-                            logger.info(f"Download stopped at expected size of {expected_size} bytes")
-
-                    # Ensure all data is written to disk
-                    fp.flush()
-                    os.fsync(fp.fileno())
-                except (socket.timeout, socket.error, IOError, EOFError) as e:
-                    logger.warning(f"FTP connection lost during download: {e}, attempt {download_retries+1}/{max_retries}")
-                    pbar.close()
-                    download_retries += 1
-
-                    # Sleep before retrying
-                    time.sleep(5)
-
-                    # Reconnect
-                    try:
-                        ftp.quit()
-                    except:
-                        pass
-                    ftp = create_ftp_connection()
-                    if file_type == 'update':
-                        ftp.cwd('/pubmed/updatefiles')
-
-                    continue
-
-            # Close progress bar
-            pbar.close()
-
-            # Download MD5 file for verification
-            md5_file = xml_file + '.md5'
-            local_md5_file = local_file + '.md5'
-            md5_download_successful = False
-
-            try:
-                with open(local_md5_file, 'wb') as md5_fp:
-                    def md5_callback(data):
-                        md5_fp.write(data)
-                    ftp.retrbinary(f'RETR {md5_file}', md5_callback)
-                md5_download_successful = True
-                logger.info(f"Downloaded MD5 file for {xml_file}")
-            except Exception as md5_error:
-                logger.warning(f"Error downloading MD5 file for {xml_file}: {md5_error}")
-
-            # Verify file integrity
-            if md5_download_successful:
-                is_valid, checksum, error = verify_md5(local_file)
-                if is_valid:
-                    logger.info(f"✓ MD5 verification passed for {xml_file}")
-                    # Additional integrity check
-                    try:
-                        with gzip.open(local_file, 'rb') as test_f:
-                            # First read a small chunk for quick issues detection
-                            test_f.read(4096)
-
-                            # For files that have issues later in the file, try to read the entire file
-                            # This provides a more thorough check at the expense of performance
-                            # Reset file pointer first
-                            test_f.seek(0)
-
-                            # Read in chunks to avoid memory issues with large files
-                            chunk_size = 1024 * 1024  # 1MB chunks
-                            while test_f.read(chunk_size):
-                                pass
-                        logger.info(f"✓ Gzip integrity check passed for {xml_file}")
-                        return True, checksum
-                    except Exception as gz_error:
-                        logger.warning(f"✗ Gzip integrity check failed for {xml_file} despite valid MD5: {gz_error}")
-                        os.remove(local_file)
-                        download_retries += 1
-                        continue
-                else:
-                    logger.warning(f"✗ MD5 verification failed for {xml_file}: {error}")
+                # Clean up invalid file
+                if os.path.exists(local_file):
                     os.remove(local_file)
-                    download_retries += 1
-                    continue
-            else:
-                # No MD5 verification, try gzip integrity check
-                try:
-                    with gzip.open(local_file, 'rb') as test_f:
-                        # First read a small chunk for quick issues detection
-                        test_f.read(4096)
+                continue
 
-                        # For files that have issues later in the file, try to read the entire file
-                        # This provides a more thorough check at the expense of performance
-                        # Reset file pointer first
-                        test_f.seek(0)
+            # Download and verify MD5 checksum if available
+            checksum = _download_and_verify_md5(ftp, xml_file, local_file)
 
-                        # Read in chunks to avoid memory issues with large files
-                        chunk_size = 1024 * 1024  # 1MB chunks
-                        while test_f.read(chunk_size):
-                            pass
-                    logger.info(f"✓ Gzip integrity check passed for {xml_file} (no MD5 verification)")
-                    return True, None
-                except Exception as gz_error:
-                    logger.warning(f"✗ Gzip integrity check failed for {xml_file}: {gz_error}")
-                    os.remove(local_file)
-                    download_retries += 1
-                    continue
-
-            # This line is unreachable, but kept for clarity
-            # return True, None
+            logger.info(f"✓ Successfully downloaded and verified {xml_file}")
+            return True, checksum
 
         except Exception as e:
             logger.error(f"Error downloading {xml_file}: {e}")
             download_retries += 1
+
+            # Clean up partial file
+            if os.path.exists(local_file):
+                os.remove(local_file)
 
             # Sleep before retrying
             time.sleep(5)
@@ -391,6 +210,180 @@ def download_single_file(ftp, xml_file, local_file, file_type='baseline', i=0, t
     # If we get here, all retries failed
     logger.error(f"Failed to download {xml_file} after {max_retries} attempts")
     return False, None
+
+def _verify_downloaded_file(ftp, xml_file, local_file):
+    """
+    Verify that a downloaded file is complete and has valid gzip integrity.
+
+    Args:
+        ftp: FTP connection
+        xml_file: Name of the file on the server
+        local_file: Path to the local file
+
+    Returns:
+        True if file is valid, False otherwise
+    """
+    try:
+        # Check file size matches expected
+        ftp.voidcmd('TYPE I')  # Switch to binary mode
+        expected_size = ftp.size(xml_file)
+        actual_size = os.path.getsize(local_file)
+
+        if actual_size != expected_size:
+            logger.warning(f"File size mismatch for {xml_file}: expected {expected_size}, got {actual_size}")
+            return False
+
+        # Test gzip integrity by reading the entire file
+        with gzip.open(local_file, 'rb') as test_f:
+            # Read in chunks to avoid memory issues with large files
+            chunk_size = 1024 * 1024  # 1MB chunks
+            while test_f.read(chunk_size):
+                pass
+
+        logger.debug(f"File verification passed for {xml_file}")
+        return True
+
+    except Exception as e:
+        logger.warning(f"File verification failed for {xml_file}: {e}")
+        return False
+
+def _download_and_verify_md5(ftp, xml_file, local_file):
+    """
+    Download MD5 file and verify checksum if available.
+
+    Args:
+        ftp: FTP connection
+        xml_file: Name of the XML file
+        local_file: Path to the local XML file
+
+    Returns:
+        MD5 checksum if verification successful, None otherwise
+    """
+    md5_file = xml_file + '.md5'
+    local_md5_file = local_file + '.md5'
+
+    try:
+        # Try to download MD5 file
+        with open(local_md5_file, 'wb') as md5_fp:
+            def md5_callback(data):
+                md5_fp.write(data)
+            ftp.retrbinary(f'RETR {md5_file}', md5_callback)
+
+        logger.debug(f"Downloaded MD5 file for {xml_file}")
+
+        # Verify MD5 checksum
+        is_valid, checksum, error = verify_md5(local_file)
+        if is_valid:
+            logger.debug(f"✓ MD5 verification passed for {xml_file}")
+            return checksum
+        else:
+            logger.warning(f"✗ MD5 verification failed for {xml_file}: {error}")
+            return None
+
+    except Exception as md5_error:
+        logger.debug(f"Could not download/verify MD5 for {xml_file}: {md5_error}")
+        return None
+
+def _is_file_complete_and_valid(ftp, xml_file, local_file):
+    """
+    Check if a local file is complete and valid by comparing size and testing gzip integrity.
+
+    Args:
+        ftp: FTP connection
+        xml_file: Name of the file on the server
+        local_file: Path to the local file
+
+    Returns:
+        True if file is complete and valid, False otherwise
+    """
+    try:
+        # Get remote file size
+        ftp.voidcmd('TYPE I')  # Switch to binary mode
+        remote_size = ftp.size(xml_file)
+        local_size = os.path.getsize(local_file)
+
+        # Check if sizes match
+        if local_size != remote_size:
+            logger.debug(f"File size mismatch for {xml_file}: local={local_size}, remote={remote_size}")
+            return False
+
+        # Test gzip integrity by reading the entire file
+        with gzip.open(local_file, 'rb') as test_f:
+            # Read in chunks to avoid memory issues with large files
+            chunk_size = 1024 * 1024  # 1MB chunks
+            while test_f.read(chunk_size):
+                pass
+
+        return True
+
+    except Exception as e:
+        logger.debug(f"File validation failed for {xml_file}: {e}")
+        return False
+
+def _download_file_simple(ftp, xml_file, local_file, expected_size, file_index, total_files):
+    """
+    Simple, robust file download without complex size-limiting logic.
+
+    Args:
+        ftp: FTP connection
+        xml_file: Name of the file to download
+        local_file: Path where to save the file
+        expected_size: Expected file size in bytes
+        file_index: Current file index for progress display
+        total_files: Total number of files for progress display
+
+    Returns:
+        True if download was successful, False otherwise
+    """
+    try:
+        # Create progress bar
+        file_desc = f"File {file_index}/{total_files}: {xml_file}"
+        pbar = tqdm(
+            total=expected_size,
+            unit='B',
+            unit_scale=True,
+            desc=file_desc,
+            ncols=100
+        )
+
+        # Download the file with simple callback
+        with open(local_file, 'wb') as fp:
+            downloaded_bytes = 0
+
+            def callback(data):
+                nonlocal downloaded_bytes
+                fp.write(data)
+                chunk_size = len(data)
+                downloaded_bytes += chunk_size
+                pbar.update(chunk_size)
+
+            # Perform the download
+            ftp.retrbinary(f'RETR {xml_file}', callback)
+
+            # Ensure all data is written to disk
+            fp.flush()
+            os.fsync(fp.fileno())
+
+        pbar.close()
+
+        # Verify the download was successful
+        if os.path.exists(local_file):
+            actual_size = os.path.getsize(local_file)
+            if actual_size == expected_size:
+                logger.debug(f"Download completed successfully: {xml_file} ({actual_size} bytes)")
+                return True
+            else:
+                logger.warning(f"Downloaded file size mismatch: expected {expected_size}, got {actual_size}")
+                return False
+        else:
+            logger.error(f"Downloaded file does not exist: {local_file}")
+            return False
+
+    except Exception as e:
+        logger.error(f"Error during download of {xml_file}: {e}")
+        if 'pbar' in locals():
+            pbar.close()
+        return False
 
 def ftp_download_with_retry(ftp, xml_file, callback, rest_pos=0, max_retries=3):
     """Download a file with retry capability (legacy function, use download_single_file instead)"""
