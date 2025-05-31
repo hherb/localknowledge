@@ -382,6 +382,36 @@ class ChunkingDatabaseManager(DatabaseManager):
                 logger.error(f"Error dropping temporary table: {e}")
                 # Don't raise this exception as it's just cleanup
 
+    def delete_chunks_by_document_strategy_type(self, document_id: int, chunking_strategy_id: int, chunktype_id: int) -> int:
+        """
+        Delete all chunks for a specific document, chunking strategy, and chunk type.
+        Associated embeddings are automatically deleted due to CASCADE DELETE constraint.
+
+        Args:
+            document_id: ID of the document
+            chunking_strategy_id: ID of the chunking strategy
+            chunktype_id: ID of the chunk type
+
+        Returns:
+            Number of chunks deleted
+        """
+        try:
+            query = """
+            DELETE FROM chunks
+            WHERE document_id = %s
+            AND chunking_strategy_id = %s
+            AND chunktype_id = %s
+            RETURNING id
+            """
+            result = self.execute(query, (document_id, chunking_strategy_id, chunktype_id), commit=True)
+            deleted_count = len(result) if result else 0
+            logger.debug(f"Deleted {deleted_count} chunks (and associated embeddings) for document {document_id}, strategy {chunking_strategy_id}, type {chunktype_id}")
+            return deleted_count
+
+        except Exception as e:
+            logger.error(f"Error deleting chunks for document {document_id}: {e}")
+            raise
+
     def _convert_to_chunks(self, results: List[Dict[str, Any]]) -> List[Chunk]:
         """
         Convert database query results to Chunk objects.

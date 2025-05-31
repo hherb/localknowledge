@@ -27,6 +27,7 @@ The system includes several specialized database managers:
 - `ReadingTrackerManager`: Tracks reading history and annotations
 - `EmbeddingDatabaseManager`: Manages vector embeddings for semantic search
 - `QAEmbeddingDatabaseManager`: Manages question-answer pairs and their embeddings
+- `TaskQueueManager`: Manages parallel task processing with thread-safe operations
 
 ## Database Schema
 
@@ -41,6 +42,8 @@ The system includes several specialized database managers:
 | embeddings | Stores vector embeddings for semantic search |
 | qaembeddings | Stores question-answer pairs and their embeddings |
 | import_tracker | Tracks PubMed file processing status (imported, chunked, embedded, md5checked) |
+| task | Stores task type definitions (id, description) |
+| processing_queue | Manages document processing queue with status tracking |
 
 ### Schema Management
 
@@ -87,6 +90,71 @@ for preprint in preprints:
 
 # Close the connection
 medrxiv_db.close()
+```
+
+### Task Queue Management
+
+The `TaskQueueManager` provides thread-safe parallel task processing:
+
+```python
+from localknowledge.db.task_queue import TaskQueueManager
+
+# Create a task queue manager
+queue_manager = TaskQueueManager()
+
+# Create task types
+chunking_task_id = queue_manager.add_task("Document Chunking")
+embedding_task_id = queue_manager.add_task("Generate Embeddings")
+
+# Queue documents for processing
+for doc_id in range(1, 101):
+    queue_manager.queue_document_for_task(doc_id, chunking_task_id)
+
+# Process tasks (typically in worker threads)
+for processing_queue_id, document_id in queue_manager.get_pending_tasks(chunking_task_id):
+    try:
+        # Process the document
+        process_document(document_id)
+
+        # Mark as completed and chain to next task
+        queue_manager.task_done(processing_queue_id, next_task=embedding_task_id)
+
+    except Exception as e:
+        # Mark as failed
+        queue_manager.task_error(processing_queue_id, str(e))
+
+# Get processing statistics
+stats = queue_manager.get_queue_stats(chunking_task_id)
+print(f"Pending: {stats['pending']}, Processing: {stats['processing']}, "
+      f"Finished: {stats['finished']}, Errors: {stats['error']}")
+
+queue_manager.close()
+```
+
+#### Thread Safety
+
+The TaskQueueManager uses `SELECT FOR UPDATE SKIP LOCKED` to ensure thread-safe task claiming:
+
+- Multiple workers can safely process tasks in parallel
+- No task will be processed by multiple workers simultaneously
+- Workers automatically skip locked tasks and move to the next available task
+
+#### Status Values
+
+The processing queue uses integer status values:
+
+- `NULL`: Unprocessed (pending)
+- `1`: Currently being processed
+- `2`: Successfully completed
+- `3`: Failed with error
+
+#### Task Chaining
+
+Tasks can be chained together by specifying `next_task` in `task_done()`:
+
+```python
+# Complete current task and create next task for same document
+queue_manager.task_done(processing_queue_id, next_task=embedding_task_id)
 ```
 
 ### Transactions
