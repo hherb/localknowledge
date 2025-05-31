@@ -122,11 +122,23 @@ class TaskQueueManager(DatabaseManager):
                 WHERE id = %s
                 """, (processing_queue_id,))
                 
-                # Insert the next task
-                self.execute("""
-                INSERT INTO processing_queue (document_id, task_id, created, updated)
-                VALUES (%s, %s, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-                """, (document_id, next_task), commit=True)
+                # Insert the next task - check if it already exists first
+                existing = self.execute("""
+                SELECT id FROM processing_queue
+                WHERE document_id = %s AND task_id = %s
+                """, (document_id, next_task))
+
+                if not existing:
+                    self.execute("""
+                    INSERT INTO processing_queue (document_id, task_id, created, updated)
+                    VALUES (%s, %s, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                    """, (document_id, next_task), commit=True)
+                    logger.debug(f"Created next task {next_task} for document {document_id}")
+                else:
+                    logger.debug(f"Next task {next_task} for document {document_id} already exists")
+                    # Just commit the current task update
+                    if self.connection:
+                        self.connection.commit()
                 
                 logger.debug(f"Marked task {processing_queue_id} as finished and created next task for document {document_id}")
                 
@@ -313,26 +325,35 @@ class TaskQueueManager(DatabaseManager):
             Number of tasks that were reset
         """
         try:
-            if task_id is not None:
-                self.execute("""
-                UPDATE processing_queue
-                SET status = NULL, updated = CURRENT_TIMESTAMP
-                WHERE status = 1 AND task_id = %s
-                """, (task_id,), commit=True)
+            # We need to use a cursor to get rowcount, so we'll do this manually
+            if not self.connection:
+                self.connect()
+
+            if self.connection:
+                cursor = self.connection.cursor()
+                try:
+                    if task_id is not None:
+                        cursor.execute("""
+                        UPDATE processing_queue
+                        SET status = NULL, updated = CURRENT_TIMESTAMP
+                        WHERE status = 1 AND task_id = %s
+                        """, (task_id,))
+                    else:
+                        cursor.execute("""
+                        UPDATE processing_queue
+                        SET status = NULL, updated = CURRENT_TIMESTAMP
+                        WHERE status = 1
+                        """)
+
+                    reset_count = cursor.rowcount
+                    self.connection.commit()
+
+                    logger.info(f"Reset {reset_count} processing tasks back to pending")
+                    return reset_count
+                finally:
+                    cursor.close()
             else:
-                self.execute("""
-                UPDATE processing_queue
-                SET status = NULL, updated = CURRENT_TIMESTAMP
-                WHERE status = 1
-                """, commit=True)
-
-            # Get the number of affected rows
-            cursor = self.connection.cursor()
-            reset_count = cursor.rowcount
-            cursor.close()
-
-            logger.info(f"Reset {reset_count} processing tasks back to pending")
-            return reset_count
+                raise RuntimeError("Could not establish database connection")
 
         except Exception as e:
             logger.error(f"Error resetting processing tasks: {e}")
