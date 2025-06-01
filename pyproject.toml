@@ -45,6 +45,8 @@ dependencies = [
     "fastmcp>=2.2.2",
     "celery>=5.5.2",
     "flower>=2.0.1",
+    "pydantic-ai>=0.2.12",
+    "duckduckgo-search>=7.0.0",
 ]
 
 [project.optional-dependencies]

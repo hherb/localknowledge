@@ -6,6 +6,35 @@ The AI Module provides artificial intelligence capabilities to the Local Knowled
 
 ## Core Components
 
+### Pydantic-AI Agent
+
+The pydantic-ai agent functionality is implemented in `localknowledge.ai.agent`:
+
+- **Intelligent AI agent** using Ollama LLMs via OpenAI-compatible API
+- **Web search capabilities** for current information using DuckDuckGo
+- **Local knowledge database integration** for searching academic papers
+- **Structured responses** with sources and confidence scores using Pydantic models
+- **Asynchronous and synchronous operation modes** for flexibility
+- **Configurable tools** - enable/disable search capabilities as needed
+- **Context support** for user-specific and project-specific queries
+
+Key classes:
+- `LocalKnowledgeAgent`: Main agent class with Ollama integration
+- `AgentResponse`: Structured response model with answer, sources, and metadata
+- `AgentContext`: Context and configuration for agent operations
+- `ask_agent()` and `ask_agent_sync()`: Convenience functions for quick usage
+
+### Web Search Tools
+
+The web search functionality now uses the **official pydantic-ai DuckDuckGo search tool**:
+
+- **Official pydantic-ai DuckDuckGo integration** (no API key required)
+- **Built-in reliability and error handling** from the pydantic-ai framework
+- **Seamless integration** with the agent system
+- **Automatic result formatting** for consistent output
+
+The agent automatically includes the DuckDuckGo search tool when `enable_web_search=True`.
+
 ### Embeddings
 
 The embeddings functionality is implemented in `localknowledge.ai.embeddings`:
@@ -47,7 +76,7 @@ The AI module uses several models through Ollama:
 | Model | Purpose | Default |
 |-------|---------|---------|
 | snowflake-arctic-embed2:latest | Text embeddings | Yes |
-| gemma3:4b | Question-answer generation, HyDE | Yes |
+| qwen3:8b | Question-answer generation, HyDE, Agent | Yes |
 | llama3.2:3b-instruct-q8_0 | Alternative for HyDE | No |
 | qwen2.5:3b-instruct-q8_0 | Alternative for HyDE | No |
 | BAAI/bge-reranker-base | Search result reranking | No |
@@ -56,6 +85,223 @@ The AI module uses several models through Ollama:
 Models can be configured through environment variables or application settings.
 
 ## Usage Examples
+
+### Using the Pydantic-AI Agent
+
+#### Basic Usage
+
+```python
+from localknowledge.ai.agent import LocalKnowledgeAgent, AgentContext
+import asyncio
+
+# Create an agent
+agent = LocalKnowledgeAgent(
+    model_name="qwen3:8b",
+    enable_web_search=True,
+    enable_local_search=True
+)
+
+# Ask a question asynchronously
+async def ask_question():
+    result = await agent.run("What is the latest research on COVID-19 vaccines?")
+    print(f"Answer: {result.output.answer}")
+    print(f"Sources: {len(result.output.sources)}")
+    print(f"Confidence: {result.output.confidence}")
+
+    # Close the agent when done
+    agent.close()
+
+# Run the async function
+asyncio.run(ask_question())
+```
+
+#### Synchronous Usage
+
+```python
+from localknowledge.ai.agent import ask_agent_sync
+
+# Quick synchronous usage
+response = ask_agent_sync(
+    "What are the side effects of mRNA vaccines?",
+    model_name="qwen3:8b",
+    enable_web_search=True
+)
+
+print(f"Answer: {response.answer}")
+for source in response.sources:
+    print(f"Source: {source.get('title', 'Unknown')} - {source.get('url', '')}")
+```
+
+#### Using Agent Context
+
+```python
+from localknowledge.ai.agent import LocalKnowledgeAgent, AgentContext
+
+# Create agent with context
+agent = LocalKnowledgeAgent()
+context = AgentContext(
+    user_id=123,
+    project_id=456,
+    max_search_results=10,
+    enable_web_search=True,
+    enable_local_search=True
+)
+
+# Ask with context
+result = agent.run_sync("Find papers about machine learning in healthcare", context)
+print(result.output.answer)
+```
+
+#### Convenience Function
+
+```python
+from localknowledge.ai.agent import ask_agent
+import asyncio
+
+async def quick_ask():
+    response = await ask_agent(
+        "What is the current status of Alzheimer's disease research?",
+        enable_web_search=True,
+        enable_local_search=True
+    )
+    return response
+
+response = asyncio.run(quick_ask())
+print(response.answer)
+```
+
+#### Extended Reasoning Support
+
+The LocalKnowledge AI Agent supports extended reasoning modes for complex questions. This feature works with compatible models like `qwen3`, `qwq`, and `deepseek-r1` series.
+
+**Extended Reasoning Control:**
+
+Extended reasoning is controlled through the agent's configuration and can be toggled programmatically:
+
+- **Constructor parameter**: `enable_extended_reasoning=False` (default for fast responses)
+- **Toggle method**: `agent.extended_reasoning(True/False)` to change mode after creation
+- **Automatic command appending**: The agent automatically appends `/no_think` or `/think` to messages sent to compatible models
+
+**Examples:**
+
+```python
+from localknowledge.ai.agent import LocalKnowledgeAgent
+import asyncio
+
+async def extended_reasoning_examples():
+    # Create agent with extended reasoning disabled (default)
+    agent = LocalKnowledgeAgent(
+        model_name="qwen3:8b",
+        enable_extended_reasoning=False  # Fast mode (default)
+    )
+
+    # Fast response (agent appends "/no_think" to message)
+    result1 = await agent.run("What is 2+2?")
+    print(f"Fast answer: {result1.output.answer}")
+
+    # Toggle to enable extended reasoning
+    agent.extended_reasoning(True)
+
+    # Extended reasoning response (agent appends "/think" to message)
+    result2 = await agent.run("Analyze the economic implications of climate change")
+    print(f"With extended reasoning: {result2.output.answer}")
+
+    # Toggle back to fast mode
+    agent.extended_reasoning(False)
+    result3 = await agent.run("What is the capital of France?")
+    print(f"Back to fast mode: {result3.output.answer}")
+
+    agent.close()
+
+asyncio.run(extended_reasoning_examples())
+```
+
+**Creating Agent with Extended Reasoning Enabled:**
+
+```python
+from localknowledge.ai.agent import LocalKnowledgeAgent
+
+# Create agent with extended reasoning enabled from start
+agent = LocalKnowledgeAgent(
+    model_name="qwen3:8b",
+    enable_extended_reasoning=True  # Enable extended reasoning
+)
+
+# All messages will have "/think" appended automatically
+result = await agent.run("Explain quantum computing step by step")
+print(result.output.answer)
+
+agent.close()
+```
+
+**Convenience Functions with Extended Reasoning:**
+
+```python
+from localknowledge.ai.agent import ask_agent_sync, ask_agent_stream
+
+# Synchronous with extended reasoning
+response = ask_agent_sync(
+    "Explain the relationship between photosynthesis and climate change",
+    model_name="qwen3:8b",
+    enable_extended_reasoning=True
+)
+print(response.answer)
+
+# Streaming with extended reasoning
+async def stream_with_extended_reasoning():
+    async for event in ask_agent_stream(
+        "Explain quantum computing step by step",
+        model_name="qwen3:8b",
+        enable_extended_reasoning=True
+    ):
+        if event.event_type == "text_delta":
+            print(event.content, end="", flush=True)
+        elif event.event_type == "final_result":
+            print("\nStream completed")
+            break
+
+asyncio.run(stream_with_extended_reasoning())
+```
+
+**Notes:**
+- Extended reasoning only works with compatible models (qwen3, qwq, deepseek-r1 series)
+- Default behavior is fast mode (`enable_extended_reasoning=False`) for quicker responses
+- Extended reasoning provides more detailed step-by-step reasoning but takes longer
+- The agent automatically detects model compatibility and appends appropriate commands
+- For non-compatible models, the extended reasoning setting has no effect
+
+### Using Web Search with the Agent
+
+The web search functionality is now integrated directly into the agent using the official pydantic-ai DuckDuckGo tool:
+
+```python
+from localknowledge.ai.agent import LocalKnowledgeAgent
+import asyncio
+
+async def search_example():
+    # Create an agent with web search enabled
+    agent = LocalKnowledgeAgent(
+        model_name="qwen3:8b",
+        enable_web_search=True,
+        enable_local_search=False
+    )
+
+    # Ask a question that will trigger web search
+    result = await agent.run("What is the latest news about COVID-19 vaccines?")
+
+    print(f"Answer: {result.output.answer}")
+    print(f"Search performed: {result.output.search_performed}")
+    print(f"Sources found: {len(result.output.sources)}")
+
+    # The agent automatically handles search and result formatting
+    for i, source in enumerate(result.output.sources):
+        print(f"Source {i+1}: {source}")
+
+    # Clean up
+    agent.close()
+
+asyncio.run(search_example())
+```
 
 ### Creating Embeddings
 
@@ -172,7 +418,7 @@ print(f"Direct search found {len(direct_results)} results")
 # Generate a hypothetical abstract that answers the query
 hypothetical_abstract = generate_hypothetical_abstract(
     question=query,
-    model="gemma3:4b"  # You can also try other models
+    model="qwen3:8b"  # You can also try other models
 )
 
 print(f"Generated abstract:\n{hypothetical_abstract[:300]}...")
@@ -180,7 +426,7 @@ print(f"Generated abstract:\n{hypothetical_abstract[:300]}...")
 # Get embedding for the hypothetical abstract
 hyde_embedding = generate_hyde_embedding(
     question=query,
-    generation_model="gemma3:4b",
+    generation_model="qwen3:8b",
     embedding_model="snowflake-arctic-embed2:latest"
 )
 
@@ -210,7 +456,7 @@ Models can be configured in several ways:
 1. **Default Constants**: Default models are defined as constants in each module:
    ```python
    DEFAULT_EMBEDDING_MODEL = "snowflake-arctic-embed2:latest"
-   DEFAULT_QA_MODEL = "gemma3:4b"
+   DEFAULT_QA_MODEL = "qwen3:8b"
    ```
 
 2. **Environment Variables**: Environment variables can override defaults:
@@ -227,6 +473,56 @@ Models can be configured in several ways:
    )
    ```
 
+### Agent Configuration
+
+The pydantic-ai agent can be configured in several ways:
+
+1. **Model Selection**: Choose the Ollama model for generation:
+   ```python
+   agent = LocalKnowledgeAgent(model_name="qwen3:8b")
+   ```
+
+2. **Search Configuration**: Enable/disable search capabilities:
+   ```python
+   agent = LocalKnowledgeAgent(
+       enable_web_search=True,
+       enable_local_search=True
+   )
+   ```
+
+3. **Ollama Host**: Configure the Ollama server URL:
+   ```python
+   agent = LocalKnowledgeAgent(ollama_host="http://localhost:11434")
+   ```
+
+4. **Environment Variables**: Set defaults via environment:
+   ```bash
+   export OLLAMA_HOST="http://localhost:11434"
+   export LK_DEFAULT_MODEL="qwen3:8b"
+   export LK_EMBEDDING_MODEL="snowflake-arctic-embed2:latest"
+   ```
+
+### Web Search Configuration
+
+The web search functionality now uses the official pydantic-ai DuckDuckGo search tool:
+
+1. **DuckDuckGo** (official pydantic-ai tool, no API key required):
+   ```python
+   # Web search is enabled/disabled at the agent level
+   agent = LocalKnowledgeAgent(
+       enable_web_search=True,  # Uses official DuckDuckGo tool
+       enable_local_search=True
+   )
+   ```
+
+2. **Configuration options**:
+   ```python
+   # The DuckDuckGo tool is automatically configured with sensible defaults
+   # No additional configuration is needed
+   ```
+
+The official tool provides better reliability, error handling, and integration compared to custom implementations.
+
 ### Ollama Configuration
 
 The AI module requires Ollama to be running and accessible. Ollama configuration:
@@ -242,7 +538,7 @@ Ollama loads models on demand, which can cause delays on first use. To pre-load 
 
 ```bash
 ollama pull snowflake-arctic-embed2:latest
-ollama pull gemma3:4b
+ollama pull qwen3:8b
 ```
 
 ### Batch Processing
@@ -341,7 +637,7 @@ Monitor AI performance using:
    - Implementing post-processing to standardize outputs
 
 4. **HyDE Not Finding Relevant Results**: If HyDE isn't finding relevant documents:
-   - Try different generation models (gemma3:4b, llama3.2:3b-instruct-q8_0, etc.)
+   - Try different generation models (qwen3:8b, llama3.2:3b-instruct-q8_0, etc.)
    - Adjust the similarity threshold (try lower values like 0.3-0.4)
    - Ensure the hypothetical abstract is relevant to the query
    - Compare with direct semantic search to see the difference
@@ -363,5 +659,5 @@ For detailed debugging:
 
 3. Test models directly with the Ollama CLI:
    ```bash
-   ollama run gemma3:4b "Generate a question and answer about traumatic brain injury."
+   ollama run qwen3:8b "Generate a question and answer about traumatic brain injury."
    ```

@@ -1,0 +1,11 @@
+Collecting duckduckgo-search
+  Using cached duckduckgo_search-8.0.2-py3-none-any.whl.metadata (16 kB)
+Requirement already satisfied: click>=8.1.8 in ./.venv/lib/python3.12/site-packages (from duckduckgo-search) (8.1.8)
+Collecting primp>=0.15.0 (from duckduckgo-search)
+  Using cached primp-0.15.0-cp38-abi3-macosx_11_0_arm64.whl.metadata (13 kB)
+Requirement already satisfied: lxml>=5.3.0 in ./.venv/lib/python3.12/site-packages (from duckduckgo-search) (5.3.2)
+Using cached duckduckgo_search-8.0.2-py3-none-any.whl (18 kB)
+Using cached primp-0.15.0-cp38-abi3-macosx_11_0_arm64.whl (3.0 MB)
+Installing collected packages: primp, duckduckgo-search
+
+Successfully installed duckduckgo-search-8.0.2 primp-0.15.0
