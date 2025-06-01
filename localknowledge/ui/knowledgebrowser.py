@@ -393,10 +393,11 @@ class KnowledgeBrowser(QWidget):
         # Search mode selection
         self.search_mode = QComboBox()
         self.search_mode.addItem("Keyword Search", "keyword")
+        self.search_mode.addItem("Full Text Search", "fulltext")
         self.search_mode.addItem("Semantic Search", "semantic")
         self.search_mode.addItem("Hybrid Search", "hybrid")
         self.search_mode.addItem("Bookmarked", "bookmarked")
-        self.search_mode.setToolTip("Keyword search uses exact matching. Semantic search uses AI to find related content. Hybrid search combines both approaches.")
+        self.search_mode.setToolTip("Keyword search uses exact matching. Full text search uses PostgreSQL's advanced text search. Semantic search uses AI to find related content. Hybrid search combines both approaches.")
 
         # Disable semantic and hybrid search if embedding manager is not available
         if not self.embedding_manager:
@@ -571,6 +572,8 @@ class KnowledgeBrowser(QWidget):
 
         if search_mode == "keyword":
             self.search_input.setPlaceholderText("Enter keywords (comma separated or use quotes)")
+        elif search_mode == "fulltext":
+            self.search_input.setPlaceholderText("Enter full text search expression (supports & | ! operators and \"phrases\")")
         elif search_mode == "semantic":
             self.search_input.setPlaceholderText("Enter a question or description of what you're looking for")
         elif search_mode == "hybrid":
@@ -675,6 +678,9 @@ class KnowledgeBrowser(QWidget):
             if search_mode == "keyword":
                 # Keyword search - use the existing database search
                 self._perform_keyword_search(search_text)
+            elif search_mode == "fulltext":
+                # Full text search - use PostgreSQL's full text search
+                self._perform_fulltext_search(search_text)
             elif search_mode == "semantic":
                 # Semantic search - use the embedding manager
                 self._perform_semantic_search(search_text)
@@ -784,7 +790,61 @@ class KnowledgeBrowser(QWidget):
         self.publication_list.addItem(f"Search Error: {error_msg}")
         print(f"Keyword search error: {error_msg}\n{traceback_str}")
 
+    def _perform_fulltext_search(self, search_text):
+        """
+        Perform a full text search using PostgreSQL's search_vector column.
 
+        This method uses the search_fulltext method from DocumentDatabaseManager
+        which leverages PostgreSQL's tsvector and plainto_tsquery for fast full text search.
+        """
+        # Check if the search text is empty
+        if not search_text.strip():
+            self.publication_list.clear()
+            self.publication_list.addItem("Please enter search terms.")
+            return
+
+        # Get source filter based on settings
+        source_name = None
+        if self.search_sources.get('medrxiv', True) and not self.search_sources.get('pubmed', True):
+            source_name = 'medrxiv'
+        elif self.search_sources.get('pubmed', True) and not self.search_sources.get('medrxiv', True):
+            source_name = 'pubmed'
+        # If both are True or both are False, don't filter by source
+
+        # Show a loading message
+        self.publication_list.clear()
+        self.publication_list.addItem("Searching...")
+        QApplication.processEvents()  # Ensure the UI updates
+
+        # Create a worker for the full text search
+        worker = FullTextSearchWorker(
+            db_manager=self.db_manager,
+            search_expression=search_text,
+            source_name=source_name,
+            limit=self.search_settings.get('max_results', 20)
+        )
+
+        # Connect signals
+        worker.signals.result.connect(self._handle_fulltext_search_results)
+        worker.signals.error.connect(self._handle_fulltext_search_error)
+
+        # Execute the worker
+        self.threadpool.start(worker)
+
+    def _handle_fulltext_search_results(self, publications):
+        """Handle the results from full text search."""
+        # Store the search query for reference
+        self.last_search_query = "fulltext"
+        self.last_search_text = self.search_input.text().strip()
+
+        # Display the results
+        self._display_search_results(publications)
+
+    def _handle_fulltext_search_error(self, error_msg, traceback_str):
+        """Handle errors from the full text search worker."""
+        self.publication_list.clear()
+        self.publication_list.addItem(f"Search Error: {error_msg}")
+        print(f"Full text search error: {error_msg}\n{traceback_str}")
 
     def _perform_semantic_search(self, search_text):
         """Perform a semantic search using the embedding manager."""
@@ -975,6 +1035,8 @@ class KnowledgeBrowser(QWidget):
 
         if search_type == "keyword":
             self.status_bar.showMessage(f"Found {len(publications)} publications matching keyword search")
+        elif search_type == "fulltext":
+            self.status_bar.showMessage(f"Found {len(publications)} publications matching full text search")
         elif search_type == "semantic":
             if reranked:
                 self.status_bar.showMessage(f"Found {len(publications)} publications matching semantic search (reranked)")
@@ -2351,6 +2413,70 @@ class HybridSearchWorker(QRunnable):
         combined_results.sort(key=sort_key, reverse=True)
 
         return combined_results
+
+
+class FullTextSearchWorker(QRunnable):
+    """
+    Worker thread for full text search using PostgreSQL's search_vector column.
+    """
+
+    def __init__(self, db_manager, search_expression, source_name=None, limit=20, offset=0):
+        """
+        Initialize the worker.
+
+        Args:
+            db_manager: DocumentDatabaseManager instance
+            search_expression: Full text search expression
+            source_name: Filter by source name (optional)
+            limit: Maximum number of results to return
+            offset: Offset for pagination
+        """
+        super().__init__()
+        self.db_manager = db_manager
+        self.search_expression = search_expression
+        self.source_name = source_name
+        self.limit = limit
+        self.offset = offset
+        self.signals = WorkerSignals()
+
+    @Slot()
+    def run(self):
+        """
+        Perform the full text search.
+        """
+        try:
+            print(f"FullTextSearchWorker: Starting search with expression: {self.search_expression}")
+            print(f"FullTextSearchWorker: Source filter: {self.source_name}")
+            print(f"FullTextSearchWorker: Limit: {self.limit}, Offset: {self.offset}")
+
+            # Perform the full text search using the database manager
+            results = self.db_manager.search_fulltext(
+                search_expression=self.search_expression,
+                source_name=self.source_name,
+                limit=self.limit,
+                offset=self.offset
+            )
+
+            print(f"FullTextSearchWorker: Found {len(results)} results")
+
+            # Emit the results
+            self.signals.result.emit(results)
+
+        except Exception as e:
+            # Get the traceback
+            import traceback
+            trace = traceback.format_exc()
+
+            print(f"FullTextSearchWorker: Error during search: {e}")
+            print(f"FullTextSearchWorker: Traceback: {trace}")
+
+            # Emit the error
+            self.signals.error.emit(str(e), trace)
+
+        finally:
+            # Always emit finished signal
+            self.signals.finished.emit()
+            print("FullTextSearchWorker: Finished signal emitted")
 
 
 class PDFExtractionWorker(QRunnable):

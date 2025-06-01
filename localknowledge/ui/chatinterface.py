@@ -575,3 +575,179 @@ class ChatInterface(QWidget):
         self.retry_button.setVisible(False)
         self.text_input.setEnabled(not is_sending)
         self.attach_button.setEnabled(not is_sending)
+
+    # Agent response handlers
+    @Slot(str)
+    def on_response_chunk(self, chunk: str):
+        """Handle streaming response chunks from the agent."""
+        if self.current_ai_card:
+            current_text = self.current_ai_card.message_label.text()
+            self.current_ai_card.update_message(current_text + chunk)
+
+    @Slot(str)
+    def on_response_ready(self, response: str):
+        """Handle complete response from the agent."""
+        if self.current_ai_card:
+            self.current_ai_card.update_message(response)
+
+        # Emit signal
+        self.response_received.emit(response)
+
+        logger.info("AI response received and displayed")
+
+    @Slot(str)
+    def on_agent_error(self, error_message: str):
+        """Handle agent errors."""
+        if self.current_ai_card:
+            self.current_ai_card.update_message(f"Error: {error_message}")
+
+        # Show retry button
+        self.retry_button.setVisible(True)
+
+        logger.error(f"Agent error: {error_message}")
+
+    @Slot()
+    def on_agent_finished(self):
+        """Handle agent worker completion."""
+        self.set_sending_state(False)
+        self.current_ai_card = None
+
+        # Clean up worker
+        if self.agent_worker:
+            self.agent_worker.deleteLater()
+            self.agent_worker = None
+
+    # Drag and drop support
+    def dragEnterEvent(self, event: QDragEnterEvent):
+        """Handle drag enter events for file drops."""
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dropEvent(self, event: QDropEvent):
+        """Handle file drop events."""
+        files = []
+        for url in event.mimeData().urls():
+            if url.isLocalFile():
+                file_path = url.toLocalFile()
+                if os.path.isfile(file_path):
+                    files.append(file_path)
+
+        if files:
+            self.attached_files.extend(files)
+            self.update_files_display()
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    # Public methods
+    def clear_chat(self):
+        """Clear all messages from the chat area."""
+        self.chat_area.clear_messages()
+        logger.info("Chat cleared")
+
+    def add_system_message(self, message: str):
+        """
+        Add a system message to the chat.
+
+        Args:
+            message: System message text
+        """
+        # Create a special system message card
+        card = MessageCard(message, is_user=False)
+        card.setStyleSheet(f"""
+            MessageCard {{
+                background-color: {COLORS['info']};
+                color: white;
+                border-radius: 12px;
+                margin: 4px;
+                border: 1px solid {COLORS['primary']};
+            }}
+        """)
+        card.message_label.setStyleSheet("color: white; font-style: italic;")
+
+        # Add to chat area manually
+        stretch_item = self.chat_area.content_layout.takeAt(self.chat_area.content_layout.count() - 1)
+        self.chat_area.content_layout.addWidget(card)
+        self.chat_area.content_layout.addItem(stretch_item)
+
+        QTimer.singleShot(10, self.chat_area.scroll_to_bottom)
+
+    def set_agent_model(self, model_name: str):
+        """
+        Change the AI agent model.
+
+        Args:
+            model_name: Name of the model to use
+        """
+        try:
+            if self.agent:
+                self.agent.close()
+
+            self.agent = LocalKnowledgeAgent(
+                model_name=model_name,
+                enable_web_search=True,
+                enable_local_search=True,
+                enable_extended_reasoning=False
+            )
+
+            self.add_system_message(f"Switched to model: {model_name}")
+            logger.info(f"Agent model changed to: {model_name}")
+
+        except Exception as e:
+            logger.error(f"Failed to change agent model: {e}")
+            QMessageBox.warning(
+                self,
+                "Model Change Error",
+                f"Failed to change to model {model_name}: {str(e)}"
+            )
+
+    def toggle_extended_reasoning(self, enable: bool):
+        """
+        Toggle extended reasoning mode.
+
+        Args:
+            enable: True to enable extended reasoning, False to disable
+        """
+        if self.agent:
+            self.agent.extended_reasoning(enable)
+            mode = "extended reasoning" if enable else "fast mode"
+            self.add_system_message(f"Switched to {mode}")
+            logger.info(f"Extended reasoning {'enabled' if enable else 'disabled'}")
+
+    def closeEvent(self, event):
+        """Handle widget close event."""
+        # Cancel any running agent worker
+        if self.agent_worker and self.agent_worker.isRunning():
+            self.agent_worker.cancel()
+            self.agent_worker.wait()
+
+        # Close agent
+        if self.agent:
+            self.agent.close()
+
+        super().closeEvent(event)
+
+
+# Example usage and testing
+if __name__ == "__main__":
+    import sys
+    from PySide6.QtWidgets import QApplication, QMainWindow
+
+    app = QApplication(sys.argv)
+
+    # Create main window
+    window = QMainWindow()
+    window.setWindowTitle("LocalKnowledge Chat Interface")
+    window.setGeometry(100, 100, 800, 600)
+
+    # Create and set chat interface
+    chat_interface = ChatInterface()
+    window.setCentralWidget(chat_interface)
+
+    # Add a welcome message
+    chat_interface.add_system_message("Welcome to LocalKnowledge Chat! Ask me anything about medical and scientific literature.")
+
+    window.show()
+    sys.exit(app.exec())

@@ -1031,3 +1031,82 @@ class DocumentDatabaseManager(DatabaseManager):
         except Exception as e:
             logger.error(f"Error setting user rating: {e}")
             return False
+
+    def search_fulltext(self,
+                       search_expression: str,
+                       source_name: Optional[str] = None,
+                       limit: int = 100,
+                       offset: int = 0,
+                       timeout: int = 30) -> List[Dict[str, Any]]:
+        """
+        Search for documents using PostgreSQL full text search with the search_vector column.
+
+        This method uses the search_vector tsvector column with GIN index for fast full text search.
+        The search_expression supports PostgreSQL's full text search syntax including:
+        - AND/OR operators: 'term1 & term2' or 'term1 | term2'
+        - Phrase search: '"exact phrase"'
+        - Negation: '!term'
+        - Parentheses for grouping: '(term1 | term2) & term3'
+
+        Example search expressions:
+        - '(ONSD | "optic nerve sheath diameter") & ultrasound & (ICP | "intracranial pressure")'
+        - 'covid & (vaccine | vaccination)'
+        - 'machine learning & !artificial'
+
+        Args:
+            search_expression: Full text search expression using PostgreSQL syntax
+            source_name: Filter by source name (optional)
+            limit: Maximum number of results to return (default: 100)
+            offset: Number of results to skip (default: 0)
+            timeout: Query timeout in seconds (default: 30)
+
+        Returns:
+            Iterator over document rows matching the search expression
+        """
+        logger.debug(f"DocumentDatabaseManager.search_fulltext: Starting full text search with expression: {search_expression}")
+        logger.debug(f"DocumentDatabaseManager.search_fulltext: Source filter: {source_name}")
+        logger.debug(f"DocumentDatabaseManager.search_fulltext: Limit: {limit}, Offset: {offset}")
+
+        try:
+            # Build the base query using the search_vector column
+            query = """
+            SELECT d.*, s.name as source_name, c.name as category_name
+            FROM document d
+            JOIN sources s ON d.source_id = s.id
+            LEFT JOIN categories c ON d.category_id = c.id
+            WHERE d.search_vector @@ plainto_tsquery('english', %s)
+            """
+
+            params: List[Any] = [search_expression]
+
+            # Add source filter if provided
+            if source_name:
+                source_id = self.get_source_id(source_name)
+                logger.debug(f"DocumentDatabaseManager.search_fulltext: Source ID for {source_name}: {source_id}")
+                if source_id:
+                    query += " AND d.source_id = %s"
+                    params.append(source_id)
+
+            # Add ordering and limit
+            query += " ORDER BY d.publication_date DESC NULLS LAST LIMIT %s OFFSET %s"
+            params.extend([limit, offset])
+
+            logger.debug(f"DocumentDatabaseManager.search_fulltext: Executing full text search query")
+            logger.debug(f"DocumentDatabaseManager.search_fulltext: SQL Query: {query}")
+            logger.debug(f"DocumentDatabaseManager.search_fulltext: Parameters: {params}")
+
+            # Execute the query with the specified timeout
+            results = self.execute(query, tuple(params), timeout=timeout) or []
+            logger.debug(f"DocumentDatabaseManager.search_fulltext: Full text search completed, found {len(results)} results")
+
+            return results
+
+        except TimeoutError as e:
+            logger.debug(f"DocumentDatabaseManager.search_fulltext: Search timed out: {e}")
+            # Return an empty result set on timeout
+            return []
+        except Exception as e:
+            logger.warning(f"DocumentDatabaseManager.search_fulltext: Error during full text search: {e}")
+            import traceback
+            logger.warning(traceback.format_exc())
+            return []
