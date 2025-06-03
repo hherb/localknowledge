@@ -571,10 +571,33 @@ class MainWindow(QMainWindow):
         central_layout.setSpacing(0)
         self.setCentralWidget(central_widget)
 
-        # Create splitter for resizable panels (EXACTLY like working example)
+        # Create the main splitter
         self.main_splitter = QSplitter(Qt.Horizontal)
 
-        # Create configuration panel (EXACTLY like working example)
+        # Make the splitter handle more visible and wider
+        self.main_splitter.setHandleWidth(10)  # Increased handle width for easier grabbing
+        self.main_splitter.setChildrenCollapsible(False)  # Prevent collapsing sections to zero
+        self.main_splitter.setOpaqueResize(True)  # Resize widgets in real-time for better feedback
+        self.main_splitter.setStyleSheet("""
+            QSplitter::handle {
+                background-color: #cccccc;
+                border: 1px solid #999999;
+            }
+            QSplitter::handle:hover {
+                background-color: #aaaaaa;
+            }
+            QSplitter::handle:pressed {
+                background-color: #888888;
+            }
+        """)
+
+        # Add the splitter to the central widget
+        central_layout.addWidget(self.main_splitter, 1)  # Add with stretch factor
+
+        # Connect to splitter movement
+        self.main_splitter.splitterMoved.connect(self._on_splitter_moved)
+
+        # Configuration panel (initially hidden)
         self.config_panel = ConfigPanel()
         self.config_panel_visible = True
 
@@ -1130,11 +1153,6 @@ class MainWindow(QMainWindow):
         # Apply the splitter sizes
         self.main_splitter.setSizes(splitter_sizes)
 
-        # Ensure the splitter is always resizable by setting minimum sizes
-        # This prevents the config panel from being completely non-resizable
-        self.main_splitter.setCollapsible(0, True)  # Allow config panel to collapse
-        self.main_splitter.setCollapsible(1, False)  # Don't allow main content to collapse
-
         # Restore all other splitter states
         splitter_states = {}
 
@@ -1149,8 +1167,8 @@ class MainWindow(QMainWindow):
         if splitter_states:
             self.restore_all_splitter_states(splitter_states)
 
-        # Ensure config panel starts collapsed but visible for splitter interaction
-        # Don't hide it completely as that breaks the splitter handle
+        # Ensure config panel is hidden on start
+        self.config_panel.setVisible(False)
         self.config_button.setChecked(False)
         self.toggle_config_action.setChecked(False)
 
