@@ -4,6 +4,9 @@ Simple Chat Interface Plugin for LocalKnowledge.
 
 This is a simplified version of the chat plugin that avoids potential
 import issues by lazy-loading the chat interface.
+
+NOTE: This plugin is currently DISABLED to avoid duplicate chat interfaces.
+Use ChatInterfacePlugin instead, which provides the full chat functionality.
 """
 
 import os
@@ -31,7 +34,7 @@ from localknowledge.ui.plugins.plugin_finder import register_plugin
 logger = logging.getLogger(__name__)
 
 
-@register_plugin
+# @register_plugin  # Disabled - use ChatInterfacePlugin instead
 class SimpleChatPlugin(PluginBase):
     """
     Simple Chat Interface Plugin for LocalKnowledge.

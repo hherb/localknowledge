@@ -29,7 +29,8 @@ MODELS = [ #"microsoft/BiomedNLP-PubMedBERT-base-uncased-abstract-fulltext", #--
 class PubMedBERTEmbedder(BaseEmbedder):
     """Class for creating vector embeddings using PubMedBERT models with memory optimization."""
     def __init__(self, model_name: str = "cambridgeltl/SapBERT-from-PubMedBERT-fulltext",
-                 device: Optional[str] = None, max_batch_size: int = 100):
+                 device: Optional[str] = None, 
+                 max_batch_size: int = 1000):
         """
         Initialize the PubMedBERT embedder.
 

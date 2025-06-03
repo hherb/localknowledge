@@ -329,11 +329,11 @@ class AbstractEmbeddingUpdater:
 
         # Use a smaller batch size for PubMedBERT to prevent memory issues
         if isinstance(self.embedder, PubMedBERTEmbedder):
-            original_batch_size = batch_size
-            # Adjust batch size based on the embedder's max_batch_size
-            batch_size = min(batch_size, self.max_batch_size)
-            if batch_size < original_batch_size:
-                logger.info(f"Adjusted batch size from {original_batch_size} to {batch_size} for PubMedBERT")
+            # original_batch_size = batch_size
+            # # Adjust batch size based on the embedder's max_batch_size
+            # batch_size = min(batch_size, self.max_batch_size)
+            # if batch_size < original_batch_size:
+            #     logger.info(f"** Adjusted batch size from {original_batch_size} to {batch_size} for PubMedBERT")
 
             # Also reduce workers for PubMedBERT to prevent memory issues
             original_workers = workers
