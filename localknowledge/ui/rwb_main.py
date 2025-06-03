@@ -18,6 +18,11 @@ import importlib
 from typing import Dict, List, Optional, Type, Any, Tuple
 import logging
 
+# Set the environment variable for the platform plugin path
+print("SETTING THE PySide6 PATH")
+from PySide6.QtCore import QLibraryInfo
+os.environ["QT_QPA_PLATFORM_PLUGIN_PATH"] = QLibraryInfo.path(QLibraryInfo.PluginsPath)
+
 # Configure logging
 logging.basicConfig(
     level=logging.ERROR,
@@ -249,64 +254,45 @@ class PluginBase(QWidget):
 
 
 class ConfigPanel(QWidget):
-    """Slide-in configuration panel."""
+    """Configuration panel for plugin settings."""
 
     def __init__(self, parent=None):
         """Initialize the configuration panel."""
         super().__init__(parent)
-        # Ensure no maximum width constraint
-        self.setMaximumWidth(16777215)  # Qt's QWIDGETSIZE_MAX
-        # Set minimum width to ensure it's not too narrow
-        self.setMinimumWidth(300)
-        # Set size policy to allow expansion
-        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.setup_ui()
 
     def setup_ui(self):
         """Set up the user interface."""
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(10)
 
-        # Header
-        header = QWidget()
-        header_layout = QHBoxLayout(header)
-        header_layout.setContentsMargins(10, 10, 10, 10)
+        # Configuration title
+        title = QLabel("Configuration")
+        title.setStyleSheet("font-weight: bold; font-size: 14px; padding: 10px;")
+        layout.addWidget(title)
 
-        title_label = QLabel("Configuration")
-        title_label.setStyleSheet("font-weight: bold; font-size: 16px;")
+        # Content area (scrollable)
+        self.scroll_area = QScrollArea()
+        self.scroll_area.setWidgetResizable(True)
+        self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
 
-        header_layout.addWidget(title_label)
-        header_layout.addStretch(1)
-
-        # Content area - scrollable
-        scroll_area = QScrollArea()
-        scroll_area.setWidgetResizable(True)
-        scroll_area.setFrameShape(QFrame.NoFrame)
-        # Ensure scroll area can expand
-        scroll_area.setMaximumWidth(16777215)  # Qt's QWIDGETSIZE_MAX
-        scroll_area.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-
+        # Content widget inside scroll area
         self.content_widget = QWidget()
-        # Ensure content widget can expand
-        self.content_widget.setMaximumWidth(16777215)  # Qt's QWIDGETSIZE_MAX
-        self.content_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.content_layout = QVBoxLayout(self.content_widget)
-        self.content_layout.setContentsMargins(10, 10, 10, 10)
-        self.content_layout.setSpacing(10)
-        self.content_layout.addStretch(1)
+        self.content_layout.setContentsMargins(5, 5, 5, 5)
+        self.content_layout.setSpacing(8)
 
-        scroll_area.setWidget(self.content_widget)
+        # Add stretch to push content to top
+        self.content_layout.addStretch()
 
-        # Add to main layout
-        layout.addWidget(header)
+        # Set content widget to scroll area
+        self.scroll_area.setWidget(self.content_widget)
+        layout.addWidget(self.scroll_area)
 
-        # Separator line
-        line = QFrame()
-        line.setFrameShape(QFrame.HLine)
-        line.setFrameShadow(QFrame.Sunken)
-        layout.addWidget(line)
-
-        layout.addWidget(scroll_area)
+        # Set minimum width but allow expansion
+        self.setMinimumWidth(200)
 
         # Set default style
         self.setStyleSheet("""
@@ -316,9 +302,6 @@ class ConfigPanel(QWidget):
             }
         """)
 
-        # No size constraints at all to allow full expansion
-        # The panel will be sized by the main splitter
-
     def set_content(self, widget):
         """
         Set the content widget in the configuration panel.
@@ -326,18 +309,22 @@ class ConfigPanel(QWidget):
         Args:
             widget: Widget to display in the configuration panel
         """
-        # Clear existing content
+        # Clear existing content (except the stretch at the end)
         while self.content_layout.count() > 1:  # Keep stretch at the end
             item = self.content_layout.takeAt(0)
             if item.widget():
-                item.widget().setParent(None)
+                # Properly remove the widget
+                old_widget = item.widget()
+                old_widget.setParent(None)
+                old_widget.deleteLater()
 
         if widget:
-            # Ensure the widget can expand
-            widget.setMaximumWidth(16777215)  # Qt's QWIDGETSIZE_MAX
-            if hasattr(widget, 'setSizePolicy'):
-                widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-            self.content_layout.insertWidget(0, widget, 1)  # Add with stretch factor
+            # Insert the widget at the beginning (before the stretch)
+            self.content_layout.insertWidget(0, widget)
+
+            # Force layout update
+            self.content_layout.update()
+            self.updateGeometry()
 
 
 class PluginManager(QObject):
@@ -584,51 +571,29 @@ class MainWindow(QMainWindow):
         central_layout.setSpacing(0)
         self.setCentralWidget(central_widget)
 
-        # Create the main splitter
+        # Create splitter for resizable panels (EXACTLY like working example)
         self.main_splitter = QSplitter(Qt.Horizontal)
 
-        # Make the splitter handle more visible and wider
-        self.main_splitter.setHandleWidth(10)  # Increased handle width for easier grabbing
-        self.main_splitter.setChildrenCollapsible(False)  # Prevent collapsing sections to zero
-        self.main_splitter.setOpaqueResize(True)  # Resize widgets in real-time for better feedback
-        self.main_splitter.setStyleSheet("""
-            QSplitter::handle {
-                background-color: #cccccc;
-                border: 1px solid #999999;
-            }
-            QSplitter::handle:hover {
-                background-color: #aaaaaa;
-            }
-            QSplitter::handle:pressed {
-                background-color: #888888;
-            }
-        """)
-
-        # Add the splitter to the central widget
-        central_layout.addWidget(self.main_splitter, 1)  # Add with stretch factor
-
-        # Connect to splitter movement
-        self.main_splitter.splitterMoved.connect(self._on_splitter_moved)
-
-        # Configuration panel (initially hidden)
+        # Create configuration panel (EXACTLY like working example)
         self.config_panel = ConfigPanel()
-        self.config_panel.setVisible(False)
-        self.config_panel.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        # Ensure no maximum width constraint
-        self.config_panel.setMaximumWidth(16777215)  # Qt's QWIDGETSIZE_MAX
-        self.main_splitter.addWidget(self.config_panel)
+        self.config_panel_visible = True
 
-        # Tab widget for plugins
+        # Create main tab widget (EXACTLY like working example)
         self.tab_widget = QTabWidget()
         self.tab_widget.setTabsClosable(True)
         self.tab_widget.setMovable(True)
         self.tab_widget.tabCloseRequested.connect(self.close_plugin_tab)
         self.tab_widget.currentChanged.connect(self.on_tab_changed)
-        self.tab_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+
+        # Add widgets to splitter (EXACTLY like working example)
+        self.main_splitter.addWidget(self.config_panel)
         self.main_splitter.addWidget(self.tab_widget)
 
-        # Set splitter sizes
-        self.main_splitter.setSizes([0, self.width()])
+        # Set splitter proportions (EXACTLY like working example)
+        self.main_splitter.setSizes([250, 750])
+
+        # Add splitter to main layout (EXACTLY like working example)
+        central_layout.addWidget(self.main_splitter)
 
         # Set up menus
         self.setup_menus()
@@ -645,7 +610,7 @@ class MainWindow(QMainWindow):
         file_menu = self.menuBar().addMenu("&File")
 
         exit_action = QAction("E&xit", self)
-        exit_action.setShortcut(QKeySequence.Quit)
+        exit_action.setShortcut(QKeySequence.StandardKey.Quit)
         exit_action.setStatusTip("Exit the application")
         exit_action.triggered.connect(self.close)
         file_menu.addAction(exit_action)
@@ -697,7 +662,7 @@ class MainWindow(QMainWindow):
 
         # Add a spacer to push the logout button to the right
         spacer = QWidget()
-        spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         self.toolbar.addWidget(spacer)
 
         # Add logout button to the right side of the toolbar
@@ -778,67 +743,17 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(f"Unloaded plugin: {plugin_name}")
 
     def toggle_config_panel(self):
-        """Toggle the configuration panel visibility."""
-        # Check if current plugin has a config widget
-        if not self.has_config_widget_for_current_tab():
-            # No config widget available, don't show panel
-            self.statusBar().showMessage("No configuration available for this plugin", 3000)
-            self.config_button.setChecked(False)
-            self.toggle_config_action.setChecked(False)
-            return
-
-        # Get current sizes
-        sizes = self.main_splitter.sizes()
-        total_width = sum(sizes)
-
-        if self.config_panel.isVisible() and sizes[0] > 0:
-            # Store the current size before hiding
-            self._last_config_width = sizes[0]
-
-            # Hide panel - just set the width to 0
-            self.main_splitter.setSizes([0, total_width])
-            self.config_panel.setVisible(False)
-            self.config_button.setChecked(False)
-            self.toggle_config_action.setChecked(False)
+        """Toggle visibility of the configuration panel (EXACTLY like working example)"""
+        if self.config_panel_visible:
+            self.config_panel.hide()
+            self.config_panel_visible = False
+            self.statusBar().showMessage("Configuration panel hidden")
         else:
-            # Show panel
-            self.config_panel.setVisible(True)
+            self.config_panel.show()
+            self.config_panel_visible = True
+            self.statusBar().showMessage("Configuration panel shown")
 
-            # Determine the width to use
-            if hasattr(self, '_last_config_width') and self._last_config_width > 0:
-                # Use the last width if available
-                initial_width = self._last_config_width
-            else:
-                # Otherwise use a reasonable default (1/3 of total, but at least 300 pixels)
-                initial_width = max(total_width // 3, 300)
 
-            # Make sure we don't exceed the total width
-            if initial_width > total_width - 400:  # Ensure at least 400 pixels for the main content
-                initial_width = total_width // 2
-
-            # Force the splitter to update its sizes
-            self.main_splitter.setSizes([initial_width, total_width - initial_width])
-
-            # Update button states
-            self.config_button.setChecked(True)
-            self.toggle_config_action.setChecked(True)
-
-            # Process events to ensure the UI updates
-            QApplication.processEvents()
-
-    def _on_splitter_moved(self, pos, index):
-        """
-        Handle splitter movement.
-
-        Args:
-            pos: New position of the splitter handle
-            index: Index of the handle that was moved
-        """
-        # Store the current config panel width if it's visible
-        if self.config_panel.isVisible():
-            sizes = self.main_splitter.sizes()
-            if sizes[0] > 0:
-                self._last_config_width = sizes[0]
 
     # No animation-related methods needed anymore
 
@@ -858,13 +773,15 @@ class MainWindow(QMainWindow):
         """Update the configuration panel with the settings widget for the current tab."""
         current_index = self.tab_widget.currentIndex()
         if current_index < 0:
-            # No tabs open
+            # No tabs open - clear the config panel
             logger.info("update_config_panel_for_current_tab: No tabs open")
+            self.config_panel.set_content(None)
             return
 
         current_widget = self.tab_widget.widget(current_index)
 
         # Find the plugin for this widget
+        config_widget_found = False
         for plugin_name, plugin in self.plugin_manager.get_active_plugins().items():
 
             # Check if plugin has a main widget
@@ -872,22 +789,31 @@ class MainWindow(QMainWindow):
 
             if main_widget == current_widget:
                 # Found the plugin, get its config widget
+                logger.info(f"Found plugin {plugin_name} for current tab")
 
                 try:
                     config_widget = plugin.get_config_widget()
 
                     if config_widget:
+                        logger.info(f"Setting config widget for plugin {plugin_name}")
                         self.config_panel.set_content(config_widget)
+                        config_widget_found = True
                     else:
-                        logger.warning(f"Plugin {plugin_name} returned None for config widget")
+                        logger.info(f"Plugin {plugin_name} returned None for config widget")
+                        self.config_panel.set_content(None)
+                        config_widget_found = True
                 except Exception as e:
                     logger.error(f"Error calling get_config_widget() on plugin {plugin_name}: {e}")
                     import traceback
                     traceback.print_exc()
+                    self.config_panel.set_content(None)
+                    config_widget_found = True
 
                 break
-        else:
+
+        if not config_widget_found:
             logger.info("update_config_panel_for_current_tab: No matching plugin found")
+            self.config_panel.set_content(None)
 
     def update_config_button_state(self):
         """Update the config button state based on whether the current tab has a config widget."""
@@ -907,9 +833,18 @@ class MainWindow(QMainWindow):
         self.config_button.setEnabled(has_config)
         self.toggle_config_action.setEnabled(has_config)
 
-        # If config panel is visible but current tab has no config, hide it
-        if self.config_panel.isVisible() and not has_config:
-            self.toggle_config_panel()
+        # Debug logging
+        logger.info(f"Config button state updated: has_config={has_config}, button_enabled={self.config_button.isEnabled()}")
+
+        # If config panel is expanded but current tab has no config, collapse it
+        sizes = self.main_splitter.sizes()
+        if sizes[0] > 50 and not has_config:
+            # Collapse the panel since there's no config for this tab
+            total_width = sum(sizes)
+            self.main_splitter.setSizes([0, total_width])
+            self.config_panel_visible = False
+            self.config_button.setChecked(False)
+            self.toggle_config_action.setChecked(False)
 
     def has_config_widget_for_current_tab(self) -> bool:
         """Check if the current tab has a configuration widget.
@@ -918,6 +853,7 @@ class MainWindow(QMainWindow):
             bool: True if the current tab has a configuration widget, False otherwise
         """
         current_index = self.tab_widget.currentIndex()
+
         if current_index < 0:
             # No tabs open
             return False
@@ -925,32 +861,23 @@ class MainWindow(QMainWindow):
         current_widget = self.tab_widget.widget(current_index)
 
         # Find the plugin for this widget
-        for plugin_name, plugin in self.plugin_manager.get_active_plugins().items():
-            logger.info(f"Checking plugin: {plugin_name}, class: {plugin.__class__.__name__}")
+        active_plugins = self.plugin_manager.get_active_plugins()
 
+        for plugin_name, plugin in active_plugins.items():
             # Check if plugin has a main widget
             main_widget = plugin.get_main_widget()
 
             if main_widget == current_widget:
-                # Found the plugin, check if it has a config widget
-
-                # Check if plugin has a has_config_widget method
-                if hasattr(plugin, 'has_config_widget'):
-                    has_config = plugin.has_config_widget()
-                    if has_config:
-                        return True
-
-                # Try to get the config widget
+                # Found the plugin, try to get the config widget
                 try:
                     config_widget = plugin.get_config_widget()
-                    return config_widget is not None
+                    result = config_widget is not None
+                    logger.info(f"Plugin {plugin_name} has config widget: {result}")
+                    return result
                 except Exception as e:
                     logger.error(f"Error calling get_config_widget() on plugin {plugin_name}: {e}")
-                    import traceback
-                    traceback.print_exc()
                     return False
 
-        logger.info("has_config_widget_for_current_tab: No matching plugin found")
         return False
 
     # No property needed anymore since we're not using animations
@@ -1203,6 +1130,11 @@ class MainWindow(QMainWindow):
         # Apply the splitter sizes
         self.main_splitter.setSizes(splitter_sizes)
 
+        # Ensure the splitter is always resizable by setting minimum sizes
+        # This prevents the config panel from being completely non-resizable
+        self.main_splitter.setCollapsible(0, True)  # Allow config panel to collapse
+        self.main_splitter.setCollapsible(1, False)  # Don't allow main content to collapse
+
         # Restore all other splitter states
         splitter_states = {}
 
@@ -1217,8 +1149,8 @@ class MainWindow(QMainWindow):
         if splitter_states:
             self.restore_all_splitter_states(splitter_states)
 
-        # Ensure config panel is hidden on start
-        self.config_panel.setVisible(False)
+        # Ensure config panel starts collapsed but visible for splitter interaction
+        # Don't hide it completely as that breaks the splitter handle
         self.config_button.setChecked(False)
         self.toggle_config_action.setChecked(False)
 

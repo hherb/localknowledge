@@ -75,12 +75,12 @@ class ChatConfigWidget(QWidget):
         # AI Model Configuration
         model_group = QGroupBox("AI Model Configuration")
         model_layout = QFormLayout(model_group)
-        
+
         # Model selection
         self.model_combo = QComboBox()
         self.model_combo.addItems([
             "qwen3:8b",
-            "llama3.2:3b", 
+            "llama3.2:3b",
             "gemma2:2b",
             "mistral:7b",
             "deepseek-r1:1.5b",
@@ -100,6 +100,7 @@ class ChatConfigWidget(QWidget):
         
         # Search Configuration
         search_group = QGroupBox("Search Configuration")
+        search_group.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         search_layout = QFormLayout(search_group)
         
         # Web search
@@ -125,6 +126,7 @@ class ChatConfigWidget(QWidget):
         
         # Chat Configuration
         chat_group = QGroupBox("Chat Configuration")
+        chat_group.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         chat_layout = QFormLayout(chat_group)
         
         # Auto-scroll
@@ -190,9 +192,15 @@ class ChatConfigWidget(QWidget):
         
         # Add stretch to push everything to the top
         layout.addStretch()
-        
-        # Set size policy
-        self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
+
+        # Set size policy to allow both horizontal and vertical expansion
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+
+        # Ensure no maximum width constraints
+        self.setMaximumWidth(16777215)  # Qt's QWIDGETSIZE_MAX
+
+        # Set a reasonable minimum width for usability
+        self.setMinimumWidth(250)
     
     def setup_connections(self):
         """Set up signal-slot connections."""
@@ -258,13 +266,6 @@ class ChatConfigWidget(QWidget):
                 'auto_scroll': self.auto_scroll_checkbox.isChecked()
             }
             self.settings_changed.emit(settings)
-
-            # Show confirmation
-            QMessageBox.information(
-                self,
-                "Settings Applied",
-                "Chat interface settings have been applied successfully."
-            )
 
             logger.info("Chat settings applied successfully")
 

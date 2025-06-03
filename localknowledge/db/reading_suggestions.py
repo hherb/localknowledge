@@ -323,10 +323,6 @@ class ReadingSuggestionsManager(DatabaseManager):
         """
         params.extend([limit, offset])
 
-        print("\n=== Debug: Reading Suggestions Query ===")
-        print(f"Query: {query}")
-        print(f"Params: {params}")
-
         try:
             result = self.execute(query, tuple(params))
             print(f"Query returned {len(result) if result else 0} rows")
