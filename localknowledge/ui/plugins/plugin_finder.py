@@ -16,8 +16,8 @@ parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if parent_dir not in sys.path:
     sys.path.insert(0, parent_dir)
 
-# Import PluginBase from the main application
-from rwb_main import PluginBase
+# Import PluginBase from the plugin base module
+from localknowledge.ui.plugin_base import PluginBase
 
 # Dictionary to store plugin classes
 _plugin_classes: Dict[str, Type[PluginBase]] = {}

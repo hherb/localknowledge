@@ -10,7 +10,7 @@ parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if parent_dir not in sys.path:
     sys.path.insert(0, parent_dir)
 
-from rwb_main import PluginBase
+from localknowledge.ui.plugin_base import PluginBase
 from localknowledge.ui.plugins.plugin_finder import register_plugin
 
 @register_plugin

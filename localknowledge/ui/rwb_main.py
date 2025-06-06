@@ -19,9 +19,9 @@ from typing import Dict, List, Optional, Type, Any, Tuple
 import logging
 
 # Set the environment variable for the platform plugin path
-print("SETTING THE PySide6 PATH")
-from PySide6.QtCore import QLibraryInfo
-os.environ["QT_QPA_PLATFORM_PLUGIN_PATH"] = QLibraryInfo.path(QLibraryInfo.PluginsPath)
+#print("SETTING THE PySide6 PATH")
+#from PySide6.QtCore import QLibraryInfo
+#os.environ["QT_QPA_PLATFORM_PLUGIN_PATH"] = QLibraryInfo.path(QLibraryInfo.PluginsPath)
 
 # Configure logging
 logging.basicConfig(
@@ -47,210 +47,8 @@ from PySide6.QtWidgets import (
 )
 
 
-class PluginBase(QWidget):
-    """Base class for all plugins."""
-
-    plugin_name = "Base Plugin"
-    plugin_description = "Base plugin class that all plugins should inherit from"
-    plugin_icon = None  # Default icon path
-
-    def __init__(self, parent=None):
-        """Initialize the plugin."""
-        super().__init__(parent)
-        self.setObjectName(self.__class__.__name__)
-
-    def initialize(self) -> bool:
-        """
-        Initialize the plugin. Called when the plugin is loaded.
-
-        Returns:
-            bool: True if initialization was successful, False otherwise
-        """
-        return True
-
-    def get_main_widget(self) -> QWidget:
-        """
-        Get the main widget of this plugin.
-
-        Returns:
-            QWidget: The main widget to be displayed in the central area
-        """
-        return self
-
-    def get_config_widget(self) -> Optional[QWidget]:
-        """
-        Get the configuration widget for this plugin.
-
-        Returns:
-            Optional[QWidget]: Configuration widget or None if no configuration is needed
-        """
-        return None
-
-    def get_title(self) -> str:
-        """
-        Get the display title for this plugin.
-
-        Returns:
-            str: Display title
-        """
-        return self.plugin_name
-
-    def get_actions(self) -> List[QAction]:
-        """
-        Get a list of actions this plugin provides for menus/toolbars.
-
-        Returns:
-            List[QAction]: List of actions
-        """
-        return []
-
-    def find_splitters(self) -> Dict[str, QSplitter]:
-        """
-        Find all splitters in this plugin.
-
-        Returns:
-            Dict[str, QSplitter]: Dictionary of splitters with their object names as keys
-        """
-        splitters = {}
-
-        # Find all splitters in this plugin
-        for splitter in self.findChildren(QSplitter):
-            # Use object name as key, or generate one if not set
-            name = splitter.objectName()
-            if not name:
-                name = f"splitter_{id(splitter)}"
-                splitter.setObjectName(name)
-
-            splitters[name] = splitter
-
-        return splitters
-
-    def save_splitter_states(self) -> Dict[str, Any]:
-        """
-        Save the states of all splitters in this plugin.
-
-        Returns:
-            Dict[str, Any]: Dictionary containing splitter states
-        """
-        splitter_states = {}
-
-        # Find all splitters
-        splitters = self.find_splitters()
-
-        # Save state for each splitter
-        for name, splitter in splitters.items():
-            # Save as list of integers for better compatibility
-            sizes = splitter.sizes()
-            splitter_states[f"{name}_sizes"] = sizes
-
-            # Also save as individual values
-            for i, size in enumerate(sizes):
-                splitter_states[f"{name}_size_{i}"] = size
-
-            # Save orientation
-            orientation = splitter.orientation()
-            # Convert Qt.Orientation enum to int
-            orientation_value = 1 if orientation == Qt.Orientation.Horizontal else 2
-            splitter_states[f"{name}_orientation"] = orientation_value
-
-        return splitter_states
-
-
-    def restore_splitter_states(self, state: Dict[str, Any]) -> bool:
-        """
-        Restore the states of all splitters in this plugin.
-
-        Args:
-            state: Dictionary containing splitter states
-
-        Returns:
-            bool: True if states were restored successfully, False otherwise
-        """
-        # Find all splitters
-        splitters = self.find_splitters()
-
-        # Track success
-        success = True
-
-        # Restore state for each splitter
-        for name, splitter in splitters.items():
-            # Try to restore sizes
-            if f"{name}_sizes" in state:
-                try:
-                    sizes = state[f"{name}_sizes"]
-                    if isinstance(sizes, list):
-                        # Convert to integers if needed
-                        sizes = [int(size) for size in sizes]
-                        splitter.setSizes(sizes)
-                    else:
-                        success = False
-                except Exception as e:
-                    success = False
-
-                    # Try individual sizes as fallback
-                    try:
-                        sizes = []
-                        i = 0
-                        while f"{name}_size_{i}" in state:
-                            sizes.append(int(state[f"{name}_size_{i}"]))
-                            i += 1
-
-                        if sizes:
-                            splitter.setSizes(sizes)
-                    except Exception as e2:
-                        success = False
-
-            # Try to restore orientation
-            if f"{name}_orientation" in state:
-                try:
-                    orientation_value = int(state[f"{name}_orientation"])
-                    # Convert int to Qt.Orientation
-                    orientation = Qt.Orientation.Horizontal if orientation_value == 1 else Qt.Orientation.Vertical
-                    splitter.setOrientation(orientation)
-                except Exception as e:
-                    success = False
-
-        return success
-
-    def save_state(self) -> Dict[str, Any]:
-        """
-        Save the current state of the plugin.
-
-        Returns:
-            Dict[str, Any]: Dictionary containing state data
-        """
-        # Start with splitter states
-        state = self.save_splitter_states()
-
-        # Add any other plugin-specific state here
-
-        return state
-
-    def restore_state(self, state: Dict[str, Any]) -> bool:
-        """
-        Restore a previously saved state.
-
-        Args:
-            state: Dictionary containing state data
-
-        Returns:
-            bool: True if state was restored successfully, False otherwise
-        """
-        # Restore splitter states
-        success = self.restore_splitter_states(state)
-
-        # Add any other plugin-specific state restoration here
-
-        return success
-
-    def close_plugin(self) -> bool:
-        """
-        Perform cleanup when closing the plugin.
-
-        Returns:
-            bool: True if plugin can be safely closed, False otherwise
-        """
-        return True
+# Import PluginBase from the new module
+from localknowledge.ui.plugin_base import PluginBase
 
 
 class ConfigPanel(QWidget):
@@ -260,6 +58,9 @@ class ConfigPanel(QWidget):
         """Initialize the configuration panel."""
         super().__init__(parent)
         self.setup_ui()
+        
+        # Set fixed width to match working example
+        self.setMinimumWidth(200)
 
     def setup_ui(self):
         """Set up the user interface."""
@@ -268,7 +69,7 @@ class ConfigPanel(QWidget):
         layout.setSpacing(10)
 
         # Configuration title
-        title = QLabel("Configuration")
+        title = QLabel("Configuration V2")
         title.setStyleSheet("font-weight: bold; font-size: 14px; padding: 10px;")
         layout.addWidget(title)
 
@@ -327,157 +128,8 @@ class ConfigPanel(QWidget):
             self.updateGeometry()
 
 
-class PluginManager(QObject):
-    """Manages loading and unloading of plugins."""
-
-    plugin_loaded = Signal(str)
-    plugin_unloaded = Signal(str)
-
-    def __init__(self, plugin_dirs: List[str] = None):
-        """
-        Initialize the plugin manager.
-
-        Args:
-            plugin_dirs: List of directories to search for plugins
-        """
-        super().__init__()
-
-        if plugin_dirs is None:
-            # Default plugin directories
-            base_dir = os.path.dirname(os.path.abspath(__file__))
-            self.plugin_dirs = [
-                os.path.join(base_dir, "plugins"),
-            ]
-        else:
-            self.plugin_dirs = plugin_dirs
-
-        self.plugins: Dict[str, Type[PluginBase]] = {}
-        self.active_plugins: Dict[str, PluginBase] = {}
-
-    def discover_plugins(self) -> Dict[str, Type[PluginBase]]:
-        """
-        Discover available plugins in the plugin directories.
-
-        Returns:
-            Dict[str, Type[PluginBase]]: Dictionary of plugin classes
-        """
-
-        for plugin_dir in self.plugin_dirs:
-            if not os.path.exists(plugin_dir):
-                os.makedirs(plugin_dir, exist_ok=True)
-                continue
-
-            sys.path.insert(0, plugin_dir)
-
-            # Check if finder module exists, if not, skip this directory
-            finder_path = os.path.join(plugin_dir, "plugin_finder.py")
-            if not os.path.exists(finder_path):
-                continue
-
-            try:
-                # Import the plugin_finder module
-                logger.info("Loading plugin finder module...")
-                # Try absolute import first
-                try:
-                    from localknowledge.ui.plugins.plugin_finder import get_plugin_classes
-                except ImportError:
-                    # Fall back to direct import
-                    sys.path.insert(0, os.path.dirname(plugin_dir))
-                    from plugins.plugin_finder import get_plugin_classes
-
-                # Get registered plugin classes
-                registered_plugins = get_plugin_classes()
-                self.plugins.update(registered_plugins)
-            except Exception as e:
-                logger.error(f"Error loading plugins via plugin_finder: {e}")
-
-        logger.info(f"Discovered plugins: {list(self.plugins.keys())}")
-        return self.plugins
-
-    def load_plugin(self, plugin_name: str) -> Optional[PluginBase]:
-        """
-        Load a plugin by name.
-
-        Args:
-            plugin_name: Name of the plugin to load
-
-        Returns:
-            Optional[PluginBase]: Plugin instance or None if loading failed
-        """
-        if plugin_name not in self.plugins:
-            logger.error(f"Plugin '{plugin_name}' not found")
-            return None
-
-        if plugin_name in self.active_plugins:
-            return self.active_plugins[plugin_name]
-
-        try:
-            plugin_class = self.plugins[plugin_name]
-            plugin = plugin_class()
-
-            if plugin.initialize():
-                self.active_plugins[plugin_name] = plugin
-                self.plugin_loaded.emit(plugin_name)
-                return plugin
-            else:
-                logger.error(f"Plugin '{plugin_name}' failed to initialize")
-                return None
-
-        except Exception as e:
-            logger.error(f"Error initializing plugin '{plugin_name}': {e}")
-            return None
-
-    def unload_plugin(self, plugin_name: str) -> bool:
-        """
-        Unload a plugin by name.
-
-        Args:
-            plugin_name: Name of the plugin to unload
-
-        Returns:
-            bool: True if unloaded successfully, False otherwise
-        """
-        if plugin_name not in self.active_plugins:
-            return False
-
-        plugin = self.active_plugins[plugin_name]
-
-        if plugin.close_plugin():
-            del self.active_plugins[plugin_name]
-            self.plugin_unloaded.emit(plugin_name)
-            return True
-
-        return False
-
-    def get_plugin(self, plugin_name: str) -> Optional[PluginBase]:
-        """
-        Get an active plugin instance by name.
-
-        Args:
-            plugin_name: Name of the plugin
-
-        Returns:
-            Optional[PluginBase]: Plugin instance or None if not loaded
-        """
-        return self.active_plugins.get(plugin_name)
-
-    def get_available_plugins(self) -> Dict[str, Type[PluginBase]]:
-        """
-        Get all available plugins.
-
-        Returns:
-            Dict[str, Type[PluginBase]]: Dictionary of available plugin classes
-        """
-        return self.plugins
-
-    def get_active_plugins(self) -> Dict[str, PluginBase]:
-        """
-        Get all active plugins.
-
-        Returns:
-            Dict[str, PluginBase]: Dictionary of active plugin instances
-        """
-        return self.active_plugins
+# Import PluginManager from the new module
+from localknowledge.ui.plugin_manager import PluginManager
 
 
 class MainWindow(QMainWindow):
@@ -487,7 +139,9 @@ class MainWindow(QMainWindow):
         """Initialize the main window."""
         super().__init__()
 
-        self.setWindowTitle("RWB - Researcher's Workbench")
+        self._version = "0.0.3"
+        print(f">>>>>>>>>>> starting RWB main window version {self._version}")
+        self.setWindowTitle(f"RWB - Researcher's Workbench (Version {self._version})")
         self.setMinimumSize(1000, 700)
 
         # Set window icon
@@ -573,49 +227,30 @@ class MainWindow(QMainWindow):
 
         # Create the main splitter
         self.main_splitter = QSplitter(Qt.Horizontal)
-
-        # Make the splitter handle more visible and wider
-        self.main_splitter.setHandleWidth(10)  # Increased handle width for easier grabbing
-        self.main_splitter.setChildrenCollapsible(False)  # Prevent collapsing sections to zero
-        self.main_splitter.setOpaqueResize(True)  # Resize widgets in real-time for better feedback
-        self.main_splitter.setStyleSheet("""
-            QSplitter::handle {
-                background-color: #cccccc;
-                border: 1px solid #999999;
-            }
-            QSplitter::handle:hover {
-                background-color: #aaaaaa;
-            }
-            QSplitter::handle:pressed {
-                background-color: #888888;
-            }
-        """)
-
-        # Add the splitter to the central widget
-        central_layout.addWidget(self.main_splitter, 1)  # Add with stretch factor
-
-        # Connect to splitter movement
-        self.main_splitter.splitterMoved.connect(self._on_splitter_moved)
-
-        # Configuration panel (initially hidden)
+        
+        # Make the splitter handle more visible
+        self.main_splitter.setHandleWidth(8)
+        self.main_splitter.setChildrenCollapsible(False)  # Prevent collapsing to zero
+        
+        # Configuration panel
         self.config_panel = ConfigPanel()
         self.config_panel_visible = True
 
-        # Create main tab widget (EXACTLY like working example)
+        # Create main tab widget
         self.tab_widget = QTabWidget()
         self.tab_widget.setTabsClosable(True)
         self.tab_widget.setMovable(True)
         self.tab_widget.tabCloseRequested.connect(self.close_plugin_tab)
         self.tab_widget.currentChanged.connect(self.on_tab_changed)
 
-        # Add widgets to splitter (EXACTLY like working example)
+        # Add widgets to splitter
         self.main_splitter.addWidget(self.config_panel)
         self.main_splitter.addWidget(self.tab_widget)
 
-        # Set splitter proportions (EXACTLY like working example)
+        # Set splitter proportions
         self.main_splitter.setSizes([250, 750])
-
-        # Add splitter to main layout (EXACTLY like working example)
+        
+        # Add splitter to main layout
         central_layout.addWidget(self.main_splitter)
 
         # Set up menus
@@ -766,15 +401,25 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(f"Unloaded plugin: {plugin_name}")
 
     def toggle_config_panel(self):
-        """Toggle visibility of the configuration panel (EXACTLY like working example)"""
+        """Toggle visibility of the configuration panel"""
         if self.config_panel_visible:
+            # Simply hide the panel
             self.config_panel.hide()
             self.config_panel_visible = False
             self.statusBar().showMessage("Configuration panel hidden")
+            
+            # Update action state if it exists
+            if hasattr(self, 'toggle_config_action'):
+                self.toggle_config_action.setChecked(False)
         else:
+            # Simply show the panel
             self.config_panel.show()
             self.config_panel_visible = True
             self.statusBar().showMessage("Configuration panel shown")
+            
+            # Update action state if it exists
+            if hasattr(self, 'toggle_config_action'):
+                self.toggle_config_action.setChecked(True)
 
 
 

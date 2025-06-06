@@ -19,9 +19,9 @@ parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if parent_dir not in sys.path:
     sys.path.insert(0, parent_dir)
 
-# Import from rwb_main if available, otherwise use a dummy class
+# Import from plugin_base if available, otherwise use a dummy class
 try:
-    from rwb_main import PluginBase
+    from localknowledge.ui.plugin_base import PluginBase
     PLUGIN_BASE_AVAILABLE = True
 except ImportError:
     # Fallback for standalone mode

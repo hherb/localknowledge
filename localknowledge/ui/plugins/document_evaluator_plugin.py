@@ -34,7 +34,7 @@ if parent_dir not in sys.path:
     sys.path.insert(0, parent_dir)
 
 # Import the plugin base and registration
-from rwb_main import PluginBase
+from localknowledge.ui.plugin_base import PluginBase
 from localknowledge.ui.plugins.plugin_finder import register_plugin
 
 # Import document evaluator will be done in the worker class to avoid circular imports

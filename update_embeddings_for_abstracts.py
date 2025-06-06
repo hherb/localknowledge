@@ -25,6 +25,7 @@ import gc
 import os
 import psutil
 from concurrent.futures import TimeoutError as FuturesTimeoutError
+import threading
 
 import tqdm
 import ollama
@@ -326,145 +327,160 @@ class AbstractEmbeddingUpdater:
         batch_count = 0
         consecutive_errors = 0
         max_consecutive_errors = 3
-
+        
+        # Track overall progress metrics
+        overall_start_time = time.time()
+        
         # Use a smaller batch size for PubMedBERT to prevent memory issues
         if isinstance(self.embedder, PubMedBERTEmbedder):
-            # original_batch_size = batch_size
-            # # Adjust batch size based on the embedder's max_batch_size
-            # batch_size = min(batch_size, self.max_batch_size)
-            # if batch_size < original_batch_size:
-            #     logger.info(f"** Adjusted batch size from {original_batch_size} to {batch_size} for PubMedBERT")
-
-            # Also reduce workers for PubMedBERT to prevent memory issues
             original_workers = workers
-            workers = min(workers, 4)  # Limit to 2 workers for PubMedBERT
+            workers = min(workers, 4)  # Limit to 4 workers for PubMedBERT
             if workers < original_workers:
                 logger.info(f"Adjusted workers from {original_workers} to {workers} for PubMedBERT")
 
         if limit:
             total_to_process = min(total_to_process, limit)
 
-        # Create a progress bar, but only show it if requested
-        # We'll still use it to track progress internally
+        # Create a progress bar with additional metrics
         with tqdm.tqdm(total=total_to_process, desc=self.model_name[:20], disable=not show_progress) as pbar:
             offset = 0
-            while True:
-                try:
-                    # Only check memory occasionally to maintain performance
-                    if batch_count % 5 == 0:  # Check every 5 batches
-                        if not self.check_memory_usage():
-                            # If memory usage is too high, try to free some memory
+            # Create a separate thread to update the progress bar continuously
+            stop_event = threading.Event()
+            
+            def update_timer():
+                while not stop_event.is_set():
+                    # Refresh the display without updating progress
+                    pbar.refresh()
+                    time.sleep(0.5)  # Update every half second
+                    
+            # Start the timer thread
+            timer_thread = threading.Thread(target=update_timer, daemon=True)
+            timer_thread.start()
+            
+            try:
+                while True:
+                    try:
+                        # Only check memory occasionally to maintain performance
+                        if batch_count % 5 == 0:  # Check every 5 batches
+                            if not self.check_memory_usage():
+                                # If memory usage is too high, try to free some memory
+                                self.cleanup_memory()
+
+                                # If still too high after cleanup, reduce batch size
+                                if not self.check_memory_usage() and batch_size > 10:
+                                    new_batch_size = max(10, batch_size // 2)
+                                    logger.warning(f"Memory usage high. Reducing batch size from {batch_size} to {new_batch_size}")
+                                    batch_size = new_batch_size
+
+                        # Get a batch of chunks
+                        chunks = self.get_chunks_without_embeddings(limit=batch_size, offset=offset)
+                        if not chunks:
+                            logger.info("No more chunks to process")
+                            break
+
+                        # Reset consecutive errors counter on successful query
+                        consecutive_errors = 0
+
+                        batch_count += 1
+                        #batch_start_time = time.time()
+
+                        # Process chunks in parallel to create embeddings
+                        embedding_data = []
+
+                        # Use a fixed worker count for consistent performance
+                        current_workers = workers
+
+                        # Don't update progress bar during processing - we'll update it after the whole batch
+                        batch_processed = 0
+                        
+                        with concurrent.futures.ThreadPoolExecutor(max_workers=current_workers) as executor:
+                            # Submit all chunks for processing
+                            futures = [executor.submit(self.process_chunk, chunk, dry_run) for chunk in chunks]
+
+                            # Collect results as they complete
+                            for i, future in enumerate(concurrent.futures.as_completed(futures)):
+                                try:
+                                    success, _, embedding = future.result()  # Ignore message
+
+                                    if success and embedding:
+                                        # Add to batch for database insertion
+                                        embedding_data.append({
+                                            'chunk_id': chunks[i]['id'],
+                                            'embedding': embedding
+                                        })
+                                
+                                    batch_processed += 1
+                                except Exception as e:
+                                    logger.error(f"Error processing chunk: {e}")
+
+                        # Store all embeddings in a single batch operation
+                        if embedding_data and not dry_run:
+                            success_count = self.store_embeddings_batch(embedding_data, dry_run)
+                            total_processed += success_count
+                        elif dry_run:
+                            # In dry run mode, count all successful embeddings
+                            total_processed += len(embedding_data)
+                        
+                        # Now update the progress bar for the whole batch at once
+                        pbar.update(batch_processed)
+                        
+                        # Calculate and update overall rate
+                        elapsed_total = time.time() - overall_start_time
+                        overall_rate = total_processed / elapsed_total if elapsed_total > 0 else 0
+                        
+                        # Update progress bar with overall rate
+                        pbar.set_postfix({
+                            'chunks/s': f'{overall_rate:.2f}',
+                            'batch': batch_count,
+                            'elapsed': f'{elapsed_total:.1f}s'
+                        })
+
+                        # Update offset for next batch
+                        offset += len(chunks)  # Use actual number of chunks processed
+                        if limit and total_processed >= limit:
+                            logger.info(f"Reached processing limit of {limit} chunks")
+                            break
+
+                        # Only do garbage collection occasionally to maintain performance
+                        if batch_count % 10 == 0:  # Every 10 batches
                             self.cleanup_memory()
 
-                            # If still too high after cleanup, reduce batch size
-                            if not self.check_memory_usage() and batch_size > 10:
-                                new_batch_size = max(10, batch_size // 2)
-                                logger.warning(f"Memory usage high. Reducing batch size from {batch_size} to {new_batch_size}")
-                                batch_size = new_batch_size
+                    except TimeoutError as e:
+                        consecutive_errors += 1
+                        logger.warning(f"Timeout error in batch {batch_count}: {e}")
 
-                    # Get a batch of chunks
-                    chunks = self.get_chunks_without_embeddings(limit=batch_size, offset=offset)
-                    if not chunks:
-                        logger.info("No more chunks to process")
-                        break
+                        if consecutive_errors >= max_consecutive_errors:
+                            logger.error(f"Too many consecutive errors ({consecutive_errors}). Stopping processing.")
+                            break
 
-                    # Reset consecutive errors counter on successful query
-                    consecutive_errors = 0
+                        # Try with a smaller batch size
+                        new_batch_size = max(1, batch_size // 2)
+                        logger.info(f"Reducing batch size from {batch_size} to {new_batch_size}")
+                        batch_size = new_batch_size
 
-                    batch_count += 1
-                    batch_start_time = time.time()
+                        # Don't update offset, retry with same offset but smaller batch
 
-                    # Process chunks in parallel to create embeddings
-                    embedding_data = []
-
-                    # Use a fixed worker count for consistent performance
-                    # Only adjust if we've detected high memory usage in the batch check
-                    current_workers = workers
-
-                    with concurrent.futures.ThreadPoolExecutor(max_workers=current_workers) as executor:
-                        # Submit all chunks for processing
-                        futures = [executor.submit(self.process_chunk, chunk, dry_run) for chunk in chunks]
-
-                        # Collect results as they complete
-                        for i, future in enumerate(concurrent.futures.as_completed(futures)):
-                            try:
-                                success, _, embedding = future.result()  # Ignore message
-
-                                if success and embedding:
-                                    # Add to batch for database insertion
-                                    embedding_data.append({
-                                        'chunk_id': chunks[i]['id'],
-                                        'embedding': embedding
-                                    })
-                            except Exception as e:
-                                logger.error(f"Error processing chunk: {e}")
-
-                            # Update progress bar (still useful for internal tracking)
-                            pbar.update(1)
-
-                            # No periodic memory checks during processing to maintain performance
-
-                    # Only do garbage collection occasionally to maintain performance
-                    if batch_count % 10 == 0:  # Every 10 batches
+                        # Force garbage collection after error
                         self.cleanup_memory()
 
-                    # Store all embeddings in a single batch operation
-                    if embedding_data and not dry_run:
-                        success_count = self.store_embeddings_batch(embedding_data, dry_run)
-                        total_processed += success_count
-                    elif dry_run:
-                        # In dry run mode, count all successful embeddings
-                        total_processed += len(embedding_data)
+                    except Exception as e:
+                        consecutive_errors += 1
+                        logger.error(f"Error in batch {batch_count}: {e}")
 
-                    # Calculate and display batch statistics
-                    batch_time = time.time() - batch_start_time
-                    items_per_second = len(chunks) / batch_time if batch_time > 0 else 0
+                        if consecutive_errors >= max_consecutive_errors:
+                            logger.error(f"Too many consecutive errors ({consecutive_errors}). Stopping processing.")
+                            break
 
-                    # Log batch performance only if progress bar is disabled
-                    if not show_progress:
-                        total_processed_so_far = pbar.n
-                        percent_complete = (total_processed_so_far / total_to_process) * 100 if total_to_process > 0 else 0
-                        logger.info(f"Processed: {total_processed_so_far}/{total_to_process} ({percent_complete:.2f}%) - Batch {batch_count}: {len(chunks)} chunks at {items_per_second:.2f}/s")
+                        # Skip this batch and continue with the next one
+                        offset += batch_size
 
-                    # Update offset for next batch
-                    offset += len(chunks)  # Use actual number of chunks processed
-                    if limit and total_processed >= limit:
-                        logger.info(f"Reached processing limit of {limit} chunks")
-                        break
+                        # Force garbage collection after error
+                        self.cleanup_memory()
 
-                    # No garbage collection between batches to maintain performance
-
-                except TimeoutError as e:
-                    consecutive_errors += 1
-                    logger.warning(f"Timeout error in batch {batch_count}: {e}")
-
-                    if consecutive_errors >= max_consecutive_errors:
-                        logger.error(f"Too many consecutive errors ({consecutive_errors}). Stopping processing.")
-                        break
-
-                    # Try with a smaller batch size
-                    new_batch_size = max(1, batch_size // 2)
-                    logger.info(f"Reducing batch size from {batch_size} to {new_batch_size}")
-                    batch_size = new_batch_size
-
-                    # Don't update offset, retry with same offset but smaller batch
-
-                    # Force garbage collection after error
-                    self.cleanup_memory()
-
-                except Exception as e:
-                    consecutive_errors += 1
-                    logger.error(f"Error in batch {batch_count}: {e}")
-
-                    if consecutive_errors >= max_consecutive_errors:
-                        logger.error(f"Too many consecutive errors ({consecutive_errors}). Stopping processing.")
-                        break
-
-                    # Skip this batch and continue with the next one
-                    offset += batch_size
-
-                    # Force garbage collection after error
-                    self.cleanup_memory()
+            finally:
+                # Stop the timer thread
+                stop_event.set()
+                timer_thread.join(timeout=1.0)  # Wait for thread to finish
 
         # Calculate and display overall statistics
         total_time = time.time() - start_time
@@ -876,4 +892,5 @@ def main():
 
 
 if __name__ == "__main__":
+    print("Embedder V0.3 - with threded timer")
     main()

@@ -19,12 +19,7 @@ from PySide6.QtWidgets import (
 )
 
 # Import the plugin system
-try:
-    # Try the direct import first (for plugin finder compatibility)
-    from rwb_main import PluginBase
-except ImportError:
-    # Fall back to the full path import
-    from localknowledge.ui.rwb_main import PluginBase
+from localknowledge.ui.plugin_base import PluginBase
 
 from localknowledge.ui.plugins.plugin_finder import register_plugin
 

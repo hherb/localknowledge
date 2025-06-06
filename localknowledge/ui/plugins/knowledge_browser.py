@@ -26,7 +26,7 @@ if parent_dir not in sys.path:
 # Import the standalone KnowledgeBrowser and settings widget
 from localknowledge.ui.knowledgebrowser import KnowledgeBrowser
 from localknowledge.ui.knowledgebrowser_settings import KnowledgeBrowserSettings
-from localknowledge.ui.rwb_main import PluginBase  # Use the correct import path
+from localknowledge.ui.plugin_base import PluginBase  # Use the correct import path
 from localknowledge.ui.plugins.plugin_finder import register_plugin
 
 

@@ -51,13 +51,34 @@ class MyPlugin(Plugin):
 
 ### Plugin Manager
 
-The `PluginManager` class in `localknowledge.ui.plugins` manages the lifecycle of plugins:
+The `PluginManager` class in `localknowledge.ui.plugin_manager` manages the lifecycle of plugins:
 
 - Discovers plugins in the plugin directory
 - Loads and initializes plugins
 - Provides access to loaded plugins
 - Manages plugin dependencies
 - Handles plugin configuration
+
+The PluginManager is a QObject that emits signals when plugins are loaded or unloaded:
+
+```python
+from localknowledge.ui.plugin_manager import PluginManager
+
+# Create a plugin manager
+plugin_manager = PluginManager()
+
+# Discover available plugins
+plugins = plugin_manager.discover_plugins()
+
+# Load a specific plugin
+plugin = plugin_manager.load_plugin("MyPlugin")
+
+# Get all active plugins
+active_plugins = plugin_manager.get_active_plugins()
+
+# Unload a plugin
+plugin_manager.unload_plugin("MyPlugin")
+```
 
 ### Plugin Communication
 
