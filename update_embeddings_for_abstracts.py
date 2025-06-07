@@ -85,8 +85,10 @@ class AbstractEmbeddingUpdater:
         self.max_batch_size = max_batch_size
         self.memory_limit_percent = memory_limit_percent
 
-        # Make sure we have a table for this vector size
-        self.embeddings_db.ensure_table_for_vectorsize(self.vectorsize)
+        # Make sure we have a table for this vector size - this guarantees the table exists
+        self.tablename = self.embeddings_db.ensure_table_for_vectorsize(self.vectorsize)
+        logger.info(f"Using embedding table: {self.tablename}")
+
         # Get the model ID
         self.model_id = self.embeddings_db.get_model_id(model_name)
         if self.model_id == -1:
@@ -106,22 +108,8 @@ class AbstractEmbeddingUpdater:
     def ensure_indices(self):
         """Ensure that necessary indices exist for efficient queries.
         This is only called once during initialization.
+        Since ensure_table_for_vectorsize() was already called, we know the table exists.
         """
-        tablename = self.embeddings_db.get_tablename_for_vectorsize(self.vectorsize)
-
-        # Check if the table exists
-        check_table_query = """
-        SELECT EXISTS (
-            SELECT FROM information_schema.tables
-            WHERE table_name = %s
-        )
-        """
-        table_exists = self.embeddings_db.execute(check_table_query, (tablename,))
-
-        if not table_exists or not table_exists[0]['exists']:
-            logger.info(f"Table '{tablename}' doesn't exist yet, skipping index creation")
-            return
-
         # Create indices if they don't exist
         try:
             # Create all indices in a single transaction for better performance
@@ -129,8 +117,8 @@ class AbstractEmbeddingUpdater:
 
             # Index for the embedding table
             indices_queries.append(f"""
-            CREATE INDEX IF NOT EXISTS {tablename}_chunk_model_idx
-            ON {tablename} (chunk_id, model_id)
+            CREATE INDEX IF NOT EXISTS {self.tablename}_chunk_model_idx
+            ON {self.tablename} (chunk_id, model_id)
             """)
 
             # Index for the chunks table to speed up chunktype filtering
@@ -161,46 +149,20 @@ class AbstractEmbeddingUpdater:
         Returns:
             Number of chunks without embeddings
         """
-        vector_size = self.embedder.get_vectorsize()
-        model_id = self.model_id
-        tablename = self.embeddings_db.get_tablename_for_vectorsize(vector_size)
-
-        # Use the cached table existence check
-        if not hasattr(self, '_table_exists_cache'):
-            check_table_query = """
-            SELECT EXISTS (
-                SELECT FROM information_schema.tables
-                WHERE table_name = %s
-            )
-            """
-            table_exists_result = self.embeddings_db.execute(check_table_query, (tablename,))
-            self._table_exists_cache = table_exists_result[0]['exists'] if table_exists_result else False
-
-        if not self._table_exists_cache:
-            # If the table doesn't exist, all chunks need embeddings
-            logger.info(f"Table '{tablename}' doesn't exist, counting all abstract chunks")
-            query = """
-            SELECT COUNT(*) as count
-            FROM chunks c
-            JOIN chunktypes ct ON c.chunktype_id = ct.id
-            WHERE ct.chunktype = 'abstract'
-            """
-            params = []
-        else:
-            # Use a more efficient approach with NOT EXISTS
-            # For counting, we can use an even more optimized query with LIMIT 1
-            query = f"""
-            SELECT COUNT(*) as count
-            FROM chunks c
-            JOIN chunktypes ct ON c.chunktype_id = ct.id
-            WHERE ct.chunktype = 'abstract'
-            AND NOT EXISTS (
-                SELECT 1 FROM {tablename} e
-                WHERE e.chunk_id = c.id AND e.model_id = %s
-                LIMIT 1
-            )
-            """
-            params = [model_id]
+        # Since ensure_table_for_vectorsize() was called during initialization,
+        # we know the table exists and can use it directly
+        query = f"""
+        SELECT COUNT(*) as count
+        FROM chunks c
+        JOIN chunktypes ct ON c.chunktype_id = ct.id
+        WHERE ct.chunktype = 'abstract'
+        AND NOT EXISTS (
+            SELECT 1 FROM {self.tablename} e
+            WHERE e.chunk_id = c.id AND e.model_id = %s
+            LIMIT 1
+        )
+        """
+        params = (self.model_id,)
 
         try:
             # Use the instance's db_timeout value
@@ -219,7 +181,7 @@ class AbstractEmbeddingUpdater:
                 JOIN chunktypes ct ON c.chunktype_id = ct.id
                 WHERE ct.chunktype = 'abstract'
                 """
-                total_result = self.embeddings_db.execute(total_query, timeout=30)
+                total_result = self.embeddings_db.execute(total_query, (), timeout=30)
                 total_count = total_result[0]['count'] if total_result else 0
 
                 # Return 90% of total as an estimate (assuming most need embedding)
@@ -238,50 +200,22 @@ class AbstractEmbeddingUpdater:
         Returns:
             List of chunks without embeddings
         """
-        vector_size = self.embedder.get_vectorsize()
-        model_id = self.model_id
-        tablename = self.embeddings_db.get_tablename_for_vectorsize(vector_size)
-
-        # We only check if the table exists once during initialization
-        # and cache the result for better performance
-        if not hasattr(self, '_table_exists_cache'):
-            check_table_query = """
-            SELECT EXISTS (
-                SELECT FROM information_schema.tables
-                WHERE table_name = %s
-            )
-            """
-            table_exists_result = self.embeddings_db.execute(check_table_query, (tablename,))
-            self._table_exists_cache = table_exists_result[0]['exists'] if table_exists_result else False
-
-        if not self._table_exists_cache:
-            # If the table doesn't exist, all chunks need embeddings
-            query = """
-            SELECT c.id, c.document_id, c.chunk_no, c.page_start, c.page_end,
-                   c.text, c.chunktype_id, d.title as document_title, d.abstract
-            FROM chunks c
-            JOIN chunktypes ct ON c.chunktype_id = ct.id
-            JOIN document d ON c.document_id = d.id
-            WHERE ct.chunktype = 'abstract'
-            ORDER BY c.id
-            """
-            params = []
-        else:
-            # Use a more efficient approach with NOT EXISTS and select only needed columns
-            query = f"""
-            SELECT c.id, c.document_id, c.chunk_no, c.page_start, c.page_end,
-                   c.text, c.chunktype_id, d.title as document_title, d.abstract
-            FROM chunks c
-            JOIN chunktypes ct ON c.chunktype_id = ct.id
-            JOIN document d ON c.document_id = d.id
-            WHERE ct.chunktype = 'abstract'
-            AND NOT EXISTS (
-                SELECT 1 FROM {tablename} e
-                WHERE e.chunk_id = c.id AND e.model_id = %s
-            )
-            ORDER BY c.id
-            """
-            params = [model_id]
+        # Since ensure_table_for_vectorsize() was called during initialization,
+        # we know the table exists and can use it directly
+        query = f"""
+        SELECT c.id, c.document_id, c.chunk_no, c.page_start, c.page_end,
+               c.text, c.chunktype_id, d.title as document_title, d.abstract
+        FROM chunks c
+        JOIN chunktypes ct ON c.chunktype_id = ct.id
+        JOIN document d ON c.document_id = d.id
+        WHERE ct.chunktype = 'abstract'
+        AND NOT EXISTS (
+            SELECT 1 FROM {self.tablename} e
+            WHERE e.chunk_id = c.id AND e.model_id = %s
+        )
+        ORDER BY c.id
+        """
+        params = (self.model_id,)
 
         # Add OFFSET and LIMIT clauses
         if offset > 0:
@@ -293,8 +227,9 @@ class AbstractEmbeddingUpdater:
         # Use the instance's db_timeout value for this query
         try:
             chunks = self.embeddings_db.execute(query, params, timeout=self.db_timeout)
-            logger.debug(f"Found {len(chunks)} abstract chunks without embeddings (offset: {offset}, limit: {limit})")
-            return chunks or []
+            chunks_list = chunks or []
+            logger.debug(f"Found {len(chunks_list)} abstract chunks without embeddings (offset: {offset}, limit: {limit})")
+            return chunks_list
         except TimeoutError:
             # If it times out, try a more aggressive approach with a smaller batch
             logger.warning(f"Query timed out. Trying with a smaller batch size.")
@@ -581,12 +516,10 @@ class AbstractEmbeddingUpdater:
         try:
             # Use the connection pool to get a cursor
             with get_cursor(commit=True) as cursor:
-                # Get the table name for this vector size
-                tablename = self.embeddings_db.get_tablename_for_vectorsize(self.vectorsize)
-
+                # Use the cached table name
                 # Prepare the query with ON CONFLICT for upsert
                 upsert_query = f"""
-                INSERT INTO {tablename} (chunk_id, model_id, embedding)
+                INSERT INTO {self.tablename} (chunk_id, model_id, embedding)
                 VALUES (%s, %s, %s)
                 ON CONFLICT (chunk_id, model_id) DO UPDATE
                 SET embedding = EXCLUDED.embedding
@@ -615,7 +548,7 @@ class AbstractEmbeddingUpdater:
 
                     # Individual upsert query with RETURNING
                     individual_query = f"""
-                    INSERT INTO {tablename} (chunk_id, model_id, embedding)
+                    INSERT INTO {self.tablename} (chunk_id, model_id, embedding)
                     VALUES (%s, %s, %s)
                     ON CONFLICT (chunk_id, model_id) DO UPDATE
                     SET embedding = EXCLUDED.embedding
@@ -828,7 +761,7 @@ def main():
         )
         print(f"Model ID: {updater.model_id}")
         print(f"Vector size: {updater.vectorsize}")
-        print(f"Table name: {updater.embeddings_db.get_tablename_for_vectorsize(updater.vectorsize)}")
+        print(f"Table name: {updater.tablename}")
         print(f"Database query timeout: {updater.db_timeout} seconds")
 
         # Count chunks without embeddings
