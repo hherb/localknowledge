@@ -20,3 +20,4 @@ venv/
 *.xml
 output/
 
+unpaywall/doi_urls.csv

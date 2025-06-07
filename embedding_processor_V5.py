@@ -685,6 +685,7 @@ class OptimizedEmbeddingProcessor:
                 return
 
             start_time = time.time()
+            print(f"Starting chunking at {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(start_time))}")
 
             # Create progress bar
             with tqdm(total=total_count, desc="Embedding chunks", unit="chunk") as pbar:
@@ -802,6 +803,7 @@ def main() -> None:
         --db-pool-size: Database connection pool size (default: 8)
         --prefetch-batches: Number of batches to prefetch (default: 3)
         --max-chunks: Limit processing to this many chunks (for testing)
+        --embedding-table: Name of the database table to store embeddings (default: emb_snowflake)
         --disable-concurrent-embeddings: Disable concurrent embedding generation
     """
     from dotenv import load_dotenv
@@ -819,6 +821,8 @@ def main() -> None:
                         help="Number of batches to prefetch (default: 3)")
     parser.add_argument("--max-chunks", type=int, default=None,
                         help="Maximum number of chunks to process (for testing)")
+    parser.add_argument("--embedding-table", type=str, default="emb_snowflake",
+                        help="Name of the database table to store embeddings (default: emb_snowflake)")
     parser.add_argument("--disable-concurrent-embeddings", action="store_true",
                         help="Disable concurrent embedding generation within batches")
 
@@ -841,7 +845,7 @@ def main() -> None:
         chunktype_id=1,
         chunking_strategy_id=2,
         model_id=1,
-        embedding_table="emb_snowflake",
+        embedding_table=args.embedding_table,
         embedding_dim=1024,
         batch_size=args.batch_size,
         ollama_model="snowflake-arctic-embed2:latest",
