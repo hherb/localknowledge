@@ -61,7 +61,7 @@ class EmbeddingProcessor:
     def _setup_logging(self) -> logging.Logger:
         """Configure logging"""
         logging.basicConfig(
-            level=logging.INFO,
+            level=logging.WARNING,  # Change from INFO to WARNING to reduce console output
             format='%(asctime)s - %(levelname)s - %(message)s',
             handlers=[
                 logging.StreamHandler(sys.stdout),
@@ -310,7 +310,8 @@ class EmbeddingProcessor:
                         template=None, page_size=self.config.batch_size
                     )
                 conn.commit()
-                self.logger.info(f"Successfully stored {len(chunk_embeddings)} embeddings")
+                # Use debug level instead of info to reduce console output
+                self.logger.debug(f"Successfully stored {len(chunk_embeddings)} embeddings")
                 
             except Exception as e:
                 conn.rollback()
@@ -398,54 +399,82 @@ class EmbeddingProcessor:
                 processed_count = 0
                 start_time = time.time()
                 
-                # Stream results in batches
-                while processed_count < total_count:
-                    # Fetch next batch using server-side cursor
-                    batch = cursor.fetchmany(self.config.batch_size)
-                    
-                    if not batch:
-                        self.logger.info("No more chunks found. Processing complete.")
-                        break
-                    
-                    # Limit to max_chunks if specified
-                    if max_chunks and processed_count + len(batch) > max_chunks:
-                        batch = batch[:max_chunks - processed_count]
-                    
-                    try:
-                        batch_processed = self.process_batch(batch)
-                        processed_count += batch_processed
+                # Create progress bar
+                with tqdm(total=total_count, desc="Embedding chunks", unit="chunk") as pbar:
+                    # Stream results in batches
+                    while processed_count < total_count:
+                        # Fetch next batch using server-side cursor
+                        batch = cursor.fetchmany(self.config.batch_size)
                         
-                        # Progress update
-                        progress = (processed_count / total_count) * 100
-                        elapsed = time.time() - start_time
-                        rate = processed_count / elapsed if elapsed > 0 else 0
-                        eta = (total_count - processed_count) / rate if rate > 0 else 0
-                        
-                        self.logger.info(
-                            f"Progress: {processed_count}/{total_count} ({progress:.1f}%) "
-                            f"- Rate: {rate:.2f} chunks/sec - ETA: {eta/60:.1f}min"
-                        )
-                        
-                        # Break if we've reached max_chunks
-                        if max_chunks and processed_count >= max_chunks:
+                        if not batch:
                             break
                         
-                    except Exception as e:
-                        self.logger.error(f"Batch failed, continuing with next batch: {e}")
-                        continue
+                        # Limit to max_chunks if specified
+                        if max_chunks and processed_count + len(batch) > max_chunks:
+                            batch = batch[:max_chunks - processed_count]
+                        
+                        try:
+                            # Extract chunk IDs and texts
+                            chunk_ids = [chunk[0] for chunk in batch]
+                            texts = [chunk[1] for chunk in batch]
+                            
+                            # Update progress bar description
+                            pbar.set_description(f"Processing {chunk_ids[0]}-{chunk_ids[-1]}")
+                            
+                            # Generate embeddings
+                            embeddings = self.generate_embeddings(texts)
+                            
+                            # Store embeddings
+                            chunk_embeddings = list(zip(chunk_ids, embeddings))
+                            self.store_embeddings(chunk_embeddings)
+                            
+                            # Update counters and progress bar
+                            batch_size = len(batch)
+                            processed_count += batch_size
+                            pbar.update(batch_size)
+                            
+                            # Calculate overall rate based on total time since start
+                            current_time = time.time()
+                            total_elapsed = current_time - start_time
+                            overall_rate = processed_count / total_elapsed if total_elapsed > 0 else 0
+                            
+                            # Calculate ETA based on overall rate
+                            remaining_chunks = total_count - processed_count
+                            eta_seconds = remaining_chunks / overall_rate if overall_rate > 0 else 0
+                            
+                            # Format time nicely
+                            if eta_seconds < 60:
+                                eta_str = f"{eta_seconds:.0f}s"
+                            elif eta_seconds < 3600:
+                                eta_str = f"{eta_seconds/60:.1f}min"
+                            else:
+                                eta_str = f"{eta_seconds/3600:.1f}h"
+                            
+                            # Update progress bar with rate and ETA
+                            pbar.set_postfix({
+                                'rate': f"{overall_rate:.2f} chunks/s",
+                                'eta': eta_str
+                            })
+                            
+                            # Break if we've reached max_chunks
+                            if max_chunks and processed_count >= max_chunks:
+                                break
+                            
+                        except Exception as e:
+                            tqdm.write(f"Batch failed, continuing with next batch: {str(e)}")
+                            self.logger.error(f"Batch failed, continuing with next batch: {e}")
+                            continue
+                
+                # Final stats after completion
+                total_time = time.time() - start_time
+                avg_rate = processed_count / total_time if total_time > 0 else 0
+                
+                tqdm.write(f"Processing completed: {processed_count}/{total_count} chunks in {total_time:.2f}s (avg: {avg_rate:.2f} chunks/sec)")
                 
             finally:
                 # Always clean up cursor and connection
                 cursor.close()
                 self.pool.putconn(conn)
-            
-            total_time = time.time() - start_time
-            avg_rate = processed_count / total_time if total_time > 0 else 0
-            
-            self.logger.info(
-                f"Processing completed. {processed_count}/{total_count} chunks processed "
-                f"in {total_time:.2f}s (avg: {avg_rate:.2f} chunks/sec)"
-            )
             
         except Exception as e:
             self.logger.error(f"Processing failed: {e}")
