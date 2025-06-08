@@ -25,7 +25,7 @@ import logging
 import sys
 import time
 from pathlib import Path
-from typing import Dict, List, Any, Optional, Tuple
+from typing import Dict, List, Any, Optional, Tuple, Generator
 from urllib.parse import urlparse
 import re
 
@@ -197,7 +197,25 @@ class DOIURLImporter:
 
         # If it's a DOI URL, extract the DOI part
         if doi_input.startswith('https://doi.org/') or doi_input.startswith('http://doi.org/'):
-            return doi_input.split('doi.org/')[-1]
+            # Handle both single and double slashes after doi.org
+            if 'doi.org//' in doi_input:
+                extracted = doi_input.split('doi.org//')[-1]
+            else:
+                extracted = doi_input.split('doi.org/')[-1]
+
+            # Clean up any leading slashes and normalize multiple slashes
+            extracted = extracted.lstrip('/')
+            # Replace any remaining double slashes with single slashes
+            extracted = re.sub(r'/+', '/', extracted)
+
+            # Additional validation: make sure the extracted part looks like a DOI
+            if '/' in extracted and not extracted.startswith('10.'):
+                # This might be a malformed DOI URL like https://doi.org/10.37/index.php/...
+                # Try to extract just the DOI part before any additional path
+                parts = extracted.split('/')
+                if len(parts) >= 2 and parts[0].startswith('10.'):
+                    return f"{parts[0]}/{parts[1]}"
+            return extracted
         elif doi_input.startswith('doi:'):
             return doi_input[4:]  # Remove 'doi:' prefix
         else:
@@ -208,9 +226,39 @@ class DOIURLImporter:
         # Extract DOI identifier if it's a URL
         clean_doi = self._extract_doi_from_url(doi)
 
-        # Basic DOI regex pattern - DOI should start with 10.
+        # DOI regex pattern - DOI should start with 10. followed by registrant code
+        # and have a suffix separated by /. Allow various characters in the suffix.
         doi_pattern = r'^10\.\d{4,}/[^\s]+$'
-        return bool(re.match(doi_pattern, clean_doi, re.IGNORECASE))
+
+        # Basic pattern check
+        if not re.match(doi_pattern, clean_doi, re.IGNORECASE):
+            return False
+
+        # Check for obvious malformed patterns that are not real DOIs
+        malformed_patterns = [
+            '/index.php/',
+            '/article/view/',
+            '/wp-content/',
+            '/uploads/',
+            '.html',
+            '.htm'
+        ]
+
+        for pattern in malformed_patterns:
+            if pattern in clean_doi.lower():
+                return False
+
+        # DOI suffix should not be empty
+        parts = clean_doi.split('/', 1)
+        if len(parts) != 2 or not parts[1].strip():
+            return False
+
+        # The registrant code should be at least 4 digits
+        registrant_part = parts[0]
+        if not re.match(r'^10\.\d{4,}$', registrant_part):
+            return False
+
+        return True
 
     def _is_valid_url(self, url: str) -> bool:
         """Validate URL format"""
@@ -287,14 +335,64 @@ class DOIURLImporter:
         
         return min(100, max(0, score))  # Clamp between 0-100
 
-    def read_csv_in_batches(self) -> List[List[Dict[str, Any]]]:
+    def _merge_metadata(self, existing_row: Dict[str, Any], new_row: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Merge metadata from two rows with the same (doi, url) pair.
+        Prioritizes non-null values and more recent/complete information.
+        """
+        merged = existing_row.copy()
+
+        # Fields where we prefer non-null values from the new row
+        nullable_fields = [
+            'openalex_id', 'title', 'publication_year', 'version',
+            'license', 'host_type', 'oa_status'
+        ]
+
+        for field in nullable_fields:
+            existing_val = existing_row.get(field)
+            new_val = new_row.get(field)
+
+            # If existing is null/empty and new has a value, use new
+            if (not existing_val or existing_val == '') and new_val:
+                merged[field] = new_val
+            # If both have values, prefer the new one (assuming it's more recent)
+            elif new_val and new_val != existing_val:
+                merged[field] = new_val
+                logger.debug(f"Updated {field}: '{existing_val}' -> '{new_val}'")
+
+        # For boolean fields, prefer True over False (more permissive)
+        if new_row.get('is_oa') and not existing_row.get('is_oa'):
+            merged['is_oa'] = True
+
+        # For location_type, prefer higher priority types
+        location_priority = {
+            'primary': 1,
+            'best_oa': 2,
+            'alternate': 3,
+            'other': 4
+        }
+
+        existing_loc = existing_row.get('location_type', 'other').lower()
+        new_loc = new_row.get('location_type', 'other').lower()
+
+        if location_priority.get(new_loc, 4) < location_priority.get(existing_loc, 4):
+            merged['location_type'] = new_row.get('location_type')
+
+        # For quality score, take the higher value
+        existing_score = existing_row.get('url_quality_score', 0)
+        new_score = new_row.get('url_quality_score', 0)
+        if new_score > existing_score:
+            merged['url_quality_score'] = new_score
+
+        return merged
+
+    def read_csv_in_batches(self) -> Generator[List[Dict[str, Any]], None, None]:
         """Read CSV file and yield batches of validated rows"""
         if not self.csv_file.exists():
             raise FileNotFoundError(f"CSV file not found: {self.csv_file}")
         
         logger.info(f"Reading CSV file: {self.csv_file}")
         
-        batches = []
         current_batch = []
         
         with open(self.csv_file, 'r', encoding='utf-8') as csvfile:
@@ -323,34 +421,54 @@ class DOIURLImporter:
                 
                 self.stats['total_rows_processed'] += 1
                 
-                # When batch is full, add to batches list
+                # When batch is full, yield it and start a new batch
                 if len(current_batch) >= self.batch_size:
-                    batches.append(current_batch)
+                    yield current_batch
                     current_batch = []
                 
                 # Progress logging
                 if row_num % 50000 == 0:
                     logger.info(f"Processed {row_num} rows from CSV")
             
-            # Add final batch if not empty
+            # Yield final batch if not empty
             if current_batch:
-                batches.append(current_batch)
+                yield current_batch
         
-        logger.info(f"CSV processing complete. {len(batches)} batches prepared.")
-        return batches
+        logger.info(f"CSV processing complete.")
 
     def insert_batch(self, batch: List[Dict[str, Any]], connection) -> Tuple[int, int]:
         """Insert a batch of rows using efficient bulk insert with conflict resolution"""
-        
+
         if not batch:
             return 0, 0
-        
+
+        # Deduplicate batch by (doi, url) and merge metadata intelligently
+        doi_url_map = {}
+
+        for row in batch:
+            doi_url_pair = (row['doi'], row['url'])
+
+            if doi_url_pair not in doi_url_map:
+                # First occurrence - store as-is
+                doi_url_map[doi_url_pair] = row.copy()
+            else:
+                # Duplicate found - merge metadata, prioritizing non-null and more recent values
+                existing_row = doi_url_map[doi_url_pair]
+                merged_row = self._merge_metadata(existing_row, row)
+                doi_url_map[doi_url_pair] = merged_row
+                logger.debug(f"Merged duplicate (doi, url) pair in batch: {doi_url_pair}")
+
+        deduplicated_batch = list(doi_url_map.values())
+
+        if len(deduplicated_batch) != len(batch):
+            logger.info(f"Deduplicated and merged batch: {len(batch)} -> {len(deduplicated_batch)} rows")
+
         # Prepare data for bulk insert
         insert_data = []
-        for row in batch:
+        for row in deduplicated_batch:
             insert_data.append((
                 row['doi'],
-                row['url'], 
+                row['url'],
                 row['openalex_id'],
                 row['title'],
                 row['publication_year'],
@@ -399,10 +517,10 @@ class DOIURLImporter:
                 count_after = cur.fetchone()[0]
                 
                 connection.commit()
-                
+
                 rows_affected = count_after - count_before
-                rows_updated = len(batch) - rows_affected
-                
+                rows_updated = len(deduplicated_batch) - rows_affected
+
                 return rows_affected, rows_updated
                 
         except psycopg2.Error as e:
@@ -413,23 +531,42 @@ class DOIURLImporter:
     def update_doi_metadata(self, connection):
         """Update the separate doi_metadata table with aggregated information"""
         logger.info("Updating DOI metadata table...")
-        
+
+        # Use a more robust approach that handles conflicting metadata values
+        # by prioritizing non-null values and using window functions to deduplicate
         metadata_sql = """
+        WITH ranked_metadata AS (
+            SELECT DISTINCT
+                doi,
+                openalex_id,
+                title,
+                publication_year,
+                ROW_NUMBER() OVER (
+                    PARTITION BY doi
+                    ORDER BY
+                        CASE WHEN openalex_id IS NOT NULL THEN 1 ELSE 2 END,
+                        CASE WHEN title IS NOT NULL THEN 1 ELSE 2 END,
+                        CASE WHEN publication_year IS NOT NULL THEN 1 ELSE 2 END,
+                        id
+                ) as rn
+            FROM doi_urls
+            WHERE doi IS NOT NULL
+        )
         INSERT INTO doi_metadata (doi, openalex_id, title, publication_year)
-        SELECT DISTINCT 
+        SELECT
             doi,
             openalex_id,
             title,
             publication_year
-        FROM doi_urls
-        WHERE doi IS NOT NULL
+        FROM ranked_metadata
+        WHERE rn = 1
         ON CONFLICT (doi) DO UPDATE SET
-            openalex_id = EXCLUDED.openalex_id,
-            title = EXCLUDED.title,
-            publication_year = EXCLUDED.publication_year,
+            openalex_id = COALESCE(EXCLUDED.openalex_id, doi_metadata.openalex_id),
+            title = COALESCE(EXCLUDED.title, doi_metadata.title),
+            publication_year = COALESCE(EXCLUDED.publication_year, doi_metadata.publication_year),
             updated_at = CURRENT_TIMESTAMP;
         """
-        
+
         try:
             with connection.cursor() as cur:
                 cur.execute(metadata_sql)
@@ -439,11 +576,76 @@ class DOIURLImporter:
         except psycopg2.Error as e:
             connection.rollback()
             logger.error(f"DOI metadata update failed: {e}")
+            # Don't re-raise the error to allow the import to continue
+            logger.warning("Continuing import despite metadata update failure")
 
-    def print_final_stats(self):
-        """Print import statistics"""
-        duration = (self.stats['end_time'] - self.stats['start_time']).total_seconds()
-        
+    def update_doi_metadata_for_batch(self, batch: List[Dict[str, Any]], connection):
+        """Update DOI metadata for a specific batch only (alternative approach)"""
+        if not batch:
+            return
+
+        logger.debug(f"Updating DOI metadata for batch of {len(batch)} rows...")
+
+        # Extract unique DOIs from the current batch
+        batch_dois = list(set(row['doi'] for row in batch if row.get('doi')))
+
+        if not batch_dois:
+            return
+
+        # Create a parameterized query for just these DOIs
+        metadata_sql = """
+        WITH ranked_metadata AS (
+            SELECT DISTINCT
+                doi,
+                openalex_id,
+                title,
+                publication_year,
+                ROW_NUMBER() OVER (
+                    PARTITION BY doi
+                    ORDER BY
+                        CASE WHEN openalex_id IS NOT NULL THEN 1 ELSE 2 END,
+                        CASE WHEN title IS NOT NULL THEN 1 ELSE 2 END,
+                        CASE WHEN publication_year IS NOT NULL THEN 1 ELSE 2 END,
+                        id
+                ) as rn
+            FROM doi_urls
+            WHERE doi IS NOT NULL AND doi = ANY(%s)
+        )
+        INSERT INTO doi_metadata (doi, openalex_id, title, publication_year)
+        SELECT
+            doi,
+            openalex_id,
+            title,
+            publication_year
+        FROM ranked_metadata
+        WHERE rn = 1
+        ON CONFLICT (doi) DO UPDATE SET
+            openalex_id = COALESCE(EXCLUDED.openalex_id, doi_metadata.openalex_id),
+            title = COALESCE(EXCLUDED.title, doi_metadata.title),
+            publication_year = COALESCE(EXCLUDED.publication_year, doi_metadata.publication_year),
+            updated_at = CURRENT_TIMESTAMP;
+        """
+
+        try:
+            with connection.cursor() as cur:
+                cur.execute(metadata_sql, (batch_dois,))
+                rows_affected = cur.rowcount
+                connection.commit()
+                logger.debug(f"Updated {rows_affected} DOI metadata records for batch")
+        except psycopg2.Error as e:
+            connection.rollback()
+            logger.warning(f"Batch DOI metadata update failed: {e}")
+            # Continue processing
+
+    def log_stats(self):
+        """Log current import statistics"""
+        if self.stats['start_time'] and self.stats['end_time']:
+            duration = (self.stats['end_time'] - self.stats['start_time']).total_seconds()
+            rate = self.stats['total_rows_processed'] / duration if duration > 0 else 0
+        else:
+            duration = 0
+            rate = 0
+
         logger.info("=" * 60)
         logger.info("DOI-URL IMPORT COMPLETED")
         logger.info("=" * 60)
@@ -453,41 +655,71 @@ class DOIURLImporter:
         logger.info(f"Rows skipped (invalid): {self.stats['rows_skipped']:,}")
         logger.info(f"Invalid URLs filtered: {self.stats['invalid_urls']:,}")
         logger.info(f"Import duration: {duration:.1f} seconds")
-        logger.info(f"Processing rate: {self.stats['total_rows_processed']/duration:.1f} rows/sec")
+        logger.info(f"Processing rate: {rate:.1f} rows/sec")
+
+    def print_final_stats(self):
+        """Print import statistics (alias for log_stats for backward compatibility)"""
+        self.log_stats()
+
+    # def run_import(self):
+    #     """Execute the complete import process"""
+    #     logger.info("Starting DOI-URL import process...")
+    #     self.stats['start_time'] = time.time()
+        
+    #     try:
+    #         # Create schema if requested
+    #         if self.create_tables:
+    #             self.create_schema()
+            
+    #         # Read and process CSV in batches
+    #         batches = self.read_csv_in_batches()
+            
+    #         # Import batches
+    #         with self.connect_db() as conn:
+    #             for i, batch in enumerate(batches, 1):
+    #                 logger.info(f"Processing batch {i}/{len(batches)} ({len(batch)} rows)")
+                    
+    #                 rows_inserted, rows_updated = self.insert_batch(batch, conn)
+    #                 self.stats['rows_inserted'] += rows_inserted
+    #                 self.stats['rows_updated'] += rows_updated
+                    
+    #                 logger.info(f"Batch {i}: {rows_inserted} inserted, {rows_updated} updated")
+                
+    #             # Update metadata table
+    #             self.update_doi_metadata(conn)
+            
+    #         self.stats['end_time'] = time.time()
+    #         self.print_final_stats()
+            
+    #     except Exception as e:
+    #         logger.error(f"Import failed: {e}")
+    #         raise
 
     def run_import(self):
-        """Execute the complete import process"""
+        """Import data from CSV to database"""
         logger.info("Starting DOI-URL import process...")
         self.stats['start_time'] = time.time()
-        
-        try:
-            # Create schema if requested
-            if self.create_tables:
-                self.create_schema()
-            
-            # Read and process CSV in batches
-            batches = self.read_csv_in_batches()
-            
-            # Import batches
-            with self.connect_db() as conn:
-                for i, batch in enumerate(batches, 1):
-                    logger.info(f"Processing batch {i}/{len(batches)} ({len(batch)} rows)")
-                    
-                    rows_inserted, rows_updated = self.insert_batch(batch, conn)
-                    self.stats['rows_inserted'] += rows_inserted
-                    self.stats['rows_updated'] += rows_updated
-                    
-                    logger.info(f"Batch {i}: {rows_inserted} inserted, {rows_updated} updated")
-                
-                # Update metadata table
-                self.update_doi_metadata(conn)
-            
-            self.stats['end_time'] = time.time()
-            self.print_final_stats()
-            
-        except Exception as e:
-            logger.error(f"Import failed: {e}")
-            raise
+
+        if self.create_tables:
+            self.create_schema()
+
+        with self.connect_db() as conn:
+            # Process each batch as it's generated
+            for batch_num, batch in enumerate(self.read_csv_in_batches(), 1):
+                inserted, updated = self.insert_batch(batch, conn)
+                self.stats['rows_inserted'] += inserted
+                self.stats['rows_updated'] += updated
+
+                # Log progress
+                if batch_num % 10 == 0:
+                    logger.info(f"Processed batch {batch_num}: {inserted} inserted, {updated} updated")
+
+            # Update metadata table only once at the end to avoid conflicts
+            logger.info("Import batches completed, updating DOI metadata...")
+            self.update_doi_metadata(conn)
+
+        self.stats['end_time'] = time.time()
+        self.log_stats()
 
 
 def main():
