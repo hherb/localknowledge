@@ -92,6 +92,24 @@ def close_pool() -> None:
         logger.info("Connection pool closed")
 
 
+def get_pool_status() -> Dict[str, Any]:
+    """Get current connection pool status."""
+    global _pool
+    if _pool is None:
+        return {"status": "not_initialized"}
+
+    try:
+        # Get pool statistics
+        return {
+            "status": "active",
+            "minconn": _pool.minconn,
+            "maxconn": _pool.maxconn,
+            "closed": _pool.closed
+        }
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+
+
 @contextmanager
 def get_connection():
     """
@@ -144,3 +162,40 @@ def get_cursor(commit: bool = False):
             raise
         finally:
             cursor.close()
+
+
+def get_raw_connection():
+    """
+    Get a raw connection from the pool that must be manually returned.
+
+    Use this when you need to create named cursors or other advanced operations.
+    You MUST call put_raw_connection() when done to return the connection to the pool.
+
+    Returns:
+        A database connection from the pool
+
+    Raises:
+        ConnectionError: If the pool is not initialized or a connection cannot be obtained
+    """
+    global _pool
+    if _pool is None:
+        initialize_pool()
+
+    try:
+        conn = _pool.getconn()
+        return conn
+    except psycopg2.Error as e:
+        logger.error(f"Error getting raw connection from pool: {e}")
+        raise ConnectionError(f"Error getting raw connection from pool: {e}")
+
+
+def put_raw_connection(conn):
+    """
+    Return a raw connection to the pool.
+
+    Args:
+        conn: The connection to return to the pool
+    """
+    global _pool
+    if _pool is not None and conn is not None:
+        _pool.putconn(conn)

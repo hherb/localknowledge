@@ -46,6 +46,8 @@ dependencies = [
     "duckduckgo-search>=7.0.0",
     "psutil>=7.0.0",
     "aiohttp>=3.12.6",
+    "aioftp>=0.22.3",
+    "aiofiles>=24.1.0",
     "idna>=3.10",
 ]
 

@@ -21,3 +21,10 @@ venv/
 output/
 
 unpaywall/doi_urls.csv
+test_async_download.py
+test_connection_pool.py
+test_embedding_performance.py
+test_improved_download.py
+test_list_files.py
+test_simple_async_download.py
+debug_embedding_issue.py
