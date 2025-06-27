@@ -28,3 +28,4 @@ test_improved_download.py
 test_list_files.py
 test_simple_async_download.py
 debug_embedding_issue.py
+debug_embeddings.py
