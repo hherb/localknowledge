@@ -49,6 +49,8 @@ class EmbeddingsDatabaseManager(DatabaseManager):
 
         try:
             # Check if we're already in a transaction
+            if self.connection is None:
+                raise ValueError("Connection is not available")
             cursor = self.connection.cursor()
             cursor.execute("SELECT 1")
             cursor.close()
@@ -183,7 +185,7 @@ class EmbeddingsDatabaseManager(DatabaseManager):
                 logger.error('unknown ebedding provider: {provider}')
                 return 'unknown provider'
         logger.warning(f"Model not found: {model_name}")
-        return -1
+        return "unknown"
 
 
     def add_embedding(

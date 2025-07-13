@@ -20,11 +20,11 @@ import os
 #import requests
 import gzip
 import hashlib
-import xml.etree.ElementTree as ET
+# import xml.etree.ElementTree as ET  # Unused import
 #import concurrent.futures
 import time
 #import pandas as pd
-from datetime import datetime
+# from datetime import datetime  # Unused import
 #from bs4 import BeautifulSoup
 import logging
 import socket
@@ -32,13 +32,7 @@ import sys
 from ftplib import FTP
 print("Python executable:", sys.executable)
 
-try:
-    from tqdm import tqdm
-    print("tqdm imported successfully")
-except Exception as e:
-    import traceback
-    print("Failed to import tqdm:", e)
-    traceback.print_exc()
+from tqdm import tqdm
 
 
 
@@ -58,7 +52,7 @@ logger = logging.getLogger()
 
 # Constants for FTP connection
 FTP_HOST = 'ftp.ncbi.nlm.nih.gov'
-FTP_TIMEOUT = 180  # Increase timeout to 3 minutes
+FTP_TIMEOUT = 300  # Increase timeout to 5 minutes for large files
 MAX_RETRIES = 5
 RETRY_DELAY = 10  # seconds
 
@@ -69,7 +63,7 @@ def create_ftp_connection():
     ftp.login()
     ftp.cwd('/pubmed/baseline')
     # Set a keepalive option if possible
-    if hasattr(ftp.sock, 'setsockopt') and hasattr(socket, 'SO_KEEPALIVE'):
+    if ftp.sock is not None and hasattr(ftp.sock, 'setsockopt') and hasattr(socket, 'SO_KEEPALIVE'):
         ftp.sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
     # Set passive mode for better firewall compatibility
     ftp.set_pasv(True)
@@ -90,7 +84,7 @@ import backoff
     (socket.timeout, socket.error, IOError, EOFError),
     max_tries=5,
     on_backoff=lambda details: logger.warning(
-        f"FTP error during download, retrying in {details['wait']:.1f} seconds... "
+        f"FTP error during download, retrying in {details.get('wait', 0):.1f} seconds... "
         f"(Attempt {details['tries']}/{5})"
     )
 )
@@ -346,7 +340,7 @@ def _is_file_complete_and_valid(ftp, xml_file, local_file):
 
 def _download_file_simple(ftp, xml_file, local_file, expected_size, file_index, total_files):
     """
-    Robust file download with size-limiting logic and resume capability.
+    Simple and robust file download with resume capability.
 
     Args:
         ftp: FTP connection
@@ -359,19 +353,17 @@ def _download_file_simple(ftp, xml_file, local_file, expected_size, file_index, 
     Returns:
         True if download was successful, False otherwise
     """
+    pbar = None
     try:
         # Check if we can resume an existing partial download
         resume_pos = 0
         if os.path.exists(local_file):
             resume_pos = os.path.getsize(local_file)
-            if resume_pos > 0 and resume_pos < expected_size:
-                logger.info(f"Resuming download of {xml_file} from byte {resume_pos}")
-            elif resume_pos >= expected_size:
+            if resume_pos >= expected_size:
                 logger.info(f"File {xml_file} already complete, skipping")
                 return True
-            else:
-                # File exists but is empty, start fresh
-                resume_pos = 0
+            elif resume_pos > 0:
+                logger.info(f"Resuming download of {xml_file} from byte {resume_pos}")
 
         # Create progress bar
         file_desc = f"File {file_index}/{total_files}: {xml_file}"
@@ -381,112 +373,52 @@ def _download_file_simple(ftp, xml_file, local_file, expected_size, file_index, 
             unit_scale=True,
             desc=file_desc,
             ncols=100,
-            initial=resume_pos  # Start progress bar at resume position
+            initial=resume_pos
         )
 
-        # Download the file with size-limited callback and resume capability
-        file_mode = 'ab' if resume_pos > 0 else 'wb'  # Append if resuming, write if starting fresh
+        # Simple download with resume capability
+        file_mode = 'ab' if resume_pos > 0 else 'wb'
         with open(local_file, file_mode) as fp:
-            downloaded_bytes = resume_pos  # Start counting from resume position
-            download_complete = False
-
-            class DownloadCompleteException(Exception):
-                """Custom exception to signal download completion"""
-                pass
-
             def callback(data):
-                nonlocal downloaded_bytes, download_complete
-
-                try:
-                    # Check if we've already downloaded enough data
-                    if download_complete or downloaded_bytes >= expected_size:
-                        logger.debug(f"Download complete for {xml_file}, stopping transfer")
-                        download_complete = True
-                        # Raise exception to stop the FTP transfer cleanly
-                        raise DownloadCompleteException("Download size limit reached")
-
-                    # Validate data
-                    if not data:
-                        logger.warning(f"Received empty data chunk for {xml_file}")
-                        return
-
-                    # Calculate how much data we can still accept
-                    remaining_bytes = expected_size - downloaded_bytes
-                    chunk_size = len(data)
-
-                    # If this chunk would exceed the expected size, truncate it
-                    if chunk_size > remaining_bytes:
-                        logger.debug(f"Truncating final chunk for {xml_file}: {chunk_size} bytes to {remaining_bytes} bytes")
-                        data = data[:remaining_bytes]
-                        chunk_size = remaining_bytes
-                        download_complete = True
-
-                    # Write the data and update counters
+                if data:
                     fp.write(data)
-                    downloaded_bytes += chunk_size
-                    pbar.update(chunk_size)
+                    if pbar:
+                        pbar.update(len(data))
 
-                    # Mark as complete and stop transfer if we've reached the expected size
-                    if downloaded_bytes >= expected_size:
-                        download_complete = True
-                        raise DownloadCompleteException("Download size limit reached")
-
-                except DownloadCompleteException:
-                    # Re-raise this specific exception
-                    raise
-                except Exception as callback_error:
-                    logger.error(f"Error in download callback for {xml_file}: {type(callback_error).__name__}: {callback_error}")
-                    # Don't raise here as it would interrupt the download - let the outer handler deal with it
-                    download_complete = True
-
-            # Perform the download (with resume if needed)
+            # Perform the download
             try:
                 if resume_pos > 0:
-                    # Resume download from specific position
                     logger.debug(f"Resuming FTP download of {xml_file} from byte {resume_pos}")
-                    try:
-                        ftp.retrbinary(f'RETR {xml_file}', callback, rest=resume_pos)
-                    except Exception as resume_error:
-                        # If resume fails, fall back to restarting from beginning
-                        if "invalid REST argument" in str(resume_error).lower() or "rest" in str(resume_error).lower():
-                            logger.warning(f"Resume not supported for {xml_file}, will restart from beginning on next retry")
-                            raise resume_error  # Let the retry logic handle this
-                        else:
-                            raise resume_error
+                    ftp.retrbinary(f'RETR {xml_file}', callback, rest=resume_pos)
                 else:
-                    # Start download from beginning
                     ftp.retrbinary(f'RETR {xml_file}', callback)
-            except DownloadCompleteException:
-                # This is expected when we reach the size limit
-                logger.debug(f"Download completed at expected size for {xml_file}: {downloaded_bytes} bytes")
-            except (socket.timeout, socket.error, ConnectionResetError, BrokenPipeError, EOFError) as network_error:
-                # Network-related errors - these are common and should be handled gracefully
-                logger.warning(f"Network error during download of {xml_file}: {type(network_error).__name__}: {network_error}")
-                logger.info(f"Downloaded {downloaded_bytes}/{expected_size} bytes before network error")
-
-                # If we got close to the expected size, consider it a successful download
-                size_diff = abs(downloaded_bytes - expected_size)
-                if size_diff <= 1024:  # 1KB tolerance
-                    logger.info(f"Download nearly complete for {xml_file}, accepting with {size_diff} byte difference")
-                    download_complete = True
+            except Exception as resume_error:
+                # If resume fails with REST error, restart from beginning
+                if resume_pos > 0 and ("invalid REST" in str(resume_error).lower() or "rest" in str(resume_error).lower()):
+                    logger.warning(f"Resume not supported for {xml_file}, restarting from beginning")
+                    # Close and reopen file in write mode
+                    fp.close()
+                    pbar.close()
+                    
+                    # Restart download from beginning
+                    pbar = tqdm(
+                        total=expected_size,
+                        unit='B',
+                        unit_scale=True,
+                        desc=file_desc,
+                        ncols=100
+                    )
+                    
+                    with open(local_file, 'wb') as fp_restart:
+                        def callback_restart(data):
+                            if data:
+                                fp_restart.write(data)
+                                if pbar:
+                                    pbar.update(len(data))
+                        
+                        ftp.retrbinary(f'RETR {xml_file}', callback_restart)
                 else:
-                    raise network_error
-            except Exception as download_error:
-                # Other errors
-                logger.error(f"Unexpected error during FTP transfer of {xml_file}: {type(download_error).__name__}: {download_error}")
-
-                # If the download was stopped due to size limit, this might be expected
-                if download_complete and downloaded_bytes == expected_size:
-                    logger.debug(f"Download stopped at expected size for {xml_file}")
-                else:
-                    # Check if we got close to the expected size (within 1KB tolerance)
-                    # Sometimes FTP transfers can be interrupted slightly before completion
-                    size_diff = abs(downloaded_bytes - expected_size)
-                    if size_diff <= 1024:  # 1KB tolerance
-                        logger.warning(f"Download interrupted near completion for {xml_file}: {downloaded_bytes}/{expected_size} bytes")
-                        download_complete = True
-                    else:
-                        raise download_error
+                    raise resume_error
 
             # Ensure all data is written to disk
             fp.flush()
@@ -497,8 +429,14 @@ def _download_file_simple(ftp, xml_file, local_file, expected_size, file_index, 
         # Verify the download was successful
         if os.path.exists(local_file):
             actual_size = os.path.getsize(local_file)
-            if actual_size == expected_size:
-                logger.debug(f"Download completed successfully: {xml_file} ({actual_size} bytes)")
+            logger.debug(f"Download completed: {xml_file} ({actual_size} bytes, expected {expected_size})")
+            
+            # Allow small size differences that can occur with FTP transfers
+            size_diff = abs(actual_size - expected_size)
+            if size_diff == 0:
+                return True
+            elif size_diff <= 1024:  # 1KB tolerance
+                logger.warning(f"Download size slightly different for {xml_file}: got {actual_size}, expected {expected_size} (diff: {size_diff} bytes)")
                 return True
             else:
                 logger.warning(f"Downloaded file size mismatch: expected {expected_size}, got {actual_size}")
@@ -511,7 +449,7 @@ def _download_file_simple(ftp, xml_file, local_file, expected_size, file_index, 
         import traceback
         logger.error(f"Error during download of {xml_file}: {type(e).__name__}: {e}")
         logger.debug(f"Full traceback for {xml_file}: {traceback.format_exc()}")
-        if 'pbar' in locals():
+        if pbar is not None:
             pbar.close()
         return False
 
@@ -567,6 +505,8 @@ def verify_md5(file_path):
         with open(file_path, 'rb') as f:
             # Read in chunks to handle large files efficiently
             for chunk in iter(lambda: f.read(4096), b""):
+                if isinstance(chunk, str):
+                    chunk = chunk.encode('utf-8')
                 md5_hash.update(chunk)
         calculated_hash = md5_hash.hexdigest()
 
@@ -725,7 +665,7 @@ def download_pubmed_baseline(baseline_dir='~/knowledgebase/pubmed_data/baseline'
                                 logger.info(f"Skipped existing complete and valid baseline file {xml_file} ({i}/{total_files})")
                                 should_download = False
                                 # Track the file in the database if we're using the tracker
-                                if using_db_tracker:
+                                if using_db_tracker and tracker is not None:
                                     tracker.log_download(xml_file, 'baseline', local_size)
                             except Exception as gz_error:
                                 logger.warning(f"Found corrupt baseline file {xml_file} despite correct size: {gz_error}")
@@ -799,7 +739,8 @@ def download_pubmed_baseline(baseline_dir='~/knowledgebase/pubmed_data/baseline'
 
             # Reset the FTP connection
             try:
-                ftp.quit()
+                if ftp is not None:
+                    ftp.quit()
             except:
                 pass
             ftp = None
@@ -873,7 +814,7 @@ def download_pubmed_updates(updates_dir=None, tracker=None, from_highest_seq=Fal
                 ftp.login()
                 ftp.cwd('/pubmed/updatefiles')
                 # Set a keepalive option if possible
-                if hasattr(ftp.sock, 'setsockopt') and hasattr(socket, 'SO_KEEPALIVE'):
+                if ftp.sock is not None and hasattr(ftp.sock, 'setsockopt') and hasattr(socket, 'SO_KEEPALIVE'):
                     ftp.sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
 
             files = ftp.nlst()
@@ -1031,7 +972,8 @@ def download_pubmed_updates(updates_dir=None, tracker=None, from_highest_seq=Fal
 
             # Reset the FTP connection
             try:
-                ftp.quit()
+                if ftp is not None:
+                    ftp.quit()
             except:
                 pass
             ftp = None

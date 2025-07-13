@@ -10,10 +10,8 @@ Run: python mcp_server.py --port 8080
 """
 
 import argparse
-import re
 import logging
 from dataclasses import dataclass
-from typing import List, Optional, Dict, Any
 from mcp.server.fastmcp import FastMCP
 
 # Import database functionality

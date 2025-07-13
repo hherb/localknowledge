@@ -24,16 +24,16 @@ import statistics
 import gc
 import os
 import psutil
-from concurrent.futures import TimeoutError as FuturesTimeoutError
+# from concurrent.futures import TimeoutError as FuturesTimeoutError  # Unused import
 import threading
 
 import tqdm
-import ollama
+# import ollama  # Unused import
 import backoff
 
 from localknowledge.db.embeddings import get_embeddings_db
 from localknowledge.db.document import DocumentDatabaseManager
-from localknowledge.db.chunker import ChunkingDatabaseManager, Chunk
+from localknowledge.db.chunker import ChunkingDatabaseManager
 from localknowledge.embeddings import OllamaEmbedder, PubMedBERTEmbedder
 from localknowledge.db.connection_pool import initialize_pool, get_cursor, close_pool, get_pool_status, get_raw_connection, put_raw_connection
 # Use Python's built-in TimeoutError
