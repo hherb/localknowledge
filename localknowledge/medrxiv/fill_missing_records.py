@@ -8,8 +8,13 @@ published between the earliest record date and January 16, 2021 are properly sto
 import os
 import sys
 import time
+import logging
 from datetime import datetime, timedelta
 from tqdm import tqdm
+
+# Set up logging for performance monitoring
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # Add parent directory to path to import localknowledge as a module
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -21,9 +26,58 @@ load_dotenv()
 from localknowledge.db.medrxiv import MedRxivDatabaseManager
 from localknowledge.medrxiv.medrxiv_import_new import fetch_medrxiv_metadata, process_papers, split_date_range_into_weeks
 
+def ensure_optimized_indexes(db_manager):
+    """
+    Ensure that optimized indexes exist for medRxiv queries.
+    
+    Args:
+        db_manager: Database manager instance
+    """
+    indexes_to_create = [
+        {
+            'name': 'idx_document_source_publication_date',
+            'query': '''
+            CREATE INDEX IF NOT EXISTS idx_document_source_publication_date 
+            ON document (source_id, publication_date) 
+            WHERE publication_date IS NOT NULL
+            '''
+        },
+        {
+            'name': 'idx_document_source_doi',
+            'query': '''
+            CREATE INDEX IF NOT EXISTS idx_document_source_doi 
+            ON document (source_id, doi) 
+            WHERE doi IS NOT NULL
+            '''
+        }
+    ]
+    
+    print("Checking for optimized indexes...")
+    for index in indexes_to_create:
+        try:
+            # Check if index exists
+            check_query = """
+            SELECT 1 FROM pg_indexes 
+            WHERE indexname = %s
+            """
+            result = db_manager.execute(check_query, (index['name'],), timeout=60)
+            
+            if not result:
+                print(f"Creating index {index['name']}...")
+                # Create index with longer timeout
+                db_manager.execute(index['query'], commit=True, timeout=1800)  # 30 minute timeout for index creation
+                print(f"✓ Created index {index['name']}")
+            else:
+                print(f"✓ Index {index['name']} already exists")
+                
+        except Exception as e:
+            print(f"Warning: Could not create index {index['name']}: {e}")
+            # Continue without this optimization
+
 def get_paper_counts_by_date(db_manager):
     """
     Get a count of papers for each date in the database.
+    Optimized for large datasets with proper indexing and longer timeout.
     
     Args:
         db_manager: Database manager instance
@@ -31,24 +85,42 @@ def get_paper_counts_by_date(db_manager):
     Returns:
         Dictionary of date -> count of papers
     """
+    # Get medRxiv source_id first to avoid subquery
+    source_query = "SELECT id FROM sources WHERE name = 'medRxiv'"
+    source_result = db_manager.execute(source_query, timeout=60)
+    
+    if not source_result:
+        print("Warning: medRxiv source not found in database")
+        return {}
+    
+    source_id = source_result[0]['id']
+    
+    # Optimized query with direct source_id lookup and extended timeout
     query = """
-    SELECT date_posted, COUNT(*) as paper_count 
-    FROM preprints 
-    WHERE date_posted != '' 
-    GROUP BY date_posted 
-    ORDER BY date_posted
+    SELECT publication_date, COUNT(*) as paper_count 
+    FROM document 
+    WHERE publication_date IS NOT NULL 
+    AND source_id = %s
+    GROUP BY publication_date 
+    ORDER BY publication_date
     """
     
-    results = db_manager.execute(query)
+    print("Fetching paper counts by date (this may take a few minutes for large datasets)...")
+    start_time = time.time()
+    results = db_manager.execute(query, params=(source_id,), timeout=300)  # 5 minute timeout
+    query_time = time.time() - start_time
+    logger.info(f"Paper counts query completed in {query_time:.2f} seconds")
+    
+    if results:
+        print(f"Found {len(results)} dates with medRxiv papers")
     
     counts_by_date = {}
     for row in results:
-        # Handle both date formats (with or without time)
-        date_str = row['date_posted']
-        if ' ' in date_str:  # If it has time part
-            date_str = date_str.split()[0]
-            
-        counts_by_date[date_str] = row['paper_count']
+        # Convert date to string format
+        publication_date = row['publication_date']
+        if publication_date:
+            date_str = publication_date.strftime('%Y-%m-%d') if hasattr(publication_date, 'strftime') else str(publication_date)
+            counts_by_date[date_str] = row['paper_count']
         
     return counts_by_date
 
@@ -139,19 +211,40 @@ def fill_missing_medrxiv_records(start_date=None, end_date="2021-01-16", max_ret
         # Create database manager
         db_manager = MedRxivDatabaseManager()
         
+        # Ensure optimized indexes exist for better performance
+        ensure_optimized_indexes(db_manager)
+        
         # Get the earliest date if not specified
         if not start_date:
-            query = "SELECT MIN(date_posted) as earliest FROM preprints WHERE date_posted != ''"
-            result = db_manager.execute(query)
+            # Get medRxiv source_id first for optimized query
+            source_query = "SELECT id FROM sources WHERE name = 'medRxiv'"
+            source_result = db_manager.execute(source_query, timeout=60)
+            
+            if not source_result:
+                print("No medRxiv source found in database. Please run the regular import first.")
+                db_manager.close()
+                return 0
+                
+            source_id = source_result[0]['id']
+            
+            query = """
+            SELECT MIN(publication_date) as earliest 
+            FROM document 
+            WHERE publication_date IS NOT NULL 
+            AND source_id = %s
+            """
+            print("Finding earliest medRxiv record date...")
+            start_time = time.time()
+            result = db_manager.execute(query, params=(source_id,), timeout=180)  # 3 minute timeout
+            query_time = time.time() - start_time
+            logger.info(f"Earliest date query completed in {query_time:.2f} seconds")
             
             if result and result[0]['earliest']:
                 earliest_date = result[0]['earliest']
-                # Extract just the date part if it has time component
-                if ' ' in earliest_date:
-                    earliest_date = earliest_date.split()[0]
-                start_date = earliest_date
+                # Convert to string format
+                start_date = earliest_date.strftime('%Y-%m-%d') if hasattr(earliest_date, 'strftime') else str(earliest_date)
             else:
-                print("No records found in database. Please run the regular import first.")
+                print("No medRxiv records found in database. Please run the regular import first.")
                 db_manager.close()
                 return 0
         
@@ -220,9 +313,22 @@ def fill_missing_medrxiv_records(start_date=None, end_date="2021-01-16", max_ret
                         print(f"Processing {len(date_papers)} papers for {date_str}")
                         
                         # First, get list of existing DOIs for this date
-                        query = "SELECT doi FROM preprints WHERE date_posted LIKE %s"
-                        existing = db_manager.execute(query, (f"{date_str}%",))
-                        existing_dois = set(r['doi'] for r in existing) if existing else set()
+                        # Use the source_id we already have for optimized query
+                        source_query = "SELECT id FROM sources WHERE name = 'medRxiv'"
+                        source_result = db_manager.execute(source_query, timeout=60)
+                        source_id = source_result[0]['id'] if source_result else None
+                        
+                        if source_id:
+                            query = """
+                            SELECT doi FROM document 
+                            WHERE publication_date = %s 
+                            AND source_id = %s
+                            AND doi IS NOT NULL
+                            """
+                            existing = db_manager.execute(query, (date_str, source_id), timeout=120)
+                            existing_dois = set(r['doi'] for r in existing if r['doi']) if existing else set()
+                        else:
+                            existing_dois = set()
                         
                         # Filter to only papers we don't have
                         new_papers = [p for p in date_papers if p.get('doi') not in existing_dois]
