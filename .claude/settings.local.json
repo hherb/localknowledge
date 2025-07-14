@@ -1,7 +1,10 @@
 {
   "permissions": {
     "allow": [
-      "Bash(find:*)"
+      "Bash(find:*)",
+      "Bash(python:*)",
+      "Bash(ls:*)",
+      "mcp__ide__getDiagnostics"
     ],
     "deny": []
   }

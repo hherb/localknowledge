@@ -59,8 +59,8 @@ class ConfigPanel(QWidget):
         super().__init__(parent)
         self.setup_ui()
         
-        # Set fixed width to match working example
-        self.setMinimumWidth(200)
+        # Set minimum width for testing
+        self.setMinimumWidth(600)
 
     def setup_ui(self):
         """Set up the user interface."""
@@ -93,7 +93,10 @@ class ConfigPanel(QWidget):
         layout.addWidget(self.scroll_area)
 
         # Set minimum width but allow expansion
-        self.setMinimumWidth(200)
+        self.setMinimumWidth(600)
+        
+        # Set size policy to allow horizontal expansion
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
         # Set default style
         self.setStyleSheet("""
@@ -120,6 +123,11 @@ class ConfigPanel(QWidget):
                 old_widget.deleteLater()
 
         if widget:
+            # Ensure the widget can expand horizontally
+            widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+            # Remove any maximum width constraints
+            widget.setMaximumWidth(16777215)  # Qt's QWIDGETSIZE_MAX
+            
             # Insert the widget at the beginning (before the stretch)
             self.content_layout.insertWidget(0, widget)
 
@@ -228,9 +236,9 @@ class MainWindow(QMainWindow):
         # Create the main splitter
         self.main_splitter = QSplitter(Qt.Horizontal)
         
-        # Make the splitter handle more visible
-        self.main_splitter.setHandleWidth(8)
+        # Configure splitter behavior
         self.main_splitter.setChildrenCollapsible(False)  # Prevent collapsing to zero
+        self.main_splitter.setOpaqueResize(True)  # Enable OpaqueResize for better user experience
         
         # Configuration panel
         self.config_panel = ConfigPanel()
@@ -242,13 +250,26 @@ class MainWindow(QMainWindow):
         self.tab_widget.setMovable(True)
         self.tab_widget.tabCloseRequested.connect(self.close_plugin_tab)
         self.tab_widget.currentChanged.connect(self.on_tab_changed)
+        
+        # Set size policy for tab widget to allow shrinking
+        self.tab_widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
         # Add widgets to splitter
         self.main_splitter.addWidget(self.config_panel)
         self.main_splitter.addWidget(self.tab_widget)
+        
+        # Set stretch factors - both panels should be resizable
+        self.main_splitter.setStretchFactor(0, 1)  # Config panel - can resize
+        self.main_splitter.setStretchFactor(1, 4)  # Tab widget - takes more space but both resize
+        
+        # Make splitter handle wider for easier dragging
+        self.main_splitter.setHandleWidth(8)
 
-        # Set splitter proportions
-        self.main_splitter.setSizes([250, 750])
+        # Set splitter proportions with larger config panel
+        self.main_splitter.setSizes([600, 400])
+        
+        # Store reference to initial splitter state
+        self._initial_config_width = 600
         
         # Add splitter to main layout
         central_layout.addWidget(self.main_splitter)
@@ -833,6 +854,23 @@ class MainWindow(QMainWindow):
 
         # Update config button state after loading plugins
         self.update_config_button_state()
+
+    def resizeEvent(self, event):
+        """
+        Handle window resize events to ensure splitter behaves correctly.
+        
+        Args:
+            event: Resize event
+        """
+        super().resizeEvent(event)
+        
+        # Only adjust splitter if config panel is visible and has reasonable size
+        if self.config_panel_visible and hasattr(self, 'main_splitter'):
+            current_sizes = self.main_splitter.sizes()
+            if len(current_sizes) >= 2 and current_sizes[0] > 0:
+                # Config panel is visible, allow it to maintain reasonable proportions
+                # but don't force specific sizes during resize
+                pass
 
     def closeEvent(self, event):
         """

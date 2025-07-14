@@ -158,6 +158,9 @@ class DocumentEvaluatorPlugin(PluginBase):
         self.worker = None
         self.thread = None
         self.evaluated_count = 0
+        
+        # Flag to track if we have transferred documents
+        self.has_transferred_documents = False
 
         # Get current user and project from context
         user = get_current_user()
@@ -230,6 +233,8 @@ class DocumentEvaluatorPlugin(PluginBase):
         control_layout.addWidget(model_label)
 
         self.model_combo = QComboBox()
+        # Connect to update context when evaluator selection changes
+        self.model_combo.currentIndexChanged.connect(self._on_evaluator_selection_changed)
         control_layout.addWidget(self.model_combo)
 
         # Number of records input
@@ -470,9 +475,52 @@ class DocumentEvaluatorPlugin(PluginBase):
                         logger.info(f"Created default evaluator: {evaluator_name} (ID: {evaluator_id})")
 
             logger.info(f"Loaded {self.model_combo.count()} evaluator models")
+            
+            # Update context with current selection (if any)
+            if self.model_combo.count() > 0:
+                self._on_evaluator_selection_changed(0)  # Set first evaluator as current
+            
         except Exception as e:
             logger.error(f"Error loading evaluator models: {e}")
             QMessageBox.warning(self, "Error", f"Failed to load evaluator models: {str(e)}")
+
+    def _on_evaluator_selection_changed(self, index):
+        """Handle evaluator selection change and update context."""
+        try:
+            if index < 0 or index >= self.model_combo.count():
+                # Invalid index, clear context
+                from localknowledge.context import set_current_evaluator
+                set_current_evaluator(None)
+                return
+            
+            evaluator_id = self.model_combo.itemData(index)
+            evaluator_name = self.model_combo.itemText(index)
+            
+            if not evaluator_id:
+                from localknowledge.context import set_current_evaluator
+                set_current_evaluator(None)
+                return
+            
+            # Get full evaluator details from database
+            evaluators = self.suggestions_manager.get_evaluators()
+            current_evaluator = None
+            for evaluator in evaluators:
+                if evaluator.get('id') == evaluator_id:
+                    current_evaluator = evaluator
+                    break
+            
+            if current_evaluator:
+                # Update context with full evaluator data
+                from localknowledge.context import set_current_evaluator
+                set_current_evaluator(current_evaluator)
+                logger.info(f"Updated context with evaluator: {evaluator_name}")
+            else:
+                logger.warning(f"Evaluator {evaluator_name} (ID: {evaluator_id}) not found in database")
+                from localknowledge.context import set_current_evaluator
+                set_current_evaluator(None)
+                
+        except Exception as e:
+            logger.error(f"Error updating evaluator context: {e}")
 
     @Slot(int)
     def _on_pending_review_changed(self, state):
@@ -578,32 +626,56 @@ class DocumentEvaluatorPlugin(PluginBase):
                 show_progress=True
             )
 
-        # Get documents from the database based on selected mode
-        try:
-            documents = self._get_recent_documents(
-                start_date=start_date,
-                limit=num_records,
-                evaluator_id=evaluator_id,
-                skip_evaluated=skip_evaluated,
-                pending_review=pending_review,
-                question_id=question_id
+        # Check if we have transferred documents in the list already
+        existing_documents = self._get_documents_from_list()
+        
+        if existing_documents:
+            # Use the documents already in the list (transferred from Knowledge Browser)
+            documents = existing_documents
+            logger.debug(f"Using {len(documents)} documents already in the list (transferred)")
+            
+            # Update status message for transferred documents
+            self.show_status_message(
+                f"Evaluating {len(documents)} transferred documents using '{evaluator_name}'...",
+                success=True,
+                duration_ms=0,  # Don't auto-hide
+                show_progress=True
             )
-
-            logger.debug(f"Found {len(documents) if documents else 0} documents")
-
-            if not documents:
-                self.show_status_message(f"No documents found from {start_date}", success=False)
-                return
-
-            # Clear the document list
+            
+            # Clear the document list to rebuild it with evaluation status
             self.document_list.clear()
             # Reset evaluation count
             self.evaluated_count = 0
+            # Clear the flag since we're now processing them
+            self.has_transferred_documents = False
+            
+        else:
+            # Get documents from the database based on selected mode
+            try:
+                documents = self._get_recent_documents(
+                    start_date=start_date,
+                    limit=num_records,
+                    evaluator_id=evaluator_id,
+                    skip_evaluated=skip_evaluated,
+                    pending_review=pending_review,
+                    question_id=question_id
+                )
 
-        except Exception as e:
-            logger.error(f"Error retrieving documents: {e}")
-            self.show_status_message(f"Error retrieving documents: {str(e)}", success=False)
-            return
+                logger.debug(f"Found {len(documents) if documents else 0} documents from database")
+
+                if not documents:
+                    self.show_status_message(f"No documents found from {start_date}", success=False)
+                    return
+
+                # Clear the document list
+                self.document_list.clear()
+                # Reset evaluation count
+                self.evaluated_count = 0
+
+            except Exception as e:
+                logger.error(f"Error retrieving documents: {e}")
+                self.show_status_message(f"Error retrieving documents: {str(e)}", success=False)
+                return
 
         if pending_review:
             # In pending review mode, we just display the documents that need human review
@@ -1219,6 +1291,9 @@ class DocumentEvaluatorPlugin(PluginBase):
         """Get the configuration widget for this plugin."""
         logger.debug("DocumentEvaluatorPlugin.get_config_widget() called")
 
+        # Always create a fresh widget to avoid Qt lifecycle issues
+        # The context system will handle keeping it updated
+
         # Create a simple configuration widget
         from PySide6.QtWidgets import QLabel, QVBoxLayout, QWidget, QPushButton, QComboBox, QFormLayout, QTextEdit, QDoubleSpinBox, QSpinBox, QSlider, QHBoxLayout, QLineEdit, QSplitter, QSizePolicy
         from PySide6.QtCore import Qt
@@ -1244,6 +1319,21 @@ class DocumentEvaluatorPlugin(PluginBase):
         # Title at the top
         title_label = QLabel("<h3>Evaluator Configuration</h3>")
         config_layout.addWidget(title_label)
+        
+        # Currently active model display
+        current_model_widget = QWidget()
+        current_model_layout = QHBoxLayout(current_model_widget)
+        current_model_layout.setContentsMargins(0, 0, 0, 0)
+        
+        current_label = QLabel("<b>Currently Active:</b>")
+        self._current_model_label = QLabel("No model selected")
+        self._current_model_label.setStyleSheet("color: #666; font-style: italic;")
+        
+        current_model_layout.addWidget(current_label)
+        current_model_layout.addWidget(self._current_model_label)
+        current_model_layout.addStretch()
+        
+        config_layout.addWidget(current_model_widget)
 
         # Form layout for evaluator settings
         form_widget = QWidget()
@@ -1258,14 +1348,14 @@ class DocumentEvaluatorPlugin(PluginBase):
         # Name field
         name_label = QLabel("Name:")
         name_edit = QLineEdit()
-        # Store a reference to prevent garbage collection
+        # Store a reference to prevent garbage collection and for later access
         self._name_edit = name_edit
         form_layout.addRow(name_label, name_edit)
 
         # Model selector
         model_label = QLabel("Model:")
         model_combo = QComboBox()
-        # Store a reference to prevent garbage collection
+        # Store a reference to prevent garbage collection and for later access
         self._model_combo = model_combo
 
         # Load models from database
@@ -1295,6 +1385,9 @@ class DocumentEvaluatorPlugin(PluginBase):
             model_combo.addItem("qwen3:1.7b-q8_0", "qwen3:1.7b-q8_0")
 
         form_layout.addRow(model_label, model_combo)
+        
+        # Connect model combo change to update current model display
+        model_combo.currentTextChanged.connect(lambda: self._update_current_model_display())
 
         # Temperature with slider
         temp_label = QLabel("Temperature:")
@@ -1307,7 +1400,7 @@ class DocumentEvaluatorPlugin(PluginBase):
         temp_layout.setContentsMargins(0, 0, 0, 0)
 
         temperature_spin = QDoubleSpinBox()
-        # Store a reference to prevent garbage collection
+        # Store a reference to prevent garbage collection and for later access
         self._temperature_spin = temperature_spin
         temperature_spin.setRange(0.0, 2.0)
         temperature_spin.setSingleStep(0.1)
@@ -1335,7 +1428,7 @@ class DocumentEvaluatorPlugin(PluginBase):
         # Top-K
         top_k_label = QLabel("Top-K:")
         top_k_spin = QSpinBox()
-        # Store a reference to prevent garbage collection
+        # Store a reference to prevent garbage collection and for later access
         self._top_k_spin = top_k_spin
         top_k_spin.setRange(0, 100)
         top_k_spin.setValue(40)
@@ -1352,7 +1445,7 @@ class DocumentEvaluatorPlugin(PluginBase):
         top_p_layout.setContentsMargins(0, 0, 0, 0)
 
         top_p_spin = QDoubleSpinBox()
-        # Store a reference to prevent garbage collection
+        # Store a reference to prevent garbage collection and for later access
         self._top_p_spin = top_p_spin
         top_p_spin.setRange(0.0, 1.0)
         top_p_spin.setSingleStep(0.05)
@@ -1382,7 +1475,7 @@ class DocumentEvaluatorPlugin(PluginBase):
         form_layout.addRow(prompt_label)
 
         prompt_edit = QTextEdit()
-        # Store a reference to prevent garbage collection
+        # Store a reference to prevent garbage collection and for later access
         self._prompt_edit = prompt_edit
         # Make sure the text edit can expand in both directions
         prompt_edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
@@ -1418,20 +1511,188 @@ The rating must be a number (0, 1, 2, or 3) and the reason must be a string.
         # Add form to main layout
         config_layout.addWidget(form_widget)
 
+        # Button layout
+        button_widget = QWidget()
+        button_layout = QHBoxLayout(button_widget)
+        button_layout.setContentsMargins(0, 0, 0, 0)
+        
+        # Define New Evaluator button
+        new_evaluator_btn = QPushButton("Define New Evaluator")
+        new_evaluator_btn.setStyleSheet("QPushButton { background-color: #e3f2fd; }")
+        self._new_evaluator_btn = new_evaluator_btn
+        new_evaluator_btn.clicked.connect(lambda: self._on_define_new_evaluator_clicked(
+            name_edit, model_combo, temperature_spin, top_k_spin, top_p_spin, prompt_edit))
+        button_layout.addWidget(new_evaluator_btn)
+        
         # Save button
         save_btn = QPushButton("Save Evaluator")
+        save_btn.setStyleSheet("QPushButton { background-color: #e8f5e8; }")
         # Store a reference to prevent garbage collection
         self._save_btn = save_btn
         save_btn.clicked.connect(lambda: self._on_save_evaluator_clicked(
             name_edit, model_combo, temperature_spin, top_k_spin, top_p_spin, prompt_edit))
-        config_layout.addWidget(save_btn)
+        button_layout.addWidget(save_btn)
+        
+        config_layout.addWidget(button_widget)
 
         # Add stretch to push content to the top
         config_layout.addStretch()
 
         logger.debug(f"Created config widget: {config_widget}")
 
+        # Initialize the configuration with current evaluator data from context
+        try:
+            self._initialize_config_from_context(name_edit, model_combo, temperature_spin, top_k_spin, top_p_spin, prompt_edit)
+        except Exception as e:
+            logger.error(f"Error initializing config from context: {e}")
+
+        # Subscribe to context changes for real-time updates
+        from localknowledge.context import register_context_listener, CURRENT_EVALUATOR
+        register_context_listener(CURRENT_EVALUATOR, 
+            lambda evaluator: self._on_context_evaluator_changed(evaluator, name_edit, model_combo, temperature_spin, top_k_spin, top_p_spin, prompt_edit))
+
         return config_widget
+
+    def _initialize_config_from_context(self, name_edit, model_combo, temperature_spin, top_k_spin, top_p_spin, prompt_edit):
+        """Initialize the configuration form with current evaluator data from context."""
+        try:
+            from localknowledge.context import get_current_evaluator
+            current_evaluator = get_current_evaluator()
+            
+            if not current_evaluator:
+                self._current_model_label.setText("No evaluator selected")
+                self._current_model_label.setStyleSheet("color: #666; font-style: italic;")
+                return
+            
+            # Update the current evaluator display
+            evaluator_name = current_evaluator.get('name', 'Unknown Evaluator')
+            self._current_model_label.setText(evaluator_name)
+            self._current_model_label.setStyleSheet("color: #2e7d32; font-weight: bold;")
+            
+            # Populate form with evaluator data
+            self._populate_form_with_evaluator(current_evaluator, name_edit, model_combo, temperature_spin, top_k_spin, top_p_spin, prompt_edit)
+            
+            logger.info(f"Initialized config form from context with evaluator: {evaluator_name}")
+            
+        except Exception as e:
+            logger.error(f"Error initializing config from context: {e}")
+            if hasattr(self, '_current_model_label') and self._current_model_label:
+                try:
+                    self._current_model_label.setText("Error loading evaluator data")
+                    self._current_model_label.setStyleSheet("color: #d32f2f; font-style: italic;")
+                except RuntimeError:
+                    pass  # Widget was deleted
+
+    def _on_context_evaluator_changed(self, evaluator, name_edit, model_combo, temperature_spin, top_k_spin, top_p_spin, prompt_edit):
+        """Handle evaluator change from context system."""
+        try:
+            logger.info(f"Context evaluator changed: {evaluator}")
+            
+            # Check if widgets are still valid
+            widgets_to_check = [name_edit, model_combo, temperature_spin, top_k_spin, top_p_spin, prompt_edit]
+            for widget in widgets_to_check:
+                if widget:
+                    widget.isVisible()  # This will raise RuntimeError if widget is deleted
+            
+            if not evaluator:
+                if hasattr(self, '_current_model_label') and self._current_model_label:
+                    self._current_model_label.setText("No evaluator selected")
+                    self._current_model_label.setStyleSheet("color: #666; font-style: italic;")
+                return
+            
+            # Update display and form
+            evaluator_name = evaluator.get('name', 'Unknown Evaluator')
+            if hasattr(self, '_current_model_label') and self._current_model_label:
+                self._current_model_label.setText(evaluator_name)
+                self._current_model_label.setStyleSheet("color: #2e7d32; font-weight: bold;")
+            
+            self._populate_form_with_evaluator(evaluator, name_edit, model_combo, temperature_spin, top_k_spin, top_p_spin, prompt_edit)
+            
+        except RuntimeError:
+            logger.info("Configuration widgets have been deleted, ignoring context update")
+        except Exception as e:
+            logger.error(f"Error handling context evaluator change: {e}")
+
+    def _populate_form_with_evaluator(self, evaluator, name_edit, model_combo, temperature_spin, top_k_spin, top_p_spin, prompt_edit):
+        """Populate the configuration form with evaluator data."""
+        try:
+            # Set name
+            name_edit.setText(evaluator.get('name', ''))
+            
+            # Find and set the model in the combo box
+            model_id = evaluator.get('model_id', '')
+            if model_id:
+                for i in range(model_combo.count()):
+                    if model_combo.itemData(i) == model_id:
+                        model_combo.setCurrentIndex(i)
+                        break
+            
+            # Set parameters
+            parameters = evaluator.get('parameters', {})
+            if isinstance(parameters, str):
+                import json
+                try:
+                    parameters = json.loads(parameters)
+                except:
+                    parameters = {}
+            
+            temperature_spin.setValue(parameters.get('temperature', 0.7))
+            top_k_spin.setValue(parameters.get('top_k', 40))
+            top_p_spin.setValue(parameters.get('top_p', 0.9))
+            
+            # Set prompt
+            prompt = evaluator.get('prompt', '')
+            if prompt:
+                prompt_edit.setPlainText(prompt)
+            
+        except Exception as e:
+            logger.error(f"Error populating form with evaluator data: {e}")
+
+
+    def _on_define_new_evaluator_clicked(self, name_edit, model_combo, temperature_spin, top_k_spin, top_p_spin, prompt_edit):
+        """Handle define new evaluator button click - clears the form."""
+        try:
+            # Clear name field
+            name_edit.clear()
+            
+            # Reset model selection to first item
+            if model_combo.count() > 0:
+                model_combo.setCurrentIndex(0)
+            
+            # Reset parameters to defaults
+            temperature_spin.setValue(0.7)
+            top_k_spin.setValue(40)
+            top_p_spin.setValue(0.9)
+            
+            # Reset prompt to default
+            default_prompt = """You are a medical expert. You are evaluating a text for its relevance to a research question.
+        Consider carefully how likely the provided text will contribute towards answering the question.
+
+        The research question is: {question}
+        The text is: {document}
+
+        Please rate the text on a scale of 0 to 3, where:
+        0 means the document is not directly relevant to the question
+        1 means the document is somewhat relevant, contributing to answering the question
+        2 means the document is very likely relevant to answer the question, it should not be missed
+        3 means the document answers the question, it is essential and must be included in the reading list
+
+        Provide a brief reason for your rating in no more than 3 brief sentences. Keep it short.
+
+        IMPORTANT: You must respond ONLY with a valid JSON object in the following format:
+        {{"rating": <rating>, "reason": "<reason>"}}
+
+        Do not include any other text, explanations, or formatting outside of this JSON object.
+        The rating must be a number (0, 1, 2, or 3) and the reason must be a string."""
+            prompt_edit.setPlainText(default_prompt.strip())
+            
+            # Set focus to name field for user convenience
+            name_edit.setFocus()
+            
+            logger.info("Form cleared for new evaluator definition")
+            
+        except Exception as e:
+            logger.error(f"Error clearing form for new evaluator: {e}")
 
     def _on_temp_slider_changed(self, value, spin_box):
         """Handle temperature slider value change."""
@@ -1521,51 +1782,12 @@ The rating must be a number (0, 1, 2, or 3) and the reason must be a string.
                     # Reload evaluator models
                     self._load_evaluator_models()
 
-                    # Check if widgets are still valid before updating them
-                    if hasattr(self, 'name_edit') and self.name_edit:
-                        # Clear form
-                        self.name_edit.clear()
-
-                    if hasattr(self, 'prompt_edit') and self.prompt_edit:
-                        # Reset prompt to default
-                        default_prompt = """
-You are a medical expert. You are evaluating a text for its relevance to a research question.
-Consider carefully how likely the provided text will contribute towards answering the question.
-
-The research question is: {question}
-The text is: {document}
-
-Please rate the text on a scale of 0 to 3, where:
-0 means the document is not relevant at all
-1 means the document is somewhat relevant, tangentially related to the question
-2 means the document is very likely relevant to answer the question, it should not be missed
-3 means the document answers the question, it is essential and must be included in the reading list
-
-Provide a brief reason for your rating in no more than 3 brief sentences. Keep it short.
-
-IMPORTANT: You must respond ONLY with a valid JSON object in the following format:
-{"rating": <rating>, "reason": "<reason>"}
-
-Do not include any other text, explanations, or formatting outside of this JSON object.
-The rating must be a number (0, 1, 2, or 3) and the reason must be a string.
-"""
-                        self.prompt_edit.setPlainText(default_prompt.strip())
-
-                    # Reset other controls if they still exist
-                    if hasattr(self, 'temperature_spin') and self.temperature_spin:
-                        self.temperature_spin.setValue(0.7)
-
-                    if hasattr(self, 'temperature_slider') and self.temperature_slider:
-                        self.temperature_slider.setValue(70)
-
-                    if hasattr(self, 'top_k_spin') and self.top_k_spin:
-                        self.top_k_spin.setValue(40)
-
-                    if hasattr(self, 'top_p_spin') and self.top_p_spin:
-                        self.top_p_spin.setValue(0.9)
-
-                    if hasattr(self, 'top_p_slider') and self.top_p_slider:
-                        self.top_p_slider.setValue(90)
+                    # Clear the form after successful save
+                    self._on_define_new_evaluator_clicked(
+                        name_edit, model_combo, temperature_spin, top_k_spin, top_p_spin, prompt_edit)
+                    
+                    # Update current model display
+                    self._update_current_model_display()
                 except RuntimeError as e:
                     logger.error(f"Qt widget error resetting form: {e}")
             else:
@@ -1939,6 +2161,89 @@ The rating must be a number (0, 1, 2, or 3) and the reason must be a string.
         except Exception as e:
             logger.error(f"Error getting existing evaluation: {e}")
             return None
+
+    def _get_documents_from_list(self) -> list:
+        """
+        Extract documents from the current document list widget.
+        
+        Returns:
+            List of document dictionaries currently in the document list
+        """
+        documents = []
+        try:
+            # Check if we have a document list widget
+            if not hasattr(self, 'document_list') or not self.document_list:
+                return documents
+            
+            # Access the underlying QListWidget
+            list_widget = self.document_list.list_widget if hasattr(self.document_list, 'list_widget') else None
+            if not list_widget:
+                return documents
+            
+            # Extract documents from all items in the list
+            for i in range(list_widget.count()):
+                item = list_widget.item(i)
+                # Check if this is a DocumentItem with a document attribute
+                if hasattr(item, 'document') and item.document:
+                    documents.append(item.document)
+            
+            logger.debug(f"Extracted {len(documents)} documents from document list")
+            return documents
+            
+        except Exception as e:
+            logger.error(f"Error extracting documents from list: {e}")
+            return documents
+
+    def receive_documents_for_evaluation(self, documents: list) -> bool:
+        """
+        Receive documents from other plugins for evaluation.
+        
+        Args:
+            documents: List of document dictionaries to evaluate
+            
+        Returns:
+            True if documents were successfully received, False otherwise
+        """
+        try:
+            if not documents:
+                logger.warning("No documents provided for evaluation")
+                return False
+                
+            logger.info(f"Received {len(documents)} documents for evaluation")
+            
+            # Clear the current document list
+            self.document_list.clear()
+            
+            # Reset evaluation count
+            self.evaluated_count = 0
+            
+            # Set a flag to indicate these are transferred documents
+            self.has_transferred_documents = True
+            
+            # Add each document to the list with a placeholder evaluation
+            for document in documents:
+                # Add to the list widget with a placeholder suggestion
+                is_read = False  # Not read by default
+                suggestion = {
+                    'recommendation_strength': 0,
+                    'recommendation_reason': 'Document transferred from Knowledge Browser - awaiting evaluation',
+                    'evaluator_name': 'Knowledge Browser Transfer'
+                }
+                self.document_list.add_document(document, is_read, suggestion)
+            
+            # Show success message
+            self.show_status_message(
+                f"Received {len(documents)} documents from Knowledge Browser. Click 'Evaluate' to process them.",
+                success=True
+            )
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error receiving documents for evaluation: {e}")
+            if hasattr(self, 'show_status_message'):
+                self.show_status_message(f"Error receiving documents: {str(e)}", success=False)
+            return False
 
     def cleanup(self):
         """Clean up resources before plugin is unloaded."""

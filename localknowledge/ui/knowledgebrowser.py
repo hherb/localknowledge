@@ -445,11 +445,18 @@ class KnowledgeBrowser(QWidget):
         self.settings_button.setToolTip("Search Settings")
         self.settings_button.clicked.connect(self._show_search_settings)
 
+        # Evaluate button
+        self.evaluate_button = QPushButton("Evaluate!")
+        self.evaluate_button.setToolTip("Transfer found documents to Document Evaluator for evaluation")
+        self.evaluate_button.clicked.connect(self._on_evaluate_documents)
+        self.evaluate_button.setStyleSheet("QPushButton { background-color: #e8f5e8; font-weight: bold; }")
+
         search_layout.addWidget(self.search_mode)
         search_layout.addWidget(self.search_input)
         search_layout.addWidget(self.embedding_model_combo)
         search_layout.addWidget(self.search_button)
         search_layout.addWidget(self.settings_button)
+        search_layout.addWidget(self.evaluate_button)
 
         # Splitter for results and document view
         self.splitter = QSplitter(Qt.Horizontal)
@@ -633,6 +640,85 @@ class KnowledgeBrowser(QWidget):
         self.search_strategies = settings['search_strategies']
 
         print(f"Updated search settings: {self.search_settings}")
+
+    @Slot()
+    def _on_evaluate_documents(self):
+        """Handle evaluate documents button click - transfer found documents to Document Evaluator."""
+        try:
+            # Get the currently found documents from the publication list
+            documents = []
+            for i in range(self.publication_list.count()):
+                item = self.publication_list.item(i)
+                if isinstance(item, PublicationItem):
+                    documents.append(item.publication)
+            
+            if not documents:
+                QMessageBox.information(self, "No Documents", "No documents found to evaluate. Please perform a search first.")
+                return
+            
+            # Try to get the Document Evaluator plugin from parent
+            evaluator_plugin = self._get_document_evaluator_plugin()
+            
+            if not evaluator_plugin:
+                QMessageBox.warning(self, "Plugin Not Found", 
+                    "Document Evaluator plugin is not loaded. Please load it first from the Plugins menu.")
+                return
+            
+            # Transfer documents to the evaluator
+            success = evaluator_plugin.receive_documents_for_evaluation(documents)
+            
+            if success:
+                # Show success message and optionally switch to the evaluator tab
+                QMessageBox.information(self, "Documents Transferred", 
+                    f"Successfully transferred {len(documents)} documents to Document Evaluator for evaluation.")
+                
+                # Try to switch to the Document Evaluator tab
+                self._switch_to_document_evaluator_tab()
+            else:
+                QMessageBox.warning(self, "Transfer Failed", 
+                    "Failed to transfer documents to Document Evaluator. Please try again.")
+                
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"An error occurred while transferring documents: {str(e)}")
+
+    def _get_document_evaluator_plugin(self):
+        """Get the Document Evaluator plugin instance from the main window."""
+        try:
+            # Try to get the parent main window
+            parent = self.parent()
+            while parent and not hasattr(parent, 'plugin_manager'):
+                parent = parent.parent()
+            
+            if parent and hasattr(parent, 'plugin_manager'):
+                # Get active plugins from the plugin manager
+                active_plugins = parent.plugin_manager.get_active_plugins()
+                for plugin_name, plugin in active_plugins.items():
+                    if hasattr(plugin, 'plugin_name') and plugin.plugin_name == "Document Evaluator":
+                        return plugin
+            
+            return None
+        except Exception as e:
+            print(f"Error getting Document Evaluator plugin: {e}")
+            return None
+
+    def _switch_to_document_evaluator_tab(self):
+        """Switch to the Document Evaluator tab if it exists."""
+        try:
+            # Try to get the parent main window
+            parent = self.parent()
+            while parent and not hasattr(parent, 'tab_widget'):
+                parent = parent.parent()
+            
+            if parent and hasattr(parent, 'tab_widget'):
+                # Find the Document Evaluator tab
+                tab_widget = parent.tab_widget
+                for i in range(tab_widget.count()):
+                    tab_text = tab_widget.tabText(i)
+                    if "Document Evaluator" in tab_text:
+                        tab_widget.setCurrentIndex(i)
+                        break
+        except Exception as e:
+            print(f"Error switching to Document Evaluator tab: {e}")
 
     def _get_pdf_base_dir(self) -> Path:
         """

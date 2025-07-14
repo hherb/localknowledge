@@ -290,9 +290,35 @@ def get_current_project_name():
     return get_project_name(project_id)
 
 
+def get_current_evaluator():
+    """
+    Get the current evaluator from the context.
+
+    Returns:
+        Dict or None: Current evaluator information or None if not set
+    """
+    return get_context(CURRENT_EVALUATOR)
+
+
+def set_current_evaluator(evaluator_data):
+    """
+    Set the current evaluator in the context.
+
+    Args:
+        evaluator_data: Evaluator information dictionary with keys:
+                       - id: evaluator ID
+                       - name: evaluator name  
+                       - model_id: model identifier
+                       - parameters: evaluator parameters (temperature, etc.)
+                       - prompt: custom prompt
+    """
+    set_context(CURRENT_EVALUATOR, evaluator_data)
+
+
 # Common context keys
 CURRENT_USER = "current_user"
 CURRENT_PROJECT = "current_project"
+CURRENT_EVALUATOR = "current_evaluator"
 DB_CONNECTION_PARAMS = "db_connection_params"
 PDF_BASE_DIR = "pdf_base_dir"
 
