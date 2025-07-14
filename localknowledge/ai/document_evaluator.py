@@ -11,7 +11,7 @@ from localknowledge.ai.ask_llm import generate_answer
 # Configure logging
 logger = logging.getLogger(__name__)
 
-DEFAULT_EVALUATIN_PROMPT = """
+DEFAULT_EVALUATION_PROMPT = """
 You are writing a litearure review  for a medical journal and you need to decide on which publications 
 you want to include as citations, depending on how useful or critical they are to your research question. 
 You need to evaluate the relevance of each publication to your research question carefully.
@@ -79,8 +79,8 @@ class DocumentEvaluator:
         The text is: {document}
 
         Please rate the text on a scale of 0 to 3, where:
-        0 means the document is not relevant at all
-        1 means the document is somewhat relevant, tangentially related to the question
+        0 means the document is not directly relevant to the question
+        1 means the document is somewhat relevant, contributing to answering the question
         2 means the document is very likely relevant to answer the question, it should not be missed
         3 means the document answers the question, it is essential and must be included in the reading list
 
