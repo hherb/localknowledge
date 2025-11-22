@@ -1,121 +1,130 @@
 #!/usr/bin/env python3
 """
-Run all database infrastructure tests.
+Run all tests for LocalKnowledge.
 
-This script runs all the database infrastructure tests in sequence.
-It first sets up the test environment, then runs the tests.
+This script discovers and runs tests using pytest across the project.
+Tests are organized in:
+- tests/                  - Main integration tests
+- localknowledge/*/tests/ - Module-specific tests
+
+Usage:
+    python run_tests.py                    # Run all tests
+    python run_tests.py --unit             # Run only unit tests (fast)
+    python run_tests.py --integration      # Run integration tests
+    python run_tests.py -k "pattern"       # Run tests matching pattern
+    python run_tests.py -v                 # Verbose output
+    python run_tests.py --coverage         # Run with coverage report
 """
 
 import os
 import sys
-import logging
-import subprocess
 import argparse
-
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
-
-
-def run_command(command):
-    """Run a command and return the exit code."""
-    logger.info(f"Running command: {command}")
-
-    # Create a copy of the current environment
-    env = os.environ.copy()
-
-    # Ensure DOTENV_FILE is set to the test environment file
-    env['DOTENV_FILE'] = '.env.test'
-
-    # Run the command with the modified environment
-    process = subprocess.run(command, shell=True, env=env)
-    return process.returncode
+import subprocess
 
 
 def main():
     """Main function."""
-    parser = argparse.ArgumentParser(description='Run database infrastructure tests')
-    parser.add_argument('--skip-env', action='store_true', help='Skip environment setup')
-    parser.add_argument('--skip-infrastructure', action='store_true', help='Skip infrastructure test')
-    parser.add_argument('--skip-basic', action='store_true', help='Skip basic infrastructure test')
-    parser.add_argument('--skip-baseline', action='store_true', help='Skip baseline database test')
-    parser.add_argument('--force', action='store_true', help='Force recreation of tables in baseline test')
-    parser.add_argument('--cleanup', action='store_true', help='Clean up test environment after tests')
-    parser.add_argument('--cleanup-only', action='store_true', help='Only clean up test environment, don\'t run tests')
+    parser = argparse.ArgumentParser(description='Run LocalKnowledge tests')
+    parser.add_argument('--unit', action='store_true',
+                        help='Run only unit tests (module-specific tests)')
+    parser.add_argument('--integration', action='store_true',
+                        help='Run integration tests (tests/ directory)')
+    parser.add_argument('-k', '--keyword', type=str, default=None,
+                        help='Run tests matching keyword expression')
+    parser.add_argument('-v', '--verbose', action='store_true',
+                        help='Verbose test output')
+    parser.add_argument('--coverage', action='store_true',
+                        help='Run with coverage report')
+    parser.add_argument('--env-file', type=str, default=None,
+                        help='Environment file to use (default: .env.test if exists, else .env)')
+    parser.add_argument('-x', '--exitfirst', action='store_true',
+                        help='Exit on first failure')
+    parser.add_argument('--markers', action='store_true',
+                        help='Show available test markers')
+    parser.add_argument('remaining', nargs='*',
+                        help='Additional arguments to pass to pytest')
     args = parser.parse_args()
 
-    # Clean up only
-    if args.cleanup_only:
-        logger.info("Cleaning up test environment")
-        exit_code = run_command("python test_env.py --cleanup")
-        if exit_code != 0:
-            logger.error("Failed to clean up test environment")
-            return exit_code
-        logger.info("Test environment cleaned up successfully")
-        return 0
+    # Set up environment file
+    if args.env_file:
+        env_file = args.env_file
+    elif os.path.exists('.env.test'):
+        env_file = '.env.test'
+    elif os.path.exists('.env'):
+        env_file = '.env'
+    else:
+        env_file = None
 
-    # Set up test environment
-    if not args.skip_env:
-        # Check if .env.test already exists
-        if os.path.exists('.env.test'):
-            logger.info("Test environment already set up. Skipping environment setup.")
-            # Make sure the test database exists
-            exit_code = run_command("python create_test_db.py")
-            if exit_code != 0:
-                logger.error("Failed to ensure test database exists")
-                return exit_code
-        else:
-            logger.info("Setting up test environment")
-            exit_code = run_command("python test_env.py")
-            if exit_code != 0:
-                logger.error("Failed to set up test environment")
-                return exit_code
+    if env_file:
+        os.environ['DOTENV_FILE'] = env_file
+        print(f"Using environment file: {env_file}")
 
-    # Set environment variable for test environment
-    os.environ['DOTENV_FILE'] = '.env.test'
+    # Build pytest command
+    pytest_args = ['python', '-m', 'pytest']
 
-    try:
-        # Run infrastructure test
-        if not args.skip_infrastructure:
-            logger.info("Running infrastructure test")
-            exit_code = run_command("python test_infrastructure.py")
-            if exit_code != 0:
-                logger.error("Infrastructure test failed")
-                return exit_code
+    # Determine test paths
+    test_paths = []
+    if args.unit:
+        # Module-specific tests only
+        test_paths.extend([
+            'localknowledge/db/tests/',
+            'localknowledge/embeddings/tests/',
+            'localknowledge/ui/tests/',
+            'localknowledge/ai/tests/',
+            'localknowledge/textprocessing/chunking/tests/',
+            'localknowledge/textprocessing/keywords/tests/',
+            'localknowledge/medrxiv/tests/',
+        ])
+    elif args.integration:
+        # Integration tests only
+        test_paths.append('tests/')
+    else:
+        # All tests
+        test_paths.extend([
+            'tests/',
+            'localknowledge/',
+        ])
 
-        # Run basic infrastructure test
-        if not args.skip_basic:
-            logger.info("Running basic infrastructure test")
-            exit_code = run_command("python test_basic_infrastructure.py")
-            if exit_code != 0:
-                logger.error("Basic infrastructure test failed")
-                return exit_code
+    # Filter to existing paths
+    test_paths = [p for p in test_paths if os.path.exists(p)]
+    if not test_paths:
+        print("No test directories found!")
+        return 1
 
-        # Run baseline database test
-        if not args.skip_baseline:
-            logger.info("Running baseline database test")
-            command = "python test_baseline_db.py"
-            if args.force:
-                command += " --force"
-            exit_code = run_command(command)
-            if exit_code != 0:
-                logger.error("Baseline database test failed")
-                return exit_code
+    pytest_args.extend(test_paths)
 
-        logger.info("All tests completed successfully")
-        return 0
-    finally:
-        # Clean up test environment if requested
-        if args.cleanup:
-            logger.info("Cleaning up test environment")
-            exit_code = run_command("python test_env.py --cleanup")
-            if exit_code != 0:
-                logger.error("Failed to clean up test environment")
-                return exit_code
-            logger.info("Test environment cleaned up successfully")
+    # Add pytest options
+    if args.verbose:
+        pytest_args.append('-v')
+    else:
+        pytest_args.append('-q')
+
+    if args.keyword:
+        pytest_args.extend(['-k', args.keyword])
+
+    if args.exitfirst:
+        pytest_args.append('-x')
+
+    if args.coverage:
+        pytest_args.extend([
+            '--cov=localknowledge',
+            '--cov-report=term-missing',
+            '--cov-report=html:coverage_html'
+        ])
+
+    if args.markers:
+        pytest_args.append('--markers')
+
+    # Add any remaining arguments
+    pytest_args.extend(args.remaining)
+
+    # Print command
+    print(f"Running: {' '.join(pytest_args)}")
+    print("-" * 60)
+
+    # Run pytest
+    result = subprocess.run(pytest_args)
+    return result.returncode
 
 
 if __name__ == "__main__":

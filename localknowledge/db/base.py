@@ -352,8 +352,8 @@ class DatabaseManager:
             Query results or None
         """
 
-        #FIXME
-        #TODO: implement withcontext manager! (with connectin/cursor ...)
+        # FIXME
+        # TODO: implement with context manager (with connection/cursor ...)
 
         if not self.connection:
             self.connect()
