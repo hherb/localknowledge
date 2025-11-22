@@ -31,12 +31,12 @@ class MedicalQueryProcessor:
             # Try to load the larger model with word vectors first
             self.nlp = spacy.load("en_core_sci_lg")
             print("Loaded scientific NLP model")
-        except:
+        except OSError:
             try:
                 # Fall back to scientific model without word vectors
                 self.nlp = spacy.load("en_core_sci_md")
                 print("Loaded medium scientific NLP model")
-            except:
+            except OSError:
                 # Fall back to general English model
                 self.nlp = spacy.load("en_core_web_md")
                 print("Loaded general English NLP model")
@@ -50,7 +50,7 @@ class MedicalQueryProcessor:
         # Load stopwords
         try:
             self.stopwords = set(stopwords.words('english'))
-        except:
+        except LookupError:
             # Fallback minimal stopwords if NLTK data not available
             self.stopwords = {
                 'a', 'an', 'the', 'and', 'or', 'but', 'if', 'because', 'as', 'what', 

@@ -269,15 +269,15 @@ class ImprovedPubMedDownloader:
                 if local_file.exists():
                     try:
                         local_file.unlink()
-                    except:
+                    except OSError:
                         pass
-                        
+
             finally:
                 # Always close FTP connection
                 if ftp:
                     try:
                         ftp.quit()
-                    except:
+                    except Exception:
                         pass
                         
             # Wait before retrying (except on last attempt)

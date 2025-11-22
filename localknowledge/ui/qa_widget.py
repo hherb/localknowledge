@@ -2121,7 +2121,7 @@ class QAWidget(QWidget):
                 panel.clear()
                 if hasattr(panel, 'title_text'):
                     panel.title_text = f"Error: {str(e)[:50]}"
-            except:
+            except Exception:
                 pass
 
     def _handle_search_error(self, error, traceback_text, panel):
@@ -2161,7 +2161,7 @@ class QAWidget(QWidget):
             # Try to show something to the user
             try:
                 self.status_label.setText(f"Critical error: {str(e)[:50]}")
-            except:
+            except Exception:
                 pass
 
     def _update_status_label(self):
@@ -2203,7 +2203,7 @@ class QAWidget(QWidget):
             logger.error(f"Error updating status label: {e}\n{traceback.format_exc()}")
             try:
                 self.status_label.setText("Error updating status")
-            except:
+            except Exception:
                 pass
 
     def _perform_keyword_search(self, question: str, panel=None):

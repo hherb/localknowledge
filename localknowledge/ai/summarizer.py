@@ -13,7 +13,7 @@ You are a medical expert and you are summarizing the text in the style of a medi
 You always respond in the form of a JSON object with the following fields:
 - response: The summarized text
 - error: An error message if any
-- evaluation: A boolean indicating whether this publication aligns with at least one of the stated interests (Tue) or not (False)
+- evaluation: A boolean indicating whether this publication aligns with at least one of the stated interests (True) or not (False)
 - reason: The reason why you think this is of interest or not (brief single sentence)
 - interests: A list of interests related to the text
 </system>"""

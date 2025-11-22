@@ -5,7 +5,11 @@ description = "A library for local PubMed and medRxiv database access"
 readme = "README.md"
 requires-python = ">=3.12"
 authors = [
-    {name = "Your Name"}
+    {name = "Horst Herb"}
+]
+maintainers = [
+    {name = "Horst Herb"},
+    {name = "Claude (Anthropic)", email = "claude@anthropic.com"}
 ]
 license = {text = "MIT"}
 classifiers = [
@@ -64,5 +68,5 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project.urls]
-Homepage = "https://github.com/yourusername/localknowledge"
-"Bug Tracker" = "https://github.com/yourusername/localknowledge/issues"
+Homepage = "https://github.com/hherb/localknowledge"
+"Bug Tracker" = "https://github.com/hherb/localknowledge/issues"

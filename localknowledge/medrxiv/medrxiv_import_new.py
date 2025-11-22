@@ -512,7 +512,7 @@ def update_medrxiv_database(download_pdfs=False, max_retries=5, start_date_overr
         try:
             if 'db_manager' in locals():
                 db_manager.close()
-        except:
+        except Exception:
             pass
 
 
@@ -563,7 +563,7 @@ def fetch_missing_pdfs(max_retries=5, limit=None, convert_to_markdown=False, use
         try:
             if pdf_url and "v" in pdf_url:
                 version = pdf_url.split("v")[-1].split(".")[0]
-        except:
+        except (IndexError, AttributeError):
             pass
 
         # Create a paper dict similar to what we get from the API

@@ -26,37 +26,37 @@ try:
     except LookupError:
         try:
             nltk.download('punkt', quiet=True)
-        except:
+        except Exception:
             pass
-    
+
     try:
         nltk.data.find('corpora/stopwords')
     except LookupError:
         try:
             nltk.download('stopwords', quiet=True)
-        except:
+        except Exception:
             pass
-    
+
     try:
         nltk.data.find('corpora/wordnet')
     except LookupError:
         try:
             nltk.download('wordnet', quiet=True)
-        except:
+        except Exception:
             pass
-            
+
     try:
         nltk.data.find('taggers/averaged_perceptron_tagger')
     except LookupError:
         try:
             nltk.download('averaged_perceptron_tagger', quiet=True)
-        except:
+        except Exception:
             pass
-    
+
     # Initialize WordNet lemmatizer if available
     try:
         lemmatizer = WordNetLemmatizer()
-    except:
+    except LookupError:
         lemmatizer = None
         
 except ImportError:
@@ -93,7 +93,7 @@ class MedicalQueryProcessor:
                         self.spacy_nlp = spacy.load(model_name)
                         print(f"Loaded spaCy model: {model_name}")
                         break
-                    except:
+                    except OSError:
                         continue
                         
             except Exception as e:
@@ -157,7 +157,7 @@ class MedicalQueryProcessor:
             try:
                 nltk_stopwords = set(stopwords.words('english'))
                 return minimal_stopwords.union(nltk_stopwords)
-            except:
+            except LookupError:
                 pass
         
         return minimal_stopwords
@@ -444,7 +444,7 @@ class MedicalQueryProcessor:
                     # Only add if it's not too different in length
                     if abs(len(synonym) - len(term)) <= 5:
                         synonyms.add(synonym)
-        except:
+        except LookupError:
             pass
                     
         return synonyms

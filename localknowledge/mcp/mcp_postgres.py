@@ -17,7 +17,9 @@ DB_CONFIG = {
     "port": int(os.getenv("POSTGRES_PORT", 5432))
 }
 
-print(f"initiating postgres read-only server with parameters: {DB_CONFIG}")
+# Log connection info without exposing password
+_safe_config = {k: v if k != "password" else "****" for k, v in DB_CONFIG.items()}
+print(f"initiating postgres read-only server with parameters: {_safe_config}")
 
 # Initialize the FastMCP server with auto-approval for all queries
 mcp = FastMCP(
