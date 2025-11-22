@@ -251,7 +251,7 @@ class CorruptImportFixer:
                     last_part = parts[-1]
                     if last_part.isdigit():
                         return int(last_part)
-            except:
+            except (AttributeError, IndexError, ValueError):
                 pass
 
             return 0

@@ -86,7 +86,7 @@ def test_download_single_file():
         finally:
             try:
                 ftp.quit()
-            except:
+            except Exception:
                 pass
 
 def test_file_validation():

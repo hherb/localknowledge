@@ -71,9 +71,9 @@ def find_questions(text: str, model: str = DEFAULT_MODEL) -> List[str]:
             pattern = r'\{\s*"question"\s*:\s*"[^"]*"\s*,\s*"answer"\s*:\s*"[^"]*"\s*\}'
             matches = re.findall(pattern, json_str)
             return [json.loads(match) for match in matches]
-        except:
+        except Exception:
             # Return raw response if all parsing fails
-            logger.error(f"Could not parse JSON response")
+            logger.error("Could not parse JSON response")
             return {"error": "Could not parse JSON", "raw_response": json_str}
 
 
@@ -106,9 +106,9 @@ def find_questions_and_answers(text: str, model: str = DEFAULT_MODEL) -> List[Di
             pattern = r'\{\s*"question"\s*:\s*"[^"]*"\s*,\s*"answer"\s*:\s*"[^"]*"\s*\}'
             matches = re.findall(pattern, json_str)
             return [json.loads(match) for match in matches]
-        except:
+        except Exception:
             # Return raw response if all parsing fails
-            logger.error(f"Could not parse JSON response")
+            logger.error("Could not parse JSON response")
             return {"error": "Could not parse JSON", "raw_response": json_str}
 
 

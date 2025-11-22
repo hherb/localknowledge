@@ -172,7 +172,7 @@ class DocumentItemDelegate(QStyledItemDelegate):
                 # Try to get just the year
                 try:
                     date_str = str(date.year)
-                except:
+                except (AttributeError, TypeError):
                     date_str = str(date)
 
         if date_str:

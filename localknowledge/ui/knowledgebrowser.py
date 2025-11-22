@@ -191,7 +191,7 @@ class PublicationItemDelegate(QStyledItemDelegate):
             # If anything goes wrong, fall back to default rendering
             try:
                 painter.restore()  # Try to restore the painter state if we saved it
-            except:
+            except Exception:
                 pass
             super().paint(painter, option, index)
 

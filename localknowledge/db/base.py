@@ -117,8 +117,9 @@ class DatabaseManager:
         import threading
         import time
 
-        #FIXME
-        #TODO: refactor with context manager (with connection/cursor ...)
+        # TODO: Consider refactoring to use a connection context manager for better
+        # resource management and automatic cleanup. Current implementation handles
+        # connection state manually but could benefit from structured cleanup.
 
         if not self.connection:
             self.connect()
@@ -230,8 +231,8 @@ class DatabaseManager:
         import threading
         import time
 
-        #FIXME
-        #TODO: implement with context manager (with connection/cursor ...)
+        # TODO: Consider refactoring to use a connection context manager for better
+        # resource management and automatic cleanup.
 
         if not self.connection:
             self.connect()
